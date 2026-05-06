@@ -27,6 +27,11 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("/api/crawl", s.handleCrawl)
 	mux.HandleFunc("/api/jobs/", s.handleJobs)
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"ok":true}`))
+	})
 
 	return corsMiddleware(mux)
 }

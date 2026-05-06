@@ -18,7 +18,7 @@ primary_region = "iad"
     grace_period = "10s"
     interval = "30s"
     method = "GET"
-    path = "/api/jobs/healthcheck"
+    path = "/health"
     timeout = "5s"
 
 [vm]

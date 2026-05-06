@@ -321,6 +321,16 @@ func (e *Engine) RunCrawl(ctx context.Context, jobID string) error {
 	urlsDiscovered.Store(int64(q.Len()))
 	var issuesFound atomic.Int64
 
+	// Periodic counter flush: write in-memory atomics to DB every 2 s so
+	// polling clients see live progress instead of all-zeros until completion.
+	counterTicker := time.NewTicker(2 * time.Second)
+	go func() {
+		for range counterTicker.C {
+			e.db.UpdateJobCounters(jobID, int(pagesCrawled.Load()), int(urlsDiscovered.Load()), int(issuesFound.Load()))
+		}
+	}()
+	defer counterTicker.Stop()
+
 	// inFlight tracks items between dispatch and persist completion.
 	var inFlight atomic.Int64
 
