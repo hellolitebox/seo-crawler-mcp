@@ -436,7 +436,13 @@ func (s *Server) handleJobsList(w http.ResponseWriter, r *http.Request) {
 		offset = n
 	}
 
-	jobs, err := s.db.ListJobs()
+	total, err := s.db.CountJobs()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("counting jobs: %v", err))
+		return
+	}
+
+	jobs, err := s.db.ListJobsPaginated(limit, offset)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("listing jobs: %v", err))
 		return
@@ -490,16 +496,8 @@ func (s *Server) handleJobsList(w http.ResponseWriter, r *http.Request) {
 		out = append(out, row)
 	}
 
-	total := len(out)
-	end := offset + limit
-	if offset > total {
-		offset = total
-	}
-	if end > total {
-		end = total
-	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"jobs":   out[offset:end],
+		"jobs":   out,
 		"total":  total,
 		"limit":  limit,
 		"offset": offset,

@@ -2,7 +2,7 @@
 package httpserver
 
 import (
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -90,12 +90,17 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// loggingMiddleware logs each request with method, path, and duration.
+// loggingMiddleware logs each request with method, path, and duration via slog.
 func loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		next.ServeHTTP(w, r)
-		log.Printf("http: %s %s %s %s", r.Method, r.URL.Path, time.Since(start), clientIP(r))
+		slog.Info("http",
+			"method", r.Method,
+			"path", r.URL.Path,
+			"duration", time.Since(start).String(),
+			"ip", clientIP(r),
+		)
 	})
 }
 

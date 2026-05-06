@@ -145,10 +145,21 @@ func (db *DB) UpdateJobCounters(id string, pagesCrawled, urlsDiscovered, issuesF
 }
 
 // ListJobs returns all crawl jobs ordered by creation time descending.
+// Prefer ListJobsPaginated for HTTP handlers that serve large tables.
 func (db *DB) ListJobs() ([]CrawlJob, error) {
-	rows, err := db.Query(
-		`SELECT `+jobColumns+` FROM crawl_jobs ORDER BY created_at DESC`,
-	)
+	return db.ListJobsPaginated(-1, 0)
+}
+
+// ListJobsPaginated returns crawl jobs ordered by creation time descending
+// with optional LIMIT/OFFSET. Pass limit=-1 to mean "no limit".
+func (db *DB) ListJobsPaginated(limit, offset int) ([]CrawlJob, error) {
+	query := `SELECT ` + jobColumns + ` FROM crawl_jobs ORDER BY created_at DESC`
+	var args []any
+	if limit > 0 {
+		query += ` LIMIT ? OFFSET ?`
+		args = []any{limit, offset}
+	}
+	rows, err := db.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("listing jobs: %w", err)
 	}
@@ -167,6 +178,16 @@ func (db *DB) ListJobs() ([]CrawlJob, error) {
 	}
 
 	return jobs, nil
+}
+
+// CountJobs returns the total number of jobs in the database.
+func (db *DB) CountJobs() (int, error) {
+	var count int
+	err := db.QueryRow(`SELECT COUNT(*) FROM crawl_jobs`).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("counting jobs: %w", err)
+	}
+	return count, nil
 }
 
 // CountActiveJobs returns the number of jobs with status 'queued' or 'running'
