@@ -613,6 +613,15 @@ loop:
 		if matErr := materialize.Materialize(e.db, jobID); matErr != nil {
 			log.Printf("engine: materialization failed: %v", matErr)
 		}
+
+		// Re-sync issuesFound from the actual issues table so the job row
+		// reflects everything written by post-crawl phases (text quality, audits, etc.)
+		var actual int
+		if scanErr := e.db.QueryRow(`SELECT COUNT(*) FROM issues WHERE job_id = ?`, jobID).Scan(&actual); scanErr == nil {
+			if int64(actual) > issuesFound.Load() {
+				issuesFound.Store(int64(actual))
+			}
+		}
 	}
 
 	// Update final counters

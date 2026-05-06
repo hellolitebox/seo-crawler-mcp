@@ -457,6 +457,21 @@ func (s *Server) handleJobsList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Build a map of jobID -> actual issue count from the issues table.
+	// The job row's issues_found counter doesn't always reflect post-crawl phases
+	// (text quality, axe audits, etc.), so query the source of truth.
+	actualIssues := map[string]int{}
+	if rows, qErr := s.db.Query(`SELECT job_id, COUNT(*) FROM issues GROUP BY job_id`); qErr == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var jid string
+			var c int
+			if scanErr := rows.Scan(&jid, &c); scanErr == nil {
+				actualIssues[jid] = c
+			}
+		}
+	}
+
 	type jobRow struct {
 		JobID          string  `json:"jobId"`
 		Status         string  `json:"status"`
@@ -470,12 +485,16 @@ func (s *Server) handleJobsList(w http.ResponseWriter, r *http.Request) {
 
 	out := make([]jobRow, 0, len(jobs))
 	for _, j := range jobs {
+		issues := j.IssuesFound
+		if a, ok := actualIssues[j.ID]; ok && a > issues {
+			issues = a
+		}
 		row := jobRow{
 			JobID:          j.ID,
 			Status:         j.Status,
 			SeedURLs:       j.SeedURLs,
 			PagesCrawled:   j.PagesCrawled,
-			IssuesFound:    j.IssuesFound,
+			IssuesFound:    issues,
 			URLsDiscovered: j.URLsDiscovered,
 			CreatedAt:      j.CreatedAt,
 		}
