@@ -58,6 +58,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/jobs/{id}", s.handleJobCancelV2)
 	mux.HandleFunc("GET /api/jobs/{id}/report", s.handleJobReportV2)
 	mux.HandleFunc("GET /api/jobs/{id}/activity", s.handleJobActivityV2)
+	mux.HandleFunc("GET /api/jobs/{id}/stream", s.handleJobStreamV2)
 
 	return s.corsMiddleware(loggingMiddleware(mux))
 }

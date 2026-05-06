@@ -505,3 +505,207 @@ func (s *Server) handleJobsList(w http.ResponseWriter, r *http.Request) {
 		"offset": offset,
 	})
 }
+
+// handleJobStreamV2 is a Server-Sent Events endpoint that pushes live job
+// updates to the client. Replaces client-side polling for active crawls.
+//
+// Events emitted (each on its own line, format `event: <name>\ndata: <json>\n\n`):
+//   - status:   periodic full status snapshot (pagesCrawled, issuesFound, urlsByStatus, etc.)
+//   - activity: incremental fetch + phase events since the last tick
+//   - done:     terminal event when status is completed/failed/cancelled (then connection closes)
+//   - error:    any internal error during streaming (then connection closes)
+func (s *Server) handleJobStreamV2(w http.ResponseWriter, r *http.Request) {
+	jobID := r.PathValue("id")
+	if jobID == "" {
+		writeError(w, http.StatusBadRequest, "jobId is required")
+		return
+	}
+	if s.db == nil {
+		writeError(w, http.StatusInternalServerError, "database unavailable")
+		return
+	}
+	if _, err := s.db.GetJob(jobID); err != nil {
+		writeError(w, http.StatusNotFound, fmt.Sprintf("job %q not found", jobID))
+		return
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "streaming unsupported")
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no") // disable nginx-style buffering
+
+	send := func(event string, payload any) bool {
+		body, err := json.Marshal(payload)
+		if err != nil {
+			return false
+		}
+		if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, body); err != nil {
+			return false
+		}
+		flusher.Flush()
+		return true
+	}
+
+	ctx := r.Context()
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+	keepalive := time.NewTicker(20 * time.Second)
+	defer keepalive.Stop()
+
+	var lastFetchID int64 = 0
+	var lastEventID int64 = 0
+
+	// Send initial status + activity so the client doesn't have to wait 1s.
+	if status, ok := s.buildJobStatus(jobID); ok {
+		send("status", status)
+	}
+	lastFetchID, lastEventID = s.streamActivityDelta(send, jobID, lastFetchID, lastEventID)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-keepalive.C:
+			// SSE comment line keeps proxies/load balancers from closing idle connections.
+			fmt.Fprintf(w, ": keepalive\n\n")
+			flusher.Flush()
+		case <-ticker.C:
+			status, ok := s.buildJobStatus(jobID)
+			if !ok {
+				send("error", map[string]string{"error": "job vanished"})
+				return
+			}
+			send("status", status)
+			lastFetchID, lastEventID = s.streamActivityDelta(send, jobID, lastFetchID, lastEventID)
+
+			st, _ := status["status"].(string)
+			if st == "completed" || st == "done" || st == "failed" || st == "cancelled" {
+				send("done", map[string]string{"status": st})
+				return
+			}
+		}
+	}
+}
+
+// buildJobStatus returns the same shape as GET /api/jobs/{id}, used by SSE.
+func (s *Server) buildJobStatus(jobID string) (map[string]any, bool) {
+	job, err := s.db.GetJob(jobID)
+	if err != nil {
+		return nil, false
+	}
+	result := map[string]any{
+		"jobId":          job.ID,
+		"status":         job.Status,
+		"pagesCrawled":   job.PagesCrawled,
+		"urlsDiscovered": job.URLsDiscovered,
+		"issuesFound":    job.IssuesFound,
+		"createdAt":      job.CreatedAt,
+	}
+	if job.StartedAt.Valid {
+		result["startedAt"] = job.StartedAt.String
+	}
+	if job.FinishedAt.Valid {
+		result["finishedAt"] = job.FinishedAt.String
+	}
+	if job.Error.Valid {
+		result["error"] = job.Error.String
+	}
+	if c, err := s.db.CountURLsByStatus(jobID); err == nil {
+		result["urlsByStatus"] = c
+	}
+	if c, err := s.db.CountIssuesByType(jobID); err == nil {
+		result["issuesByType"] = c
+	}
+	return result, true
+}
+
+// streamActivityDelta sends new fetches + phase events since the last seen IDs.
+// Returns the new lastFetchID + lastEventID watermarks.
+func (s *Server) streamActivityDelta(send func(string, any) bool, jobID string, lastFetchID, lastEventID int64) (int64, int64) {
+	// New fetches
+	rows, err := s.db.Query(`
+		SELECT f.id, u.normalized_url, f.status_code, f.ttfb_ms, f.fetched_at, f.render_mode, f.error
+		FROM fetches f
+		JOIN urls u ON u.id = f.requested_url_id
+		WHERE f.job_id = ? AND f.id > ?
+		ORDER BY f.id ASC
+		LIMIT 200
+	`, jobID, lastFetchID)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var id int64
+			var url string
+			var statusCode int
+			var ttfb int64
+			var fetchedAt string
+			var renderMode sql.NullString
+			var errStr sql.NullString
+			if err := rows.Scan(&id, &url, &statusCode, &ttfb, &fetchedAt, &renderMode, &errStr); err != nil {
+				continue
+			}
+			row := map[string]any{
+				"kind":       "fetch",
+				"url":        url,
+				"statusCode": statusCode,
+				"ttfbMs":     ttfb,
+				"fetchedAt":  fetchedAt,
+			}
+			if renderMode.Valid {
+				row["renderMode"] = renderMode.String
+			}
+			if errStr.Valid {
+				row["error"] = errStr.String
+			}
+			send("activity", row)
+			if id > lastFetchID {
+				lastFetchID = id
+			}
+		}
+	}
+
+	// New phase events
+	eventRows, err := s.db.Query(`
+		SELECT id, timestamp, details_json
+		FROM crawl_events
+		WHERE job_id = ? AND event_type = 'phase' AND id > ?
+		ORDER BY id ASC
+		LIMIT 50
+	`, jobID, lastEventID)
+	if err == nil {
+		defer eventRows.Close()
+		for eventRows.Next() {
+			var id int64
+			var ts string
+			var detailsJSON sql.NullString
+			if err := eventRows.Scan(&id, &ts, &detailsJSON); err != nil {
+				continue
+			}
+			row := map[string]any{
+				"kind":      "phase",
+				"fetchedAt": ts,
+			}
+			if detailsJSON.Valid {
+				var d struct {
+					Phase   string `json:"phase"`
+					Message string `json:"message"`
+				}
+				json.Unmarshal([]byte(detailsJSON.String), &d)
+				row["phase"] = d.Phase
+				row["message"] = d.Message
+			}
+			send("activity", row)
+			if id > lastEventID {
+				lastEventID = id
+			}
+		}
+	}
+
+	return lastFetchID, lastEventID
+}
