@@ -239,6 +239,9 @@ func (s *Server) handleJobStatus(w http.ResponseWriter, r *http.Request, jobID s
 }
 
 // handleJobCancel handles DELETE /api/jobs/:jobId.
+// If the job is running/queued, it is cancelled. Otherwise, the job and all
+// its related data (URLs, fetches, pages, issues, edges, events, etc.) are
+// purged from the DB via ON DELETE CASCADE.
 func (s *Server) handleJobCancel(w http.ResponseWriter, r *http.Request, jobID string) {
 	if s.db == nil {
 		writeError(w, http.StatusInternalServerError, "database unavailable")
@@ -251,17 +254,22 @@ func (s *Server) handleJobCancel(w http.ResponseWriter, r *http.Request, jobID s
 		return
 	}
 
-	if job.Status != "running" && job.Status != "queued" {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("job %q has status %q, cannot cancel", jobID, job.Status))
+	if job.Status == "running" || job.Status == "queued" {
+		if err := s.db.UpdateJobStatus(jobID, "cancelling"); err != nil {
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("cancelling job: %v", err))
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"jobId": jobID, "status": "cancelling"})
 		return
 	}
 
-	if err := s.db.UpdateJobStatus(jobID, "cancelling"); err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("cancelling job: %v", err))
+	// Completed/failed/cancelled job: purge it.
+	if _, err := s.db.Exec(`DELETE FROM crawl_jobs WHERE id = ?`, jobID); err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("deleting job: %v", err))
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]string{"jobId": jobID, "status": "cancelling"})
+	writeJSON(w, http.StatusOK, map[string]string{"jobId": jobID, "status": "deleted"})
 }
 
 // urlLookup returns a dto.URLLookup backed by the database.
