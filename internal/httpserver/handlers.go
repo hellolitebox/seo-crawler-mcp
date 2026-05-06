@@ -438,3 +438,55 @@ func (s *Server) handleJobActivity(w http.ResponseWriter, r *http.Request, jobID
 		"activity": out,
 	})
 }
+
+// handleJobsList returns a list of all crawl jobs (most recent first).
+// Used by the UI to render the "Reports" history tab.
+func (s *Server) handleJobsList(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if s.db == nil {
+		writeError(w, http.StatusInternalServerError, "database unavailable")
+		return
+	}
+
+	jobs, err := s.db.ListJobs()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("listing jobs: %v", err))
+		return
+	}
+
+	type jobRow struct {
+		JobID          string  `json:"jobId"`
+		Status         string  `json:"status"`
+		SeedURLs       string  `json:"seedUrls"`
+		PagesCrawled   int     `json:"pagesCrawled"`
+		IssuesFound    int     `json:"issuesFound"`
+		URLsDiscovered int     `json:"urlsDiscovered"`
+		CreatedAt      string  `json:"createdAt"`
+		FinishedAt     *string `json:"finishedAt,omitempty"`
+	}
+
+	out := make([]jobRow, 0, len(jobs))
+	for _, j := range jobs {
+		row := jobRow{
+			JobID:          j.ID,
+			Status:         j.Status,
+			SeedURLs:       j.SeedURLs,
+			PagesCrawled:   j.PagesCrawled,
+			IssuesFound:    j.IssuesFound,
+			URLsDiscovered: j.URLsDiscovered,
+			CreatedAt:      j.CreatedAt,
+		}
+		if j.FinishedAt.Valid {
+			fa := j.FinishedAt.String
+			row.FinishedAt = &fa
+		}
+		out = append(out, row)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"jobs": out,
+	})
+}
