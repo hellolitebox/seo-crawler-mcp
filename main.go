@@ -4,11 +4,14 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"log"
+	"net/http"
 	"os"
 
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/config"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/engine"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/fetcher"
+	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/httpserver"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/mcp"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/renderer"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/ssrf"
@@ -22,6 +25,7 @@ func main() {
 	checkConfig := flag.Bool("check-config", false, "Validate and print effective config")
 	configPath := flag.String("config", "", "Path to config file (TOML)")
 	dbPath := flag.String("db", "", "Path to SQLite database")
+	httpAddr := flag.String("http", "", "Start HTTP server on this address (e.g. :8080)")
 	flag.Parse()
 
 	if *showVersion {
@@ -97,6 +101,13 @@ func main() {
 		Config:      cfg,
 		Renderer:    renderPool,
 	})
+
+	if *httpAddr != "" {
+		httpSrv := httpserver.New(db, eng, cfg)
+		log.Printf("HTTP server listening on %s", *httpAddr)
+		log.Fatal(http.ListenAndServe(*httpAddr, httpSrv.Handler()))
+		return
+	}
 
 	srv := mcp.NewServer(mcp.ServerConfig{
 		DB:      db,
