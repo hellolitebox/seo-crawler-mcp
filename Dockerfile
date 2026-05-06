@@ -6,11 +6,15 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -o seo-crawler-mcp .
 
 FROM alpine:3.20
-RUN apk add --no-cache ca-certificates chromium chromium-chromedriver
+# `sqlite` ships the sqlite3 CLI used by scripts/backup.sh; `dcron` runs the daily backup.
+RUN apk add --no-cache ca-certificates chromium chromium-chromedriver sqlite dcron
 WORKDIR /app
 COPY --from=builder /app/seo-crawler-mcp .
-RUN mkdir -p /data
+COPY scripts/backup.sh /app/scripts/backup.sh
+COPY scripts/entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/scripts/backup.sh /app/entrypoint.sh
+RUN mkdir -p /data /data/backups
 VOLUME ["/data"]
 EXPOSE 8080
 ENV CHROMIUM_PATH=/usr/bin/chromium-browser
-CMD ["./seo-crawler-mcp", "--http", ":8080", "--db", "/data/crawls.db"]
+CMD ["/app/entrypoint.sh"]
