@@ -374,17 +374,21 @@ func (s *Server) handleJobActivity(w http.ResponseWriter, r *http.Request, jobID
 	defer rows.Close()
 
 	type activityRow struct {
-		URL        string  `json:"url"`
-		StatusCode int     `json:"statusCode"`
-		TTFBMs     int64   `json:"ttfbMs"`
+		Kind       string  `json:"kind"`
+		URL        string  `json:"url,omitempty"`
+		StatusCode int     `json:"statusCode,omitempty"`
+		TTFBMs     int64   `json:"ttfbMs,omitempty"`
 		FetchedAt  string  `json:"fetchedAt"`
-		RenderMode string  `json:"renderMode"`
+		RenderMode string  `json:"renderMode,omitempty"`
 		Error      *string `json:"error,omitempty"`
+		Phase      string  `json:"phase,omitempty"`
+		Message    string  `json:"message,omitempty"`
 	}
 
 	out := []activityRow{}
 	for rows.Next() {
 		var ar activityRow
+		ar.Kind = "fetch"
 		var errStr sql.NullString
 		var renderMode sql.NullString
 		if scanErr := rows.Scan(&ar.URL, &ar.StatusCode, &ar.TTFBMs, &ar.FetchedAt, &renderMode, &errStr); scanErr != nil {
@@ -398,6 +402,36 @@ func (s *Server) handleJobActivity(w http.ResponseWriter, r *http.Request, jobID
 			ar.RenderMode = renderMode.String
 		}
 		out = append(out, ar)
+	}
+
+	// Also include phase events (post-crawl markers so the log doesn't look stuck)
+	eventRows, eventErr := s.db.Query(`
+		SELECT timestamp, details_json
+		FROM crawl_events
+		WHERE job_id = ? AND event_type = 'phase'
+		ORDER BY id DESC
+		LIMIT 30
+	`, jobID)
+	if eventErr == nil {
+		defer eventRows.Close()
+		for eventRows.Next() {
+			var ts string
+			var detailsJSON sql.NullString
+			if scanErr := eventRows.Scan(&ts, &detailsJSON); scanErr != nil {
+				continue
+			}
+			row := activityRow{Kind: "phase", FetchedAt: ts}
+			if detailsJSON.Valid {
+				var d struct {
+					Phase   string `json:"phase"`
+					Message string `json:"message"`
+				}
+				json.Unmarshal([]byte(detailsJSON.String), &d)
+				row.Phase = d.Phase
+				row.Message = d.Message
+			}
+			out = append(out, row)
+		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{

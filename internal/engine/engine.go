@@ -112,6 +112,17 @@ type persistItem struct {
 	fetchSeq int
 }
 
+// emitPhase records a phase transition event so the live UI can show what the
+// engine is currently doing (post-crawl phases otherwise look idle).
+func (e *Engine) emitPhase(jobID, phase, message string) {
+	if e.db == nil {
+		return
+	}
+	details := fmt.Sprintf(`{"phase":%q,"message":%q}`, phase, message)
+	e.db.InsertEvent(jobID, "phase", &details, nil)
+	log.Printf("engine: phase=%s %s", phase, message)
+}
+
 // RunCrawl executes a full crawl job. Blocks until complete or cancelled.
 func (e *Engine) RunCrawl(ctx context.Context, jobID string) error {
 	// 1. Init: load job, update status
@@ -514,6 +525,7 @@ loop:
 
 	// --- Post-crawl: sitemap gap browser escalation (hybrid/browser mode) ---
 	if completionErr == nil && e.config.RenderMode != config.RenderModeStatic {
+		e.emitPhase(jobID, "sitemap_gap", "checking sitemap URLs missing from crawl (JS render)")
 		escalated := e.sitemapGapEscalation(ctx, jobID)
 		if escalated > 0 {
 			log.Printf("engine: sitemap gap escalation discovered %d new URLs", escalated)
@@ -553,6 +565,7 @@ loop:
 
 	// --- Post-crawl: markdown content negotiation check ---
 	if completionErr == nil {
+		e.emitPhase(jobID, "markdown_negotiation", "checking which pages support text/markdown")
 		e.checkMarkdownNegotiation(ctx, jobID)
 	}
 
@@ -585,16 +598,18 @@ loop:
 
 	// --- Post-crawl: global issue detection + materialization ---
 	if completionErr == nil {
+		e.emitPhase(jobID, "global_issues", "detecting site-wide issues (duplicates, clusters, gaps)")
 		globalCfg := issues.DefaultGlobalConfig()
 		globalCount, globalErr := issues.DetectGlobalIssues(e.db, jobID, globalCfg)
 		if globalErr != nil {
 			log.Printf("engine: global issue detection failed: %v", globalErr)
 		} else {
 			issuesFound.Add(int64(globalCount))
-			log.Printf("engine: detected %d global issues", globalCount)
+			e.emitPhase(jobID, "global_issues_done", fmt.Sprintf("%d global issues detected", globalCount))
 		}
 
 		// Materialize canonical clusters, duplicate clusters, URL groups
+		e.emitPhase(jobID, "materializing", "writing report rollups")
 		if matErr := materialize.Materialize(e.db, jobID); matErr != nil {
 			log.Printf("engine: materialization failed: %v", matErr)
 		}
@@ -1302,6 +1317,7 @@ func (e *Engine) headCheckAssets(ctx context.Context, jobID string) {
 		return
 	}
 
+	e.emitPhase(jobID, "asset_checks", fmt.Sprintf("HEAD-checking %d discovered assets", len(targets)))
 	log.Printf("engine: HEAD-checking %d discovered assets", len(targets))
 
 	// Use a small worker pool to avoid overwhelming hosts
