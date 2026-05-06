@@ -64,6 +64,13 @@ func main() {
 	}
 	defer db.Close()
 
+	// Reap zombie jobs from a previous process that died mid-crawl.
+	if n, err := db.MarkOrphanedJobsFailed("server restarted while crawling"); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to reap orphaned jobs: %v\n", err)
+	} else if n > 0 {
+		fmt.Fprintf(os.Stderr, "reaped %d orphaned job(s)\n", n)
+	}
+
 	guard := ssrf.NewGuard(cfg.AllowPrivateNetworks)
 
 	f := fetcher.New(fetcher.Options{

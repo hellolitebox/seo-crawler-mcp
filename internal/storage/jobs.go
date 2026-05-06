@@ -180,6 +180,25 @@ func (db *DB) ListJobsPaginated(limit, offset int) ([]CrawlJob, error) {
 	return jobs, nil
 }
 
+// MarkOrphanedJobsFailed transitions any jobs left in 'running' or 'queued'
+// state into 'failed'. Called on server startup so jobs that were in-flight
+// when a previous process died don't appear stuck forever in the UI.
+// Returns the number of jobs updated.
+func (db *DB) MarkOrphanedJobsFailed(reason string) (int, error) {
+	res, err := db.Exec(`
+		UPDATE crawl_jobs
+		SET status = 'failed',
+		    finished_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+		    error = ?
+		WHERE status IN ('running', 'queued', 'cancelling')
+	`, reason)
+	if err != nil {
+		return 0, fmt.Errorf("marking orphaned jobs failed: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
+}
+
 // CountJobs returns the total number of jobs in the database.
 func (db *DB) CountJobs() (int, error) {
 	var count int
