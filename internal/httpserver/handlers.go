@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"strings"
+	"strconv"
 	"time"
 
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/dto"
@@ -153,44 +153,18 @@ func (s *Server) handleCrawl(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleJobs dispatches GET /api/jobs/:jobId, GET /api/jobs/:jobId/report, and DELETE /api/jobs/:jobId.
-func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
-	// Strip "/api/jobs/" prefix.
-	path := strings.TrimPrefix(r.URL.Path, "/api/jobs/")
-	// path is now either "<jobId>" or "<jobId>/report"
-	parts := strings.SplitN(path, "/", 2)
-	jobID := parts[0]
-	if jobID == "" {
-		writeError(w, http.StatusBadRequest, "jobId is required")
-		return
-	}
-
-	if len(parts) == 2 && parts[1] == "report" {
-		if r.Method != http.MethodGet {
-			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-			return
-		}
-		s.handleJobReport(w, r, jobID)
-		return
-	}
-
-	if len(parts) == 2 && parts[1] == "activity" {
-		if r.Method != http.MethodGet {
-			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-			return
-		}
-		s.handleJobActivity(w, r, jobID)
-		return
-	}
-
-	switch r.Method {
-	case http.MethodGet:
-		s.handleJobStatus(w, r, jobID)
-	case http.MethodDelete:
-		s.handleJobCancel(w, r, jobID)
-	default:
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-	}
+// V2 wrappers extract jobId from the Go 1.22+ ServeMux path parameters.
+func (s *Server) handleJobStatusV2(w http.ResponseWriter, r *http.Request) {
+	s.handleJobStatus(w, r, r.PathValue("id"))
+}
+func (s *Server) handleJobCancelV2(w http.ResponseWriter, r *http.Request) {
+	s.handleJobCancel(w, r, r.PathValue("id"))
+}
+func (s *Server) handleJobReportV2(w http.ResponseWriter, r *http.Request) {
+	s.handleJobReport(w, r, r.PathValue("id"))
+}
+func (s *Server) handleJobActivityV2(w http.ResponseWriter, r *http.Request) {
+	s.handleJobActivity(w, r, r.PathValue("id"))
 }
 
 // handleJobStatus handles GET /api/jobs/:jobId.
@@ -360,11 +334,8 @@ func (s *Server) handleJobActivity(w http.ResponseWriter, r *http.Request, jobID
 	}
 
 	limit := 30
-	if l := r.URL.Query().Get("limit"); l != "" {
-		fmt.Sscanf(l, "%d", &limit)
-		if limit < 1 || limit > 200 {
-			limit = 30
-		}
+	if n, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && n > 0 && n <= 200 {
+		limit = n
 	}
 
 	rows, err := s.db.Query(`
@@ -447,16 +418,22 @@ func (s *Server) handleJobActivity(w http.ResponseWriter, r *http.Request, jobID
 	})
 }
 
-// handleJobsList returns a list of all crawl jobs (most recent first).
+// handleJobsList returns a paginated list of crawl jobs (most recent first).
 // Used by the UI to render the "Reports" history tab.
+// Query params: ?limit=N (1..200, default 50), ?offset=N (default 0).
 func (s *Server) handleJobsList(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
 	if s.db == nil {
 		writeError(w, http.StatusInternalServerError, "database unavailable")
 		return
+	}
+
+	limit := 50
+	if n, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && n > 0 && n <= 200 {
+		limit = n
+	}
+	offset := 0
+	if n, err := strconv.Atoi(r.URL.Query().Get("offset")); err == nil && n >= 0 {
+		offset = n
 	}
 
 	jobs, err := s.db.ListJobs()
@@ -513,7 +490,18 @@ func (s *Server) handleJobsList(w http.ResponseWriter, r *http.Request) {
 		out = append(out, row)
 	}
 
+	total := len(out)
+	end := offset + limit
+	if offset > total {
+		offset = total
+	}
+	if end > total {
+		end = total
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"jobs": out,
+		"jobs":   out[offset:end],
+		"total":  total,
+		"limit":  limit,
+		"offset": offset,
 	})
 }

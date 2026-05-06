@@ -118,8 +118,18 @@ func (e *Engine) emitPhase(jobID, phase, message string) {
 	if e.db == nil {
 		return
 	}
-	details := fmt.Sprintf(`{"phase":%q,"message":%q}`, phase, message)
-	e.db.InsertEvent(jobID, "phase", &details, nil)
+	payload, err := json.Marshal(struct {
+		Phase   string `json:"phase"`
+		Message string `json:"message"`
+	}{phase, message})
+	if err != nil {
+		log.Printf("engine: emitPhase marshal failed: %v", err)
+		return
+	}
+	details := string(payload)
+	if _, err := e.db.InsertEvent(jobID, "phase", &details, nil); err != nil {
+		log.Printf("engine: emitPhase insert failed: %v", err)
+	}
 	log.Printf("engine: phase=%s %s", phase, message)
 }
 
@@ -335,12 +345,25 @@ func (e *Engine) RunCrawl(ctx context.Context, jobID string) error {
 	// Periodic counter flush: write in-memory atomics to DB every 2 s so
 	// polling clients see live progress instead of all-zeros until completion.
 	counterTicker := time.NewTicker(2 * time.Second)
+	counterDone := make(chan struct{})
 	go func() {
-		for range counterTicker.C {
-			e.db.UpdateJobCounters(jobID, int(pagesCrawled.Load()), int(urlsDiscovered.Load()), int(issuesFound.Load()))
+		for {
+			select {
+			case <-counterDone:
+				return
+			case <-ctx.Done():
+				return
+			case <-counterTicker.C:
+				if err := e.db.UpdateJobCounters(jobID, int(pagesCrawled.Load()), int(urlsDiscovered.Load()), int(issuesFound.Load())); err != nil {
+					log.Printf("engine: counter flush failed: %v", err)
+				}
+			}
 		}
 	}()
-	defer counterTicker.Stop()
+	defer func() {
+		counterTicker.Stop()
+		close(counterDone)
+	}()
 
 	// inFlight tracks items between dispatch and persist completion.
 	var inFlight atomic.Int64
