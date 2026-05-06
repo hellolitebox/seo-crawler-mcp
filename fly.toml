@@ -22,6 +22,8 @@ primary_region = "iad"
     timeout = "5s"
 
 [vm]
-  memory = "512mb"
-  cpu_kind = "shared"
-  cpus = 1
+  # 4GB needed because Chromium gets killed by OOM on shared-cpu-1x/512MB during
+  # JS-heavy crawls. performance-2x gives 2 dedicated cores + 4GB.
+  memory = "4gb"
+  cpu_kind = "performance"
+  cpus = 2
