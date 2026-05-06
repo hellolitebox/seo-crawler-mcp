@@ -2,6 +2,7 @@ package httpserver
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -173,6 +174,15 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if len(parts) == 2 && parts[1] == "activity" {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		s.handleJobActivity(w, r, jobID)
+		return
+	}
+
 	switch r.Method {
 	case http.MethodGet:
 		s.handleJobStatus(w, r, jobID)
@@ -332,4 +342,65 @@ func (s *Server) handleJobReport(w http.ResponseWriter, r *http.Request, jobID s
 	}
 
 	writeJSON(w, http.StatusOK, report)
+}
+
+// handleJobActivity returns recent fetch activity for a job (live log feed).
+func (s *Server) handleJobActivity(w http.ResponseWriter, r *http.Request, jobID string) {
+	if s.db == nil {
+		writeError(w, http.StatusInternalServerError, "database unavailable")
+		return
+	}
+
+	limit := 30
+	if l := r.URL.Query().Get("limit"); l != "" {
+		fmt.Sscanf(l, "%d", &limit)
+		if limit < 1 || limit > 200 {
+			limit = 30
+		}
+	}
+
+	rows, err := s.db.Query(`
+		SELECT u.normalized_url, f.status_code, f.ttfb_ms, f.fetched_at, f.render_mode, f.error
+		FROM fetches f
+		JOIN urls u ON u.id = f.requested_url_id
+		WHERE f.job_id = ?
+		ORDER BY f.id DESC
+		LIMIT ?
+	`, jobID, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("querying activity: %v", err))
+		return
+	}
+	defer rows.Close()
+
+	type activityRow struct {
+		URL        string  `json:"url"`
+		StatusCode int     `json:"statusCode"`
+		TTFBMs     int64   `json:"ttfbMs"`
+		FetchedAt  string  `json:"fetchedAt"`
+		RenderMode string  `json:"renderMode"`
+		Error      *string `json:"error,omitempty"`
+	}
+
+	out := []activityRow{}
+	for rows.Next() {
+		var ar activityRow
+		var errStr sql.NullString
+		var renderMode sql.NullString
+		if scanErr := rows.Scan(&ar.URL, &ar.StatusCode, &ar.TTFBMs, &ar.FetchedAt, &renderMode, &errStr); scanErr != nil {
+			continue
+		}
+		if errStr.Valid {
+			s := errStr.String
+			ar.Error = &s
+		}
+		if renderMode.Valid {
+			ar.RenderMode = renderMode.String
+		}
+		out = append(out, ar)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"activity": out,
+	})
 }
