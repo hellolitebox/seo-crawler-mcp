@@ -1933,9 +1933,7 @@ func (e *Engine) checkMarkdownNegotiation(ctx context.Context, jobID string) {
 
 	log.Printf("engine: checking markdown content negotiation on %d pages", len(urls))
 
-	client := &http.Client{Timeout: 10 * time.Second}
-	supported := 0
-	total := 0
+	client := &http.Client{Timeout: 5 * time.Second} // shorter timeout: most servers respond fast or 404
 
 	type mdResult struct {
 		URL           string `json:"url"`
@@ -1943,49 +1941,79 @@ func (e *Engine) checkMarkdownNegotiation(ctx context.Context, jobID string) {
 		ContentType   string `json:"contentType"`
 		ContentLength int64  `json:"contentLength"`
 	}
-	var results []mdResult
 
-	for _, pageURL := range urls {
-		if ctx.Err() != nil {
-			break
-		}
-		total++
+	// Parallelize: 16 concurrent requests turn a 10-min sequential pass into
+	// ~40s for 2K pages. The job table progress counters keep moving thanks to
+	// the periodic flush ticker, and we also emit a progress phase event
+	// every `progressEvery` pages so the live log keeps moving.
+	const (
+		workers       = 16
+		progressEvery = 200
+	)
 
-		req, err := http.NewRequestWithContext(ctx, "GET", pageURL, nil)
-		if err != nil {
-			results = append(results, mdResult{URL: pageURL})
-			continue
-		}
-		req.Header.Set("Accept", "text/markdown")
-		req.Header.Set("User-Agent", e.config.UserAgent)
+	var (
+		results    = make([]mdResult, len(urls))
+		supported  atomic.Int64
+		processed  atomic.Int64
+		wg         sync.WaitGroup
+		urlIdxChan = make(chan int, workers*2)
+	)
 
-		resp, err := client.Do(req)
-		if err != nil {
-			results = append(results, mdResult{URL: pageURL})
-			continue
-		}
-		ct := resp.Header.Get("Content-Type")
-		cl := resp.ContentLength
-		resp.Body.Close()
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for idx := range urlIdxChan {
+				if ctx.Err() != nil {
+					return
+				}
+				pageURL := urls[idx]
+				res := mdResult{URL: pageURL}
 
-		supports := strings.Contains(strings.ToLower(ct), "text/markdown")
-		if supports {
-			supported++
-		}
-		results = append(results, mdResult{
-			URL:           pageURL,
-			Supports:      supports,
-			ContentType:   ct,
-			ContentLength: cl,
-		})
+				req, err := http.NewRequestWithContext(ctx, "GET", pageURL, nil)
+				if err == nil {
+					req.Header.Set("Accept", "text/markdown")
+					req.Header.Set("User-Agent", e.config.UserAgent)
+					if resp, doErr := client.Do(req); doErr == nil {
+						res.ContentType = resp.Header.Get("Content-Type")
+						res.ContentLength = resp.ContentLength
+						res.Supports = strings.Contains(strings.ToLower(res.ContentType), "text/markdown")
+						resp.Body.Close()
+						if res.Supports {
+							supported.Add(1)
+						}
+					}
+				}
+				results[idx] = res
+
+				if n := processed.Add(1); n%progressEvery == 0 || int(n) == len(urls) {
+					e.emitPhase(jobID, "markdown_progress", fmt.Sprintf("checked %d/%d pages", n, len(urls)))
+				}
+			}
+		}()
 	}
+
+	for i := range urls {
+		select {
+		case <-ctx.Done():
+			close(urlIdxChan)
+			wg.Wait()
+			return
+		case urlIdxChan <- i:
+		}
+	}
+	close(urlIdxChan)
+	wg.Wait()
+
+	total := int(processed.Load())
+	supportedCount := int(supported.Load())
 
 	// Store as a crawl event
 	detailsJSON, _ := json.Marshal(map[string]interface{}{
-		"totalChecked":   total,
-		"supported":      supported,
-		"unsupported":    total - supported,
-		"pages":          results,
+		"totalChecked": total,
+		"supported":    supportedCount,
+		"unsupported":  total - supportedCount,
+		"pages":        results,
 	})
 	details := string(detailsJSON)
 	e.db.InsertEvent(jobID, "markdown_negotiation", &details, nil)
@@ -2021,7 +2049,7 @@ func (e *Engine) checkMarkdownNegotiation(ctx context.Context, jobID string) {
 		}
 	}
 
-	log.Printf("engine: markdown negotiation: %d/%d pages support Accept: text/markdown", supported, total)
+	log.Printf("engine: markdown negotiation: %d/%d pages support Accept: text/markdown", supportedCount, total)
 }
 
 // runTextQualityChecks runs LanguageTool on all crawled pages and creates
