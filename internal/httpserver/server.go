@@ -3,8 +3,10 @@ package httpserver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -18,14 +20,17 @@ import (
 
 // Server exposes the crawler over HTTP.
 type Server struct {
-	db       *storage.DB
-	engine   *engine.Engine
-	config   *config.Config
-	limiter  *rateLimiter
-	purger   *purgeWorker
-	allowed  []string      // allowed CORS origins
-	queue    chan struct{} // signals the queue worker to check for pending jobs
-	crawlMu  sync.Mutex    // serializes the count+create+promote block in handleCrawl and queueWorker
+	db      *storage.DB
+	engine  *engine.Engine
+	config  *config.Config
+	limiter *rateLimiter
+	purger  *purgeWorker
+	allowed []string      // allowed CORS origins
+	queue   chan struct{} // signals the queue worker to check for pending jobs
+	crawlMu sync.Mutex    // serializes the count+create+promote block in handleCrawl and queueWorker
+	runMu   sync.Mutex
+	running map[string]context.CancelCauseFunc
+	rootCtx context.Context
 }
 
 // New creates a new HTTP server.
@@ -50,6 +55,8 @@ func New(db *storage.DB, eng *engine.Engine, cfg *config.Config) *Server {
 		limiter: newRateLimiter(10, time.Hour), // 10 crawls per IP per hour
 		purger:  newPurgeWorker(db),
 		queue:   make(chan struct{}, 1),
+		running: map[string]context.CancelCauseFunc{},
+		rootCtx: context.Background(),
 	}
 	go s.queueWorker()
 	// Send a startup signal to pick up any queued jobs that survived a restart
@@ -115,13 +122,6 @@ func (s *Server) queueWorker() {
 			s.crawlMu.Unlock()
 			continue
 		}
-		// Promote queued -> running before unlocking so the next iteration
-		// (or a concurrent handleCrawl) sees an accurate count.
-		if err := s.db.UpdateJobStatus(job.ID, "running"); err != nil {
-			s.crawlMu.Unlock()
-			slog.Error("queue worker: promoting queued job", "job", job.ID, "err", err)
-			continue
-		}
 		s.crawlMu.Unlock()
 
 		go s.runCrawlJob(job.ID)
@@ -146,7 +146,54 @@ func (s *Server) runCrawlJob(jobID string) {
 			}
 		}
 	}()
-	_ = s.engine.RunCrawl(context.Background(), jobID)
+	ctx, cancel, ok := s.registerRun(jobID)
+	if !ok {
+		return
+	}
+	defer s.unregisterRun(jobID)
+	defer cancel(nil)
+
+	if err := s.engine.RunCrawl(ctx, jobID); err != nil {
+		status := "failed"
+		msg := err.Error()
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || strings.Contains(msg, "context canceled") {
+			status = "cancelled"
+		}
+		_ = s.db.UpdateJobFinished(jobID, status, &msg)
+	}
+}
+
+func (s *Server) registerRun(jobID string) (context.Context, context.CancelCauseFunc, bool) {
+	parent := s.rootCtx
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithCancelCause(parent)
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
+	if _, exists := s.running[jobID]; exists {
+		cancel(fmt.Errorf("duplicate crawl run for job %s", jobID))
+		return nil, nil, false
+	}
+	s.running[jobID] = cancel
+	return ctx, cancel, true
+}
+
+func (s *Server) unregisterRun(jobID string) {
+	s.runMu.Lock()
+	delete(s.running, jobID)
+	s.runMu.Unlock()
+}
+
+func (s *Server) cancelRun(jobID string, cause error) bool {
+	s.runMu.Lock()
+	cancel := s.running[jobID]
+	s.runMu.Unlock()
+	if cancel == nil {
+		return false
+	}
+	cancel(cause)
+	return true
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -167,7 +214,7 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 			}
 		}
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -202,12 +249,18 @@ func (s *Server) rateLimitMiddleware(next http.HandlerFunc) http.HandlerFunc {
 }
 
 func clientIP(r *http.Request) string {
+	if flyIP := strings.TrimSpace(r.Header.Get("Fly-Client-IP")); flyIP != "" {
+		return flyIP
+	}
 	// Trust the X-Forwarded-For from Fly's proxy.
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 		if comma := strings.IndexByte(xff, ','); comma > 0 {
 			return strings.TrimSpace(xff[:comma])
 		}
 		return strings.TrimSpace(xff)
+	}
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return host
 	}
 	return r.RemoteAddr
 }

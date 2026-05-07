@@ -1,12 +1,16 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/config"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/engine"
@@ -122,8 +126,30 @@ func main() {
 		if len(pendingPurges) > 0 {
 			fmt.Fprintf(os.Stderr, "resumed %d pending purge(s)\n", len(pendingPurges))
 		}
-		log.Printf("HTTP server listening on %s", *httpAddr)
-		log.Fatal(http.ListenAndServe(*httpAddr, httpSrv.Handler()))
+		srv := &http.Server{
+			Addr:              *httpAddr,
+			Handler:           httpSrv.Handler(),
+			ReadHeaderTimeout: 5 * time.Second,
+			ReadTimeout:       30 * time.Second,
+			WriteTimeout:      0, // Keep SSE streams viable.
+			IdleTimeout:       120 * time.Second,
+		}
+
+		go func() {
+			log.Printf("HTTP server listening on %s", *httpAddr)
+			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Fatalf("http server: %v", err)
+			}
+		}()
+
+		stop := make(chan os.Signal, 1)
+		signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+		<-stop
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(ctx); err != nil {
+			log.Printf("http shutdown: %v", err)
+		}
 		return
 	}
 

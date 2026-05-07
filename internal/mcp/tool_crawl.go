@@ -53,6 +53,29 @@ type crawlStatusResult struct {
 	IssuesByType   map[string]int `json:"issuesByType,omitempty"`
 }
 
+func (s *Server) registerRun(jobID string, cancel context.CancelCauseFunc) {
+	s.runMu.Lock()
+	s.running[jobID] = cancel
+	s.runMu.Unlock()
+}
+
+func (s *Server) unregisterRun(jobID string) {
+	s.runMu.Lock()
+	delete(s.running, jobID)
+	s.runMu.Unlock()
+}
+
+func (s *Server) cancelRun(jobID string, cause error) bool {
+	s.runMu.Lock()
+	cancel := s.running[jobID]
+	s.runMu.Unlock()
+	if cancel == nil {
+		return false
+	}
+	cancel(cause)
+	return true
+}
+
 func (s *Server) handleCrawlSite(ctx context.Context, req gomcp.CallToolRequest) (*gomcp.CallToolResult, error) {
 	args := req.GetArguments()
 
@@ -209,7 +232,20 @@ func (s *Server) handleCrawlSite(ctx context.Context, req gomcp.CallToolRequest)
 	// Start crawl in background.
 	if s.engine != nil {
 		go func() {
-			_ = s.engine.RunCrawl(context.Background(), job.ID)
+			ctx, cancel := context.WithCancelCause(context.Background())
+			s.registerRun(job.ID, cancel)
+			defer s.unregisterRun(job.ID)
+			defer cancel(nil)
+			defer func() {
+				if r := recover(); r != nil {
+					msg := fmt.Sprintf("panic: %v", r)
+					_ = s.db.UpdateJobFinished(job.ID, "failed", &msg)
+				}
+			}()
+			if err := s.engine.RunCrawl(ctx, job.ID); err != nil && ctx.Err() == nil {
+				msg := err.Error()
+				_ = s.db.UpdateJobFinished(job.ID, "failed", &msg)
+			}
 			// Notify clients when crawl completes
 			s.mcpServer.SendNotificationToAllClients(gomcp.MethodNotificationResourceUpdated, map[string]any{
 				"uri": fmt.Sprintf("seo-crawler://jobs/%s", job.ID),
@@ -317,7 +353,7 @@ func (s *Server) runDryRun(ctx context.Context, jobID string, seedURLs []string)
 			continue
 		}
 
-		fetchResult, err := s.fetcher.Fetch(seedURL)
+		fetchResult, err := s.fetcher.FetchContext(ctx, seedURL)
 		if err != nil {
 			result.SeedIssues = append(result.SeedIssues, dryRunSeedIssue{URL: seedURL, Issue: fmt.Sprintf("fetch error: %v", err)})
 			continue
@@ -354,7 +390,11 @@ func (s *Server) runDryRun(ctx context.Context, jobID string, seedURLs []string)
 	for host := range hostsSeen {
 		// Fetch robots.txt.
 		robotsURL := fmt.Sprintf("https://%s/robots.txt", host)
-		resp, err := client.Get(robotsURL)
+		req, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, robotsURL, nil)
+		if reqErr != nil {
+			continue
+		}
+		resp, err := client.Do(req)
 		if err == nil && resp.StatusCode == 200 {
 			bodyBytes := make([]byte, 0, 32*1024)
 			buf := make([]byte, 4096)
@@ -375,7 +415,7 @@ func (s *Server) runDryRun(ctx context.Context, jobID string, seedURLs []string)
 			rf, parseErr := robots.Parse(string(bodyBytes))
 			if parseErr == nil {
 				for _, smURL := range rf.Sitemaps {
-					entries, _, smErr := sitemap.FetchAndParse(smURL, 10000, client)
+					entries, _, smErr := sitemap.FetchAndParseContext(ctx, smURL, 10000, client)
 					if smErr == nil {
 						sitemapTotal += len(entries)
 						for _, e := range entries {
@@ -428,6 +468,7 @@ func (s *Server) handleCancelCrawl(ctx context.Context, req gomcp.CallToolReques
 	if err := s.db.UpdateJobStatus(jobID, "cancelling"); err != nil {
 		return gomcp.NewToolResultError(fmt.Sprintf("cancelling job %q: %v", jobID, err)), nil
 	}
+	s.cancelRun(jobID, context.Canceled)
 
 	// Notify clients that the job resource was updated
 	s.mcpServer.SendNotificationToAllClients(gomcp.MethodNotificationResourceUpdated, map[string]any{

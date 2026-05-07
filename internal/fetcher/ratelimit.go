@@ -1,6 +1,7 @@
 package fetcher
 
 import (
+	"context"
 	"sync"
 	"time"
 )
@@ -57,23 +58,41 @@ func (rl *RateLimiter) getState(host string) *hostState {
 
 // Acquire blocks until a slot is available for the host, respecting crawl delay.
 func (rl *RateLimiter) Acquire(host string) {
+	_ = rl.AcquireContext(context.Background(), host)
+}
+
+// AcquireContext blocks until a slot is available for the host, respecting crawl delay.
+// If the context is cancelled while waiting, no slot is consumed.
+func (rl *RateLimiter) AcquireContext(ctx context.Context, host string) error {
 	state := rl.getState(host)
 
 	// Wait for semaphore slot.
-	<-state.sem
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-state.sem:
+	}
 
 	// Enforce crawl delay.
 	state.mu.Lock()
 	if state.delay > 0 && !state.lastFetch.IsZero() {
 		elapsed := time.Since(state.lastFetch)
 		if elapsed < state.delay {
+			wait := state.delay - elapsed
 			state.mu.Unlock()
-			time.Sleep(state.delay - elapsed)
+			select {
+			case <-ctx.Done():
+				state.sem <- struct{}{}
+				return ctx.Err()
+			case <-time.After(wait):
+			}
 			state.mu.Lock()
 		}
 	}
 	state.lastFetch = time.Now()
 	state.mu.Unlock()
+
+	return nil
 }
 
 // Release returns a slot for the host.

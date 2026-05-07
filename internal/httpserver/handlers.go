@@ -1,6 +1,7 @@
 package httpserver
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/dto"
+	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/ssrf"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/storage"
 )
 
@@ -32,6 +34,8 @@ func (s *Server) handleCrawl(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+
 	var body struct {
 		URL        string `json:"url"`
 		MaxPages   int    `json:"maxPages"`
@@ -51,6 +55,21 @@ func (s *Server) handleCrawl(w http.ResponseWriter, r *http.Request) {
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid URL %q: must be http or https", body.URL))
 		return
+	}
+	if s.config == nil || s.config.SSRFProtection {
+		allowPrivate := false
+		if s.config != nil {
+			allowPrivate = s.config.AllowPrivateNetworks
+		}
+		guard := ssrf.NewGuard(allowPrivate)
+		if err := guard.ValidateURL(body.URL); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err := guard.ValidateHost(parsed.Hostname()); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 	}
 
 	maxPages := 500
@@ -147,15 +166,6 @@ func (s *Server) handleCrawl(w http.ResponseWriter, r *http.Request) {
 	}
 
 	runNow := activeCount < maxConcurrent
-	if runNow {
-		// Promote to 'running' inside the lock so the next caller's
-		// CountActiveJobs / CountRunningJobs sees this slot taken.
-		if err := s.db.UpdateJobStatus(job.ID, "running"); err != nil {
-			s.crawlMu.Unlock()
-			writeError(w, http.StatusInternalServerError, fmt.Sprintf("promoting job: %v", err))
-			return
-		}
-	}
 	s.crawlMu.Unlock()
 
 	if !runNow {
@@ -177,7 +187,7 @@ func (s *Server) handleCrawl(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusAccepted, map[string]string{
 		"jobId":  job.ID,
-		"status": "running",
+		"status": "queued",
 	})
 }
 
@@ -279,6 +289,7 @@ func (s *Server) handleJobCancel(w http.ResponseWriter, r *http.Request, jobID s
 			writeError(w, http.StatusInternalServerError, fmt.Sprintf("cancelling job: %v", err))
 			return
 		}
+		s.cancelRun(jobID, context.Canceled)
 		writeJSON(w, http.StatusOK, map[string]string{"jobId": jobID, "status": "cancelling"})
 		return
 	}
@@ -715,4 +726,3 @@ func (s *Server) handleJobsList(w http.ResponseWriter, r *http.Request) {
 		"offset": offset,
 	})
 }
-

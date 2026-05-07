@@ -3,6 +3,7 @@ package mcp
 
 import (
 	"context"
+	"sync"
 
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/config"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/engine"
@@ -19,6 +20,8 @@ type Server struct {
 	fetcher   *fetcher.Fetcher
 	config    *config.Config
 	mcpServer *mcpserver.MCPServer
+	runMu     sync.Mutex
+	running   map[string]context.CancelCauseFunc
 }
 
 // ServerConfig holds all dependencies for the MCP server.
@@ -36,6 +39,7 @@ func NewServer(cfg ServerConfig) *Server {
 		engine:  cfg.Engine,
 		fetcher: cfg.Fetcher,
 		config:  cfg.Config,
+		running: map[string]context.CancelCauseFunc{},
 	}
 
 	mcpSrv := mcpserver.NewMCPServer(

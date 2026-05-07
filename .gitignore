@@ -1,1 +1,17 @@
-seo-crawler.db
+# Local binaries / builds
+/seo-crawler-mcp
+*.test
+
+# Databases
+*.db
+*.db-wal
+*.db-shm
+
+# Env / coverage
+.env
+.env.*
+coverage.out
+coverage/
+
+# OS/editor
+.DS_Store

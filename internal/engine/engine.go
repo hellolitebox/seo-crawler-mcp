@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/url"
@@ -110,6 +111,16 @@ type parseResult struct {
 type persistItem struct {
 	parseResult
 	fetchSeq int
+}
+
+func recoverWorker(cancel context.CancelCauseFunc, name string) {
+	if r := recover(); r != nil {
+		cancel(fmt.Errorf("%s panic: %v", name, r))
+	}
+}
+
+func isContextCancellation(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 // emitPhase records a phase transition event so the live UI can show what the
@@ -337,6 +348,31 @@ func (e *Engine) RunCrawl(ctx context.Context, jobID string) error {
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
 
+	statusWatchDone := make(chan struct{})
+	go func() {
+		defer recoverWorker(cancel, "status watcher")
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-statusWatchDone:
+				return
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				job, err := e.db.GetJob(jobID)
+				if err != nil {
+					continue
+				}
+				if job.Status == "cancelling" {
+					cancel(context.Canceled)
+					return
+				}
+			}
+		}
+	}()
+	defer close(statusWatchDone)
+
 	// Counters for job stats
 	var urlsDiscovered atomic.Int64
 	urlsDiscovered.Store(int64(q.Len()))
@@ -372,12 +408,18 @@ func (e *Engine) RunCrawl(ctx context.Context, jobID string) error {
 	var persisterWg sync.WaitGroup
 	persisterWg.Add(1)
 	go func() {
+		defer recoverWorker(cancel, "persister")
 		defer persisterWg.Done()
 		for item := range persistQueue {
 			if pErr := e.persistItem(ctx, jobID, item); pErr != nil {
 				var lastErr error
 				for attempt := 1; attempt <= 3; attempt++ {
-					time.Sleep(time.Duration(attempt) * 100 * time.Millisecond)
+					select {
+					case <-time.After(time.Duration(attempt) * 100 * time.Millisecond):
+					case <-ctx.Done():
+						inFlight.Add(-1)
+						return
+					}
 					lastErr = e.persistItem(ctx, jobID, item)
 					if lastErr == nil {
 						break
@@ -398,13 +440,19 @@ func (e *Engine) RunCrawl(ctx context.Context, jobID string) error {
 	for range parserCount {
 		parserWg.Add(1)
 		go func() {
+			defer recoverWorker(cancel, "parser")
 			defer parserWg.Done()
 			for fr := range fetchResults {
 				pr := e.processParseResult(ctx, jobID, fr, q, &pagesCrawled, &urlsDiscovered, &queryVariantsMu, queryVariants)
 				issuesFound.Add(int64(len(pr.issues)))
-				persistQueue <- persistItem{
+				select {
+				case persistQueue <- persistItem{
 					parseResult: pr,
 					fetchSeq:    fr.fetchSeq,
+				}:
+				case <-ctx.Done():
+					inFlight.Add(-1)
+					return
 				}
 			}
 		}()
@@ -415,6 +463,7 @@ func (e *Engine) RunCrawl(ctx context.Context, jobID string) error {
 	for range concurrency {
 		fetcherWg.Add(1)
 		go func() {
+			defer recoverWorker(cancel, "fetcher")
 			defer fetcherWg.Done()
 			for item := range fetchQueue {
 				// Check scope
@@ -439,13 +488,16 @@ func (e *Engine) RunCrawl(ctx context.Context, jobID string) error {
 				}
 
 				// Acquire rate limiter
-				e.rateLimiter.Acquire(item.Host)
+				if err := e.rateLimiter.AcquireContext(ctx, item.Host); err != nil {
+					inFlight.Add(-1)
+					return
+				}
 
 				// Get fetch sequence (must be unique per fetch)
 				seq := int(fetchSeq.Add(1))
 
 				// Fetch
-				result, fetchErr := e.fetcher.Fetch(item.NormalizedURL)
+				result, fetchErr := e.fetcher.FetchContext(ctx, item.NormalizedURL)
 
 				// Release rate limiter
 				e.rateLimiter.Release(item.Host)
@@ -572,6 +624,7 @@ loop:
 		if e.config != nil && e.config.PSIAPIKey != "" {
 			auditWg.Add(1)
 			go func() {
+				defer recoverWorker(cancel, "lighthouse audits")
 				defer auditWg.Done()
 				e.runLighthouseAudits(ctx, jobID)
 			}()
@@ -579,6 +632,7 @@ loop:
 		if renderer.IsPlaywrightAvailable() {
 			auditWg.Add(1)
 			go func() {
+				defer recoverWorker(cancel, "axe audits")
 				defer auditWg.Done()
 				e.runAxeAudits(ctx, jobID)
 			}()
@@ -652,9 +706,10 @@ loop:
 
 	// Set final status
 	if completionErr != nil {
-		if ctx.Err() != nil {
-			e.db.UpdateJobFinished(jobID, "cancelled", nil)
-			return ctx.Err()
+		if isContextCancellation(completionErr) || isContextCancellation(context.Cause(ctx)) {
+			msg := completionErr.Error()
+			e.db.UpdateJobFinished(jobID, "cancelled", &msg)
+			return context.Canceled
 		}
 		errMsg := completionErr.Error()
 		e.db.UpdateJobFinished(jobID, "failed", &errMsg)
@@ -772,69 +827,69 @@ func (e *Engine) processParseResult(
 	}
 
 	pageCtx := issues.PageContext{
-		StatusCode:           fr.result.StatusCode,
-		RedirectHopCount:     len(fr.result.RedirectHops),
-		RedirectLoopDetected: fr.result.RedirectLoopDetected,
-		RedirectHopsExceeded: fr.result.RedirectHopsExceeded,
-		TTFBMS:               fr.result.TTFBMS,
-		ContentType:          fr.result.ContentType,
-		Title:                page.Title,
-		TitleLength:          page.TitleLength,
-		MetaDescription:      page.MetaDescription,
-		DescriptionLength:    page.DescriptionLength,
-		MetaRobots:           page.MetaRobots,
-		XRobotsTag:           page.XRobotsTag,
-		CanonicalType:        page.CanonicalType,
-		H1Count:              len(page.Headings.H1),
-		OGTitle:              page.OpenGraph.Title,
-		OGDescription:        page.OpenGraph.Description,
-		OGImage:              page.OpenGraph.Image,
-		OGUrl:                page.OpenGraph.URL,
-		OGType:               page.OpenGraph.Type,
-		TwitterCard:          page.TwitterCard.Card,
-		TwitterTitle:         page.TwitterCard.Title,
-		TwitterDescription:   page.TwitterCard.Description,
-		TwitterImage:         page.TwitterCard.Image,
-		JSONLDBlocks:         len(page.JSONLDBlocks),
-		MalformedJSONLD:      hasMalformedJSONLD(page.JSONLDBlocks),
-		JSONLDRaw:            marshalJSONLDBlocks(page.JSONLDBlocks),
-		WordCount:            page.ExtractedWordCount,
-		MainContentWordCount: page.MainContentWordCount,
-		ImagesWithoutAlt:     countImagesWithoutAlt(page.Images),
-		ImagesWithEmptyAlt:   countImagesWithEmptyAlt(page.Images),
-		JSSuspect:             page.JSSuspect,
-		ScriptCount:           page.ScriptCount,
-		HasSPARoot:            page.HasSPARoot,
-		TitleOutsideHead:           page.TitleOutsideHead,
-		MetaRobotsOutsideHead:      page.MetaRobotsOutsideHead,
-		H1s:                        page.Headings.H1,
-		H2s:                        page.Headings.H2,
-		TitleCount:                 page.TitleCount,
-		DescriptionCount:           page.DescriptionCount,
-		MetaDescriptionOutsideHead: page.MetaDescriptionOutsideHead,
-		FirstHeadingLevel:          page.FirstHeadingLevel,
-		H1AltTextOnly:              page.H1AltTextOnly,
-		CanonicalCount:             page.CanonicalCount,
-		CanonicalRaw:               page.CanonicalRaw,
-		CanonicalOutsideHead:       page.CanonicalOutsideHead,
-		Images:                        page.Images,
-		InternalOutlinkCount:          internalOutlinkCount,
-		NonDescriptiveAnchorCount:     nonDescriptiveCount,
-		NonDescriptiveAnchorExamples:  nonDescriptiveExamples,
-		InternalNofollowCount:         internalNofollowCount,
-		PageURL:                       fr.url,
-		ResponseHeaders:               fr.result.ResponseHeaders,
-		Hreflangs:                     page.Hreflangs,
-		FormInsecureActions:           page.FormInsecureActions,
-		ProtocolRelativeCount:         page.ProtocolRelativeCount,
-		HreflangOutsideHead:           page.HreflangOutsideHead,
-		InvalidHTMLInHead:             page.InvalidHTMLInHead,
-		HeadTagCount:                  page.HeadTagCount,
-		BodyTagCount:                  page.BodyTagCount,
-		BodySize:                      fr.result.BodySize,
-		TextContent:                   page.ExtractedText,
-		UnsafeCrossOriginCount:        unsafeCrossOriginCount,
-		UnsafeCrossOriginExamples:     unsafeCrossOriginExamples,
+		StatusCode:                   fr.result.StatusCode,
+		RedirectHopCount:             len(fr.result.RedirectHops),
+		RedirectLoopDetected:         fr.result.RedirectLoopDetected,
+		RedirectHopsExceeded:         fr.result.RedirectHopsExceeded,
+		TTFBMS:                       fr.result.TTFBMS,
+		ContentType:                  fr.result.ContentType,
+		Title:                        page.Title,
+		TitleLength:                  page.TitleLength,
+		MetaDescription:              page.MetaDescription,
+		DescriptionLength:            page.DescriptionLength,
+		MetaRobots:                   page.MetaRobots,
+		XRobotsTag:                   page.XRobotsTag,
+		CanonicalType:                page.CanonicalType,
+		H1Count:                      len(page.Headings.H1),
+		OGTitle:                      page.OpenGraph.Title,
+		OGDescription:                page.OpenGraph.Description,
+		OGImage:                      page.OpenGraph.Image,
+		OGUrl:                        page.OpenGraph.URL,
+		OGType:                       page.OpenGraph.Type,
+		TwitterCard:                  page.TwitterCard.Card,
+		TwitterTitle:                 page.TwitterCard.Title,
+		TwitterDescription:           page.TwitterCard.Description,
+		TwitterImage:                 page.TwitterCard.Image,
+		JSONLDBlocks:                 len(page.JSONLDBlocks),
+		MalformedJSONLD:              hasMalformedJSONLD(page.JSONLDBlocks),
+		JSONLDRaw:                    marshalJSONLDBlocks(page.JSONLDBlocks),
+		WordCount:                    page.ExtractedWordCount,
+		MainContentWordCount:         page.MainContentWordCount,
+		ImagesWithoutAlt:             countImagesWithoutAlt(page.Images),
+		ImagesWithEmptyAlt:           countImagesWithEmptyAlt(page.Images),
+		JSSuspect:                    page.JSSuspect,
+		ScriptCount:                  page.ScriptCount,
+		HasSPARoot:                   page.HasSPARoot,
+		TitleOutsideHead:             page.TitleOutsideHead,
+		MetaRobotsOutsideHead:        page.MetaRobotsOutsideHead,
+		H1s:                          page.Headings.H1,
+		H2s:                          page.Headings.H2,
+		TitleCount:                   page.TitleCount,
+		DescriptionCount:             page.DescriptionCount,
+		MetaDescriptionOutsideHead:   page.MetaDescriptionOutsideHead,
+		FirstHeadingLevel:            page.FirstHeadingLevel,
+		H1AltTextOnly:                page.H1AltTextOnly,
+		CanonicalCount:               page.CanonicalCount,
+		CanonicalRaw:                 page.CanonicalRaw,
+		CanonicalOutsideHead:         page.CanonicalOutsideHead,
+		Images:                       page.Images,
+		InternalOutlinkCount:         internalOutlinkCount,
+		NonDescriptiveAnchorCount:    nonDescriptiveCount,
+		NonDescriptiveAnchorExamples: nonDescriptiveExamples,
+		InternalNofollowCount:        internalNofollowCount,
+		PageURL:                      fr.url,
+		ResponseHeaders:              fr.result.ResponseHeaders,
+		Hreflangs:                    page.Hreflangs,
+		FormInsecureActions:          page.FormInsecureActions,
+		ProtocolRelativeCount:        page.ProtocolRelativeCount,
+		HreflangOutsideHead:          page.HreflangOutsideHead,
+		InvalidHTMLInHead:            page.InvalidHTMLInHead,
+		HeadTagCount:                 page.HeadTagCount,
+		BodyTagCount:                 page.BodyTagCount,
+		BodySize:                     fr.result.BodySize,
+		TextContent:                  page.ExtractedText,
+		UnsafeCrossOriginCount:       unsafeCrossOriginCount,
+		UnsafeCrossOriginExamples:    unsafeCrossOriginExamples,
 	}
 	pr.issues = issues.DetectPageLocalIssues(pageCtx, thresholds, fr.depth)
 
@@ -1369,7 +1424,7 @@ func (e *Engine) headCheckAssets(ctx context.Context, jobID string) {
 				if ctx.Err() != nil {
 					return
 				}
-				headResult, headErr := e.fetcher.Head(t.url)
+				headResult, headErr := e.fetcher.HeadContext(ctx, t.url)
 				var contentType *string
 				var statusCode *int
 				var contentLength *int64
@@ -1540,7 +1595,7 @@ func (e *Engine) persistItem(ctx context.Context, jobID string, item persistItem
 		// HEAD request for out-of-scope canonical/hreflang targets
 		var targetStatusCode *int
 		if !edge.IsInternal && (edge.RelationType == "canonical" || edge.RelationType == "hreflang") {
-			headResult, headErr := e.fetcher.Head(edge.NormalizedTargetURL)
+			headResult, headErr := e.fetcher.HeadContext(ctx, edge.NormalizedTargetURL)
 			if headErr == nil && headResult != nil {
 				targetStatusCode = &headResult.StatusCode
 			}
@@ -2154,7 +2209,7 @@ func (e *Engine) runTextQualityChecks(ctx context.Context, jobID string) {
 			break
 		}
 		// Re-fetch and extract visible text for this page
-		fetchResult, fetchErr := e.fetcher.Fetch(pg.url)
+		fetchResult, fetchErr := e.fetcher.FetchContext(ctx, pg.url)
 		if fetchErr != nil || fetchResult == nil || len(fetchResult.Body) == 0 {
 			continue
 		}
@@ -2452,8 +2507,8 @@ func (e *Engine) recomputePageDepths(jobID string) error {
 	defer pageRows.Close()
 
 	type pageNode struct {
-		urlID  int64
-		depth  int
+		urlID int64
+		depth int
 	}
 	pages := map[string]pageNode{}
 	for pageRows.Next() {
@@ -2553,4 +2608,3 @@ func (e *Engine) recomputePageDepths(jobID string) error {
 	}
 	return nil
 }
-

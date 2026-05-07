@@ -34,9 +34,9 @@ type HostInfo struct {
 	CrawlDelay     time.Duration
 	SitemapURLs    []string
 	SitemapEntries []sitemap.Entry
-	LlmsTxtFound  bool
-	LlmsTxtRaw    string
-	LlmsTxt       *llmstxt.LlmsTxt
+	LlmsTxtFound   bool
+	LlmsTxtRaw     string
+	LlmsTxt        *llmstxt.LlmsTxt
 	Events         []string
 }
 
@@ -81,7 +81,13 @@ func (h *HostOnboarder) OnboardHost(ctx context.Context, jobID, host, scheme str
 	}
 
 	h.discoverRobots(ctx, jobID, host, scheme, info)
+	if err := ctx.Err(); err != nil {
+		return info, err
+	}
 	h.discoverSitemaps(ctx, jobID, host, scheme, info)
+	if err := ctx.Err(); err != nil {
+		return info, err
+	}
 	h.discoverLlmsTxt(ctx, jobID, host, scheme, info)
 
 	return info, nil
@@ -90,7 +96,7 @@ func (h *HostOnboarder) OnboardHost(ctx context.Context, jobID, host, scheme str
 // discoverRobots fetches and parses robots.txt for the host.
 func (h *HostOnboarder) discoverRobots(ctx context.Context, jobID, host, scheme string, info *HostInfo) {
 	robotsURL := fmt.Sprintf("%s://%s/robots.txt", scheme, host)
-	result, err := h.fetcher.Fetch(robotsURL)
+	result, err := h.fetcher.FetchContext(ctx, robotsURL)
 	if err != nil {
 		// Apply robotsUnreachablePolicy for fetch errors (timeout, DNS, etc.)
 		h.applyRobotsUnreachablePolicy(host, fmt.Sprintf("robots.txt fetch error for %q: %v", host, err), info)
@@ -104,7 +110,7 @@ func (h *HostOnboarder) discoverRobots(ctx context.Context, jobID, host, scheme 
 
 	if result.StatusCode >= 500 {
 		// Retry once for server errors
-		result2, err2 := h.fetcher.Fetch(robotsURL)
+		result2, err2 := h.fetcher.FetchContext(ctx, robotsURL)
 		if err2 != nil || (result2 != nil && result2.StatusCode >= 500) {
 			h.applyRobotsUnreachablePolicy(host, fmt.Sprintf("robots.txt server error (%d) for %q after retry", result.StatusCode, host), info)
 			return
@@ -202,10 +208,7 @@ func (h *HostOnboarder) discoverSitemaps(ctx context.Context, jobID, host, schem
 		}
 
 		remaining := h.sitemapMax - len(allEntries)
-		// TODO: sitemap.FetchAndParse does not accept a context; the client
-		// timeout provides baseline protection. Consider adding context support
-		// in a future task.
-		entries, _, err := sitemap.FetchAndParse(sitemapURL, remaining, h.httpClient)
+		entries, _, err := sitemap.FetchAndParseContext(ctx, sitemapURL, remaining, h.httpClient)
 		if err != nil {
 			info.Events = append(info.Events, fmt.Sprintf("sitemap fetch/parse error for %q: %v", sitemapURL, err))
 			continue
@@ -247,7 +250,7 @@ func (h *HostOnboarder) discoverSitemaps(ctx context.Context, jobID, host, schem
 // discoverLlmsTxt fetches and parses llms.txt for the host.
 func (h *HostOnboarder) discoverLlmsTxt(ctx context.Context, jobID, host, scheme string, info *HostInfo) {
 	llmsURL := fmt.Sprintf("%s://%s/llms.txt", scheme, host)
-	result, err := h.fetcher.Fetch(llmsURL)
+	result, err := h.fetcher.FetchContext(ctx, llmsURL)
 
 	if err != nil || result.StatusCode != 200 {
 		info.LlmsTxtFound = false

@@ -1,10 +1,12 @@
 package fetcher
 
 import (
+	"context"
 	"crypto/tls"
 	"fmt"
 	"io"
 	"math"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -61,8 +63,38 @@ type Fetcher struct {
 
 // New creates a Fetcher with the given options and a shared transport.
 func New(opts Options) *Fetcher {
+	dialTimeout := opts.Timeout
+	if dialTimeout <= 0 {
+		dialTimeout = 30 * time.Second
+	}
+	baseDialer := &net.Dialer{Timeout: dialTimeout, KeepAlive: 30 * time.Second}
 	transport := &http.Transport{
-		DisableCompression: true, // We handle decompression manually.
+		DisableCompression:  true, // We handle decompression manually.
+		MaxIdleConns:        64,
+		MaxIdleConnsPerHost: 16,
+		IdleConnTimeout:     90 * time.Second,
+		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			host, _, err := net.SplitHostPort(address)
+			if err != nil {
+				return nil, err
+			}
+			if opts.SSRFGuard != nil {
+				if err := opts.SSRFGuard.ValidateHost(host); err != nil {
+					return nil, err
+				}
+			}
+			conn, err := baseDialer.DialContext(ctx, network, address)
+			if err != nil {
+				return nil, err
+			}
+			if opts.SSRFGuard != nil {
+				if tcp, ok := conn.RemoteAddr().(*net.TCPAddr); ok && opts.SSRFGuard.IsBlockedIP(tcp.IP) {
+					_ = conn.Close()
+					return nil, fmt.Errorf("ssrf: dial resolved to blocked IP %s", tcp.IP)
+				}
+			}
+			return conn, nil
+		},
 		TLSClientConfig: &tls.Config{
 			InsecureSkipVerify: opts.AllowInsecureTLS, //nolint:gosec
 			MinVersion:         tls.VersionTLS12,
@@ -87,12 +119,22 @@ func (f *Fetcher) SafeClient() *http.Client {
 
 // Fetch performs an HTTP GET request.
 func (f *Fetcher) Fetch(rawURL string) (*FetchResult, error) {
-	return f.do(rawURL, http.MethodGet)
+	return f.FetchContext(context.Background(), rawURL)
 }
 
 // Head performs an HTTP HEAD request.
 func (f *Fetcher) Head(rawURL string) (*FetchResult, error) {
-	return f.do(rawURL, http.MethodHead)
+	return f.HeadContext(context.Background(), rawURL)
+}
+
+// FetchContext performs an HTTP GET request with cancellation support.
+func (f *Fetcher) FetchContext(ctx context.Context, rawURL string) (*FetchResult, error) {
+	return f.do(ctx, rawURL, http.MethodGet)
+}
+
+// HeadContext performs an HTTP HEAD request with cancellation support.
+func (f *Fetcher) HeadContext(ctx context.Context, rawURL string) (*FetchResult, error) {
+	return f.do(ctx, rawURL, http.MethodHead)
 }
 
 // parseRetryAfter parses a Retry-After header value as either seconds or an
@@ -125,7 +167,7 @@ func parseRetryAfter(value string) time.Duration {
 // maxRetryAfter caps the wait time for 429 retries.
 const maxRetryAfter = 60 * time.Second
 
-func (f *Fetcher) do(rawURL string, method string) (*FetchResult, error) {
+func (f *Fetcher) do(ctx context.Context, rawURL string, method string) (*FetchResult, error) {
 	result := &FetchResult{
 		RequestedURL: rawURL,
 		RedirectHops: make([]RedirectHop, 0),
@@ -197,7 +239,7 @@ func (f *Fetcher) do(rawURL string, method string) (*FetchResult, error) {
 		},
 	}
 
-	req, err := http.NewRequest(method, rawURL, nil)
+	req, err := http.NewRequestWithContext(ctx, method, rawURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("fetcher: failed to create request for %q: %w", rawURL, err)
 	}
@@ -240,10 +282,15 @@ func (f *Fetcher) do(rawURL string, method string) (*FetchResult, error) {
 			}
 		}
 
-		time.Sleep(wait)
+		select {
+		case <-ctx.Done():
+			result.Error = ctx.Err()
+			return result, ctx.Err()
+		case <-time.After(wait):
+		}
 
 		// Rebuild request for retry.
-		retryReq, retryErr := http.NewRequest(method, rawURL, nil)
+		retryReq, retryErr := http.NewRequestWithContext(ctx, method, rawURL, nil)
 		if retryErr != nil {
 			result.Error = retryErr
 			return result, retryErr
