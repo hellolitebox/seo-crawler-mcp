@@ -58,16 +58,28 @@ func TestOpenAndMigrate(t *testing.T) {
 	}
 	db2.Close()
 
-	// Verify migration version was recorded.
-	var version int
+	// Verify migrations were recorded.
+	var versions int
 	err = db.QueryRow(
-		"SELECT version FROM schema_migrations WHERE version = 1",
-	).Scan(&version)
+		"SELECT COUNT(*) FROM schema_migrations WHERE version IN (1, 2)",
+	).Scan(&versions)
 	if err != nil {
-		t.Fatalf("migration version 1 not recorded: %v", err)
+		t.Fatalf("checking migration versions: %v", err)
 	}
-	if version != 1 {
-		t.Errorf("expected version 1, got %d", version)
+	if versions != 2 {
+		t.Errorf("expected migrations 1 and 2 recorded, got %d", versions)
+	}
+
+	// Verify indexes required by hot live-activity paths exist.
+	for _, index := range []string{"idx_fetches_job_id", "idx_crawl_events_job_type_id", "idx_issues_job_id"} {
+		var name string
+		err := db.QueryRow(
+			"SELECT name FROM sqlite_master WHERE type='index' AND name=?",
+			index,
+		).Scan(&name)
+		if err != nil {
+			t.Errorf("index %q not found: %v", index, err)
+		}
 	}
 }
 
