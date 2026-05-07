@@ -10,9 +10,11 @@ primary_region = "iad"
 [http_service]
   internal_port = 8080
   force_https = true
-  auto_stop_machines = "stop"
+  # Crawls run as in-process background jobs. Do not let Fly stop the only
+  # machine just because HTTP traffic is idle; that kills active analyses.
+  auto_stop_machines = "off"
   auto_start_machines = true
-  min_machines_running = 0
+  min_machines_running = 1
 
   [[http_service.checks]]
     grace_period = "10s"
