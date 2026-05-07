@@ -169,6 +169,12 @@ func (s *Server) handleJobReportV2(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleJobActivityV2(w http.ResponseWriter, r *http.Request) {
 	s.handleJobActivity(w, r, r.PathValue("id"))
 }
+func (s *Server) handleJobPagesV2(w http.ResponseWriter, r *http.Request) {
+	s.handleJobPages(w, r, r.PathValue("id"))
+}
+func (s *Server) handleJobIssuesV2(w http.ResponseWriter, r *http.Request) {
+	s.handleJobIssues(w, r, r.PathValue("id"))
+}
 
 // handleJobStatus handles GET /api/jobs/:jobId.
 func (s *Server) handleJobStatus(w http.ResponseWriter, r *http.Request, jobID string) {
@@ -266,7 +272,37 @@ func (s *Server) urlLookup() dto.URLLookup {
 	}
 }
 
+// clampInt returns n clamped to [minVal, maxVal].
+func clampInt(n, minVal, maxVal int) int {
+	if n < minVal {
+		return minVal
+	}
+	if n > maxVal {
+		return maxVal
+	}
+	return n
+}
+
+// parsePaginationParam parses an int query param with a default and max.
+func parsePaginationParam(r *http.Request, key string, def, max int) int {
+	n := def
+	if v, err := strconv.Atoi(r.URL.Query().Get(key)); err == nil && v > 0 {
+		n = clampInt(v, 1, max)
+	}
+	return n
+}
+
+// parseOffsetParam parses a non-negative int query param with default 0.
+func parseOffsetParam(r *http.Request, key string) int {
+	if v, err := strconv.Atoi(r.URL.Query().Get(key)); err == nil && v >= 0 {
+		return v
+	}
+	return 0
+}
+
 // handleJobReport handles GET /api/jobs/:jobId/report.
+// Accepts query params: pages_limit (default 100, max 200), pages_offset (default 0),
+// issues_limit (default 200, max 500), issues_offset (default 0).
 func (s *Server) handleJobReport(w http.ResponseWriter, r *http.Request, jobID string) {
 	if s.db == nil {
 		writeError(w, http.StatusInternalServerError, "database unavailable")
@@ -286,12 +322,20 @@ func (s *Server) handleJobReport(w http.ResponseWriter, r *http.Request, jobID s
 		return
 	}
 
+	// Pagination params
+	pagesLimit := parsePaginationParam(r, "pages_limit", 100, 200)
+	pagesOffset := parseOffsetParam(r, "pages_offset")
+	issuesLimit := parsePaginationParam(r, "issues_limit", 200, 500)
+	issuesOffset := parseOffsetParam(r, "issues_offset")
+
 	lookup := s.urlLookup()
 
-	// Pages
-	pagesResult, err := s.db.QueryPages(jobID, storage.QueryFilter{}, "", 10000)
+	// Pages — paginated
+	pagesResult, err := s.db.QueryPagesOffset(jobID, storage.QueryFilter{}, pagesLimit, pagesOffset)
 	var pageDTOs []dto.PageDTO
+	var pagesTotalCount int
 	if err == nil {
+		pagesTotalCount = pagesResult.TotalCount
 		pageDTOs = make([]dto.PageDTO, 0, len(pagesResult.Results))
 		for _, p := range pagesResult.Results {
 			pageDTOs = append(pageDTOs, dto.PageFromStorage(p, lookup))
@@ -300,10 +344,12 @@ func (s *Server) handleJobReport(w http.ResponseWriter, r *http.Request, jobID s
 		pageDTOs = []dto.PageDTO{}
 	}
 
-	// Issues
-	issuesResult, err := s.db.QueryIssues(jobID, storage.QueryFilter{}, "", 5000)
+	// Issues — paginated
+	issuesResult, err := s.db.QueryIssuesOffset(jobID, storage.QueryFilter{}, issuesLimit, issuesOffset)
 	var issueDTOs []dto.IssueDTO
+	var issuesTotalCount int
 	if err == nil {
+		issuesTotalCount = issuesResult.TotalCount
 		issueDTOs = make([]dto.IssueDTO, 0, len(issuesResult.Results))
 		for _, i := range issuesResult.Results {
 			issueDTOs = append(issueDTOs, dto.IssueFromStorage(i, lookup))
@@ -312,10 +358,34 @@ func (s *Server) handleJobReport(w http.ResponseWriter, r *http.Request, jobID s
 		issueDTOs = []dto.IssueDTO{}
 	}
 
+	// Compute next offsets (nil means no more pages).
+	var pagesNextOffset *int
+	if pagesOffset+len(pageDTOs) < pagesTotalCount {
+		n := pagesOffset + len(pageDTOs)
+		pagesNextOffset = &n
+	}
+	var issuesNextOffset *int
+	if issuesOffset+len(issueDTOs) < issuesTotalCount {
+		n := issuesOffset + len(issueDTOs)
+		issuesNextOffset = &n
+	}
+
 	report := map[string]any{
-		"summary":           summary,
-		"pages":             pageDTOs,
-		"issues":            issueDTOs,
+		"summary": summary,
+		"pages": map[string]any{
+			"results":    pageDTOs,
+			"totalCount": pagesTotalCount,
+			"nextOffset": pagesNextOffset,
+			"limit":      pagesLimit,
+			"offset":     pagesOffset,
+		},
+		"issues": map[string]any{
+			"results":    issueDTOs,
+			"totalCount": issuesTotalCount,
+			"nextOffset": issuesNextOffset,
+			"limit":      issuesLimit,
+			"offset":     issuesOffset,
+		},
 		"external_links":    []any{},
 		"response_codes":    []any{},
 		"robots_directives": []any{},
@@ -333,6 +403,102 @@ func (s *Server) handleJobReport(w http.ResponseWriter, r *http.Request, jobID s
 	}
 
 	writeJSON(w, http.StatusOK, report)
+}
+
+// handleJobPages handles GET /api/jobs/:jobId/pages?limit=100&offset=0
+func (s *Server) handleJobPages(w http.ResponseWriter, r *http.Request, jobID string) {
+	if s.db == nil {
+		writeError(w, http.StatusInternalServerError, "database unavailable")
+		return
+	}
+	_, err := s.db.GetJob(jobID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, fmt.Sprintf("job %q not found", jobID))
+		return
+	}
+
+	limit := parsePaginationParam(r, "limit", 100, 200)
+	offset := parseOffsetParam(r, "offset")
+
+	filter := storage.QueryFilter{
+		URLPattern:       r.URL.Query().Get("url_pattern"),
+		URLGroup:         r.URL.Query().Get("url_group"),
+		StatusCodeFamily: r.URL.Query().Get("status_code_family"),
+	}
+
+	result, err := s.db.QueryPagesOffset(jobID, filter, limit, offset)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("querying pages: %v", err))
+		return
+	}
+
+	lookup := s.urlLookup()
+	pageDTOs := make([]dto.PageDTO, 0, len(result.Results))
+	for _, p := range result.Results {
+		pageDTOs = append(pageDTOs, dto.PageFromStorage(p, lookup))
+	}
+
+	var nextOffset *int
+	if offset+len(pageDTOs) < result.TotalCount {
+		n := offset + len(pageDTOs)
+		nextOffset = &n
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"results":    pageDTOs,
+		"totalCount": result.TotalCount,
+		"nextOffset": nextOffset,
+		"limit":      limit,
+		"offset":     offset,
+	})
+}
+
+// handleJobIssues handles GET /api/jobs/:jobId/issues?limit=100&offset=0&issue_type=&severity=
+func (s *Server) handleJobIssues(w http.ResponseWriter, r *http.Request, jobID string) {
+	if s.db == nil {
+		writeError(w, http.StatusInternalServerError, "database unavailable")
+		return
+	}
+	_, err := s.db.GetJob(jobID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, fmt.Sprintf("job %q not found", jobID))
+		return
+	}
+
+	limit := parsePaginationParam(r, "limit", 100, 500)
+	offset := parseOffsetParam(r, "offset")
+
+	filter := storage.QueryFilter{
+		IssueType:  r.URL.Query().Get("issue_type"),
+		Severity:   r.URL.Query().Get("severity"),
+		URLPattern: r.URL.Query().Get("url_pattern"),
+	}
+
+	result, err := s.db.QueryIssuesOffset(jobID, filter, limit, offset)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("querying issues: %v", err))
+		return
+	}
+
+	lookup := s.urlLookup()
+	issueDTOs := make([]dto.IssueDTO, 0, len(result.Results))
+	for _, i := range result.Results {
+		issueDTOs = append(issueDTOs, dto.IssueFromStorage(i, lookup))
+	}
+
+	var nextOffset *int
+	if offset+len(issueDTOs) < result.TotalCount {
+		n := offset + len(issueDTOs)
+		nextOffset = &n
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"results":    issueDTOs,
+		"totalCount": result.TotalCount,
+		"nextOffset": nextOffset,
+		"limit":      limit,
+		"offset":     offset,
+	})
 }
 
 // handleJobActivity returns recent fetch activity for a job (live log feed).

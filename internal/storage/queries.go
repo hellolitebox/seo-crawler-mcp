@@ -10,6 +10,7 @@ import (
 // QueryFilter defines filters for paginated query methods.
 type QueryFilter struct {
 	IssueType        string `json:"issueType,omitempty"`
+	Severity         string `json:"severity,omitempty"` // "info", "warning", "error"
 	StatusCodeFamily string `json:"statusCodeFamily,omitempty"` // "2xx", "3xx", "4xx", "5xx"
 	URLPattern       string `json:"urlPattern,omitempty"`
 	URLGroup         string `json:"urlGroup,omitempty"`
@@ -103,6 +104,9 @@ func collectIgnoredFilters(f QueryFilter, applicable map[string]bool) []string {
 	ignored := []string{}
 	if f.IssueType != "" && !applicable["IssueType"] {
 		ignored = append(ignored, "IssueType")
+	}
+	if f.Severity != "" && !applicable["Severity"] {
+		ignored = append(ignored, "Severity")
 	}
 	if f.StatusCodeFamily != "" && !applicable["StatusCodeFamily"] {
 		ignored = append(ignored, "StatusCodeFamily")

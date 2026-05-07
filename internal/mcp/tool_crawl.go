@@ -1,11 +1,14 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"time"
 
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/parser"
@@ -126,6 +129,11 @@ func (s *Server) handleCrawlSite(ctx context.Context, req gomcp.CallToolRequest)
 				allowedHosts = append(allowedHosts, hs)
 			}
 		}
+	}
+
+	// If SEO_CRAWLER_HTTP_API is set, delegate to the remote HTTP server.
+	if httpAPI := os.Getenv("SEO_CRAWLER_HTTP_API"); httpAPI != "" {
+		return s.crawlSiteViaHTTP(ctx, rawURL, maxPages, renderMode, additionalURLs)
 	}
 
 	if s.db == nil {
@@ -434,4 +442,77 @@ func (s *Server) handleCancelCrawl(ctx context.Context, req gomcp.CallToolReques
 		"status": "cancelling",
 	}
 	return gomcp.NewToolResultJSON(result)
+}
+
+// crawlSiteViaHTTP delegates a crawl_site call to the remote HTTP API configured
+// via the SEO_CRAWLER_HTTP_API environment variable. This makes the local MCP
+// server a thin client, forwarding crawl requests to the cloud instance.
+func (s *Server) crawlSiteViaHTTP(
+	ctx context.Context,
+	rawURL string,
+	maxPages int,
+	renderMode string,
+	additionalURLs []string,
+) (*gomcp.CallToolResult, error) {
+	httpAPI := os.Getenv("SEO_CRAWLER_HTTP_API")
+
+	body := map[string]any{
+		"url":        rawURL,
+		"maxPages":   maxPages,
+		"renderMode": renderMode,
+	}
+	if len(additionalURLs) > 0 {
+		body["urls"] = additionalURLs
+	}
+
+	bodyBytes, err := json.Marshal(body)
+	if err != nil {
+		return gomcp.NewToolResultError(fmt.Sprintf("marshalling request body: %v", err)), nil
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, httpAPI+"/api/crawl", bytes.NewReader(bodyBytes))
+	if err != nil {
+		return gomcp.NewToolResultError(fmt.Sprintf("creating HTTP request: %v", err)), nil
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return gomcp.NewToolResultError(fmt.Sprintf("calling HTTP API at %s: %v", httpAPI, err)), nil
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusOK {
+		var errResp struct {
+			Error string `json:"error"`
+		}
+		_ = json.Unmarshal(respBody, &errResp)
+		msg := errResp.Error
+		if msg == "" {
+			msg = string(respBody)
+		}
+		return gomcp.NewToolResultError(fmt.Sprintf("HTTP API returned %d: %s", resp.StatusCode, msg)), nil
+	}
+
+	var apiResp struct {
+		JobID  string `json:"jobId"`
+		Status string `json:"status"`
+		Error  string `json:"error,omitempty"`
+	}
+	if err := json.Unmarshal(respBody, &apiResp); err != nil {
+		return gomcp.NewToolResultError(fmt.Sprintf("decoding HTTP API response: %v", err)), nil
+	}
+	if apiResp.Error != "" {
+		return gomcp.NewToolResultError(apiResp.Error), nil
+	}
+
+	out, _ := json.Marshal(crawlSiteResult{
+		JobID:        apiResp.JobID,
+		Status:       apiResp.Status,
+		ResourceLink: fmt.Sprintf("seo-crawler://jobs/%s", apiResp.JobID),
+	})
+	return gomcp.NewToolResultText(string(out)), nil
 }
