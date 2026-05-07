@@ -1,7 +1,9 @@
 package storage
 
 import (
+	"context"
 	"database/sql"
+	"database/sql/driver"
 	"embed"
 	"fmt"
 	"path/filepath"
@@ -9,7 +11,7 @@ import (
 	"strconv"
 	"strings"
 
-	_ "modernc.org/sqlite"
+	"modernc.org/sqlite"
 )
 
 //go:embed migrations/*.sql
@@ -18,6 +20,19 @@ var migrationsFS embed.FS
 // DB wraps a *sql.DB with migration support.
 type DB struct {
 	*sql.DB
+}
+
+const maxSQLiteConnections = 16
+
+func init() {
+	sqlite.RegisterConnectionHook(func(conn sqlite.ExecQuerierContext, _ string) error {
+		for _, p := range sqlitePragmas {
+			if _, err := conn.ExecContext(context.Background(), p, []driver.NamedValue{}); err != nil {
+				return fmt.Errorf("executing connection pragma %q: %w", p, err)
+			}
+		}
+		return nil
+	})
 }
 
 // Open creates or opens a SQLite database at path, applies pragmas, and runs
@@ -33,8 +48,12 @@ func Open(path string) (*DB, error) {
 		return nil, fmt.Errorf("opening database %q: %w", path, err)
 	}
 
-	// Limit to one connection so pragmas always apply (SQLite is single-writer anyway).
-	sqlDB.SetMaxOpenConns(1)
+	// WAL permits many concurrent readers with one writer. Keep enough DB
+	// connections for status/report requests to stay responsive while the crawl
+	// engine is writing. Connection hooks below apply required pragmas to every
+	// SQLite connection, not just the first one.
+	sqlDB.SetMaxOpenConns(maxSQLiteConnections)
+	sqlDB.SetMaxIdleConns(maxSQLiteConnections)
 
 	if err := setPragmas(sqlDB); err != nil {
 		sqlDB.Close()
@@ -51,15 +70,17 @@ func Open(path string) (*DB, error) {
 	return db, nil
 }
 
+var sqlitePragmas = []string{
+	"PRAGMA journal_mode=WAL",
+	"PRAGMA synchronous=NORMAL",
+	"PRAGMA cache_size=-64000",
+	"PRAGMA temp_store=MEMORY",
+	"PRAGMA foreign_keys=ON",
+	"PRAGMA busy_timeout=5000",
+}
+
 func setPragmas(db *sql.DB) error {
-	pragmas := []string{
-		"PRAGMA journal_mode=WAL",
-		"PRAGMA synchronous=NORMAL",
-		"PRAGMA cache_size=-64000",
-		"PRAGMA temp_store=MEMORY",
-		"PRAGMA foreign_keys=ON",
-	}
-	for _, p := range pragmas {
+	for _, p := range sqlitePragmas {
 		if _, err := db.Exec(p); err != nil {
 			return fmt.Errorf("executing %q: %w", p, err)
 		}
