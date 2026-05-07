@@ -111,11 +111,6 @@ func (s *Server) handleCrawl(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("checking active jobs: %v", err))
 		return
 	}
-	if activeCount >= maxConcurrent {
-		writeError(w, http.StatusTooManyRequests, fmt.Sprintf("concurrent crawl limit reached (%d/%d active)", activeCount, maxConcurrent))
-		return
-	}
-
 	crawlConfig := map[string]any{
 		"scopeMode":     "registrable_domain",
 		"allowedHosts":  []string{},
@@ -144,9 +139,33 @@ func (s *Server) handleCrawl(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// If all slots are occupied, leave the job in "queued" status and signal
+	// the queue worker, which will start it once a running crawl finishes.
+	if activeCount >= maxConcurrent {
+		if s.queue != nil {
+			select {
+			case s.queue <- struct{}{}:
+			default:
+			}
+		}
+		writeJSON(w, http.StatusAccepted, map[string]string{
+			"jobId":  job.ID,
+			"status": "queued",
+		})
+		return
+	}
+
+	// Slot free — start immediately and signal the queue worker when done
+	// so the next queued job (if any) can be picked up.
 	if s.engine != nil {
 		go func() {
 			_ = s.engine.RunCrawl(context.Background(), job.ID)
+			if s.queue != nil {
+				select {
+				case s.queue <- struct{}{}:
+				default:
+				}
+			}
 		}()
 	}
 

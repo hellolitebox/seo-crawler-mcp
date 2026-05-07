@@ -329,6 +329,22 @@ func (db *DB) CountActiveJobs(jobType string) (int, error) {
 	return count, nil
 }
 
+// NextQueuedJob returns the oldest job with status="queued", or nil if none.
+// Used by the queue worker to pick up the next job to run.
+func (db *DB) NextQueuedJob() (*CrawlJob, error) {
+	row := db.QueryRow(
+		`SELECT ` + jobColumns + ` FROM crawl_jobs WHERE status = 'queued' ORDER BY created_at ASC LIMIT 1`,
+	)
+	job, err := scanJob(row)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("scanning next queued job: %w", err)
+	}
+	return &job, nil
+}
+
 // CountJobsCreatedSince returns the number of jobs created at or after the
 // given time. It counts all job types.
 func (db *DB) CountJobsCreatedSince(since time.Time) (int, error) {

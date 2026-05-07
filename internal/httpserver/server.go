@@ -2,6 +2,7 @@
 package httpserver
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"os"
@@ -21,7 +22,8 @@ type Server struct {
 	config  *config.Config
 	limiter *rateLimiter
 	purger  *purgeWorker
-	allowed []string // allowed CORS origins
+	allowed []string       // allowed CORS origins
+	queue   chan struct{}  // signals the queue worker to check for pending jobs
 }
 
 // New creates a new HTTP server.
@@ -38,14 +40,24 @@ func New(db *storage.DB, eng *engine.Engine, cfg *config.Config) *Server {
 			}
 		}
 	}
-	return &Server{
+	s := &Server{
 		db:      db,
 		engine:  eng,
 		config:  cfg,
 		allowed: allowed,
 		limiter: newRateLimiter(10, time.Hour), // 10 crawls per IP per hour
 		purger:  newPurgeWorker(db),
+		queue:   make(chan struct{}, 1),
 	}
+	go s.queueWorker()
+	// Send a startup signal to pick up any queued jobs that survived a restart
+	// (MarkOrphanedJobsFailed in main.go transitions them to failed, but this
+	// is a no-op safety net for future policy changes).
+	select {
+	case s.queue <- struct{}{}:
+	default:
+	}
+	return s
 }
 
 // Handler returns the HTTP handler with all routes registered.
@@ -65,6 +77,29 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/jobs/{id}/stream", s.handleJobStreamV2)
 
 	return s.corsMiddleware(loggingMiddleware(mux))
+}
+
+// queueWorker waits for signals on s.queue and starts the next queued crawl
+// job when a slot becomes available. Uses a buffered channel (capacity 1) so
+// that multiple completion signals coalesce into a single check.
+func (s *Server) queueWorker() {
+	for range s.queue {
+		if s.engine == nil || s.db == nil {
+			continue
+		}
+		job, err := s.db.NextQueuedJob()
+		if err != nil || job == nil {
+			continue
+		}
+		go func(jobID string) {
+			_ = s.engine.RunCrawl(context.Background(), jobID)
+			// Signal the worker so it can pick up the next job in line.
+			select {
+			case s.queue <- struct{}{}:
+			default:
+			}
+		}(job.ID)
+	}
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
