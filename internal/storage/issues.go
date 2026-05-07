@@ -3,6 +3,7 @@ package storage
 import (
 	"fmt"
 	"strconv"
+	"strings"
 )
 
 // IssueInput holds parameters for InsertIssue.
@@ -145,6 +146,46 @@ func (db *DB) GetIssuesByURL(jobID string, urlID int64) ([]Issue, error) {
 	}
 
 	return issues, nil
+}
+
+// CountIssuesByJobs returns issue counts for the supplied job IDs only.
+// It is intentionally scoped to a visible page of jobs so report-list APIs
+// don't scan the entire historical issues table on every request.
+func (db *DB) CountIssuesByJobs(jobIDs []string) (map[string]int, error) {
+	counts := map[string]int{}
+	if len(jobIDs) == 0 {
+		return counts, nil
+	}
+
+	placeholders := make([]string, len(jobIDs))
+	args := make([]any, len(jobIDs))
+	for i, id := range jobIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+
+	rows, err := db.Query(
+		`SELECT job_id, COUNT(*) FROM issues WHERE job_id IN (`+strings.Join(placeholders, ",")+`) GROUP BY job_id`,
+		args...,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("counting issues for jobs: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var jobID string
+		var count int
+		if err := rows.Scan(&jobID, &count); err != nil {
+			return nil, fmt.Errorf("scanning issue count: %w", err)
+		}
+		counts[jobID] = count
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating issue counts: %w", err)
+	}
+
+	return counts, nil
 }
 
 // CountIssuesByType returns a map of issue_type → count for a job.

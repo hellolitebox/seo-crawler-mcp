@@ -672,19 +672,19 @@ func (s *Server) handleJobsList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Build a map of jobID -> actual issue count from the issues table.
+	// Build a map of visible jobID -> actual issue count from the issues table.
 	// The job row's issues_found counter doesn't always reflect post-crawl phases
-	// (text quality, axe audits, etc.), so query the source of truth.
-	actualIssues := map[string]int{}
-	if rows, qErr := s.db.Query(`SELECT job_id, COUNT(*) FROM issues GROUP BY job_id`); qErr == nil {
-		defer rows.Close()
-		for rows.Next() {
-			var jid string
-			var c int
-			if scanErr := rows.Scan(&jid, &c); scanErr == nil {
-				actualIssues[jid] = c
-			}
-		}
+	// (text quality, axe audits, etc.), so query the source of truth, but only
+	// for the page of jobs being returned. A global GROUP BY over historical
+	// issues makes the All Reports tab slow once old crawls accumulate.
+	jobIDs := make([]string, 0, len(jobs))
+	for _, j := range jobs {
+		jobIDs = append(jobIDs, j.ID)
+	}
+	actualIssues, err := s.db.CountIssuesByJobs(jobIDs)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("counting visible job issues: %v", err))
+		return
 	}
 
 	type jobRow struct {

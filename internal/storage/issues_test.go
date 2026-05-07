@@ -100,3 +100,33 @@ func TestCountIssuesByTypeAndSeverity(t *testing.T) {
 		t.Errorf("expected 1 error, got %d", bySev["error"])
 	}
 }
+
+func TestCountIssuesByJobsScopesToRequestedJobs(t *testing.T) {
+	db := testDB(t)
+	if _, err := db.Exec(`INSERT INTO crawl_jobs (id, type, status, config_json, seed_urls) VALUES (?, 'crawl', 'completed', '{}', ?)`, "visible-a", `["https://visible.example"]`); err != nil {
+		t.Fatalf("create visible job: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO crawl_jobs (id, type, status, config_json, seed_urls) VALUES (?, 'crawl', 'completed', '{}', ?)`, "hidden-b", `["https://hidden.example"]`); err != nil {
+		t.Fatalf("create hidden job: %v", err)
+	}
+	if _, err := db.InsertIssue(IssueInput{JobID: "visible-a", IssueType: "missing_title", Severity: "warning", Scope: "page"}); err != nil {
+		t.Fatalf("insert visible-a issue: %v", err)
+	}
+	if _, err := db.InsertIssue(IssueInput{JobID: "visible-a", IssueType: "missing_h1", Severity: "warning", Scope: "page"}); err != nil {
+		t.Fatalf("insert visible-a issue 2: %v", err)
+	}
+	if _, err := db.InsertIssue(IssueInput{JobID: "hidden-b", IssueType: "missing_title", Severity: "warning", Scope: "page"}); err != nil {
+		t.Fatalf("insert hidden-b issue: %v", err)
+	}
+
+	counts, err := db.CountIssuesByJobs([]string{"visible-a"})
+	if err != nil {
+		t.Fatalf("CountIssuesByJobs: %v", err)
+	}
+	if counts["visible-a"] != 2 {
+		t.Fatalf("visible-a count = %d, want 2", counts["visible-a"])
+	}
+	if _, ok := counts["hidden-b"]; ok {
+		t.Fatalf("hidden-b should not be counted when it was not requested")
+	}
+}
