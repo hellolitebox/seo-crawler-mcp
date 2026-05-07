@@ -263,9 +263,11 @@ func (db *DB) purgeTableChunked(table, jobID string) error {
 	}
 }
 
-// MarkOrphanedJobsFailed transitions any jobs left in 'running' or 'queued'
-// state into 'failed'. Called on server startup so jobs that were in-flight
-// when a previous process died don't appear stuck forever in the UI.
+// MarkOrphanedJobsFailed transitions any jobs left in 'running' or
+// 'cancelling' state into 'failed'. Called on server startup so jobs that
+// were in-flight when a previous process died don't appear stuck forever in
+// the UI. Jobs in 'queued' state are intentionally left alone — the queue
+// worker will pick them up after restart so deploys don't wipe the queue.
 // Returns the number of jobs updated.
 func (db *DB) MarkOrphanedJobsFailed(reason string) (int, error) {
 	res, err := db.Exec(`
@@ -273,7 +275,7 @@ func (db *DB) MarkOrphanedJobsFailed(reason string) (int, error) {
 		SET status = 'failed',
 		    finished_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
 		    error = ?
-		WHERE status IN ('running', 'queued', 'cancelling')
+		WHERE status IN ('running', 'cancelling')
 	`, reason)
 	if err != nil {
 		return 0, fmt.Errorf("marking orphaned jobs failed: %w", err)
@@ -324,6 +326,24 @@ func (db *DB) CountActiveJobs(jobType string) (int, error) {
 	).Scan(&count)
 	if err != nil {
 		return 0, fmt.Errorf("counting active jobs for type %q: %w", jobType, err)
+	}
+
+	return count, nil
+}
+
+// CountRunningJobs returns the number of jobs with status 'running' (NOT
+// 'queued') for the given job type. Used by the queue worker to decide
+// whether a slot is free before promoting the next queued job — counting
+// queued ones here would deadlock the queue (it would always look full).
+func (db *DB) CountRunningJobs(jobType string) (int, error) {
+	var count int
+	err := db.QueryRow(
+		`SELECT COUNT(*) FROM crawl_jobs
+		 WHERE type = ? AND status = 'running'`,
+		jobType,
+	).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("counting running jobs for type %q: %w", jobType, err)
 	}
 
 	return count, nil

@@ -36,12 +36,14 @@ func TestMarkOrphanedJobsFailed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MarkOrphanedJobsFailed: %v", err)
 	}
-	if n != 3 {
-		t.Fatalf("expected 3 jobs reaped, got %d", n)
+	// Queued jobs survive restart (the queue worker picks them up); only
+	// running + cancelling jobs are reaped.
+	if n != 2 {
+		t.Fatalf("expected 2 jobs reaped, got %d", n)
 	}
 
 	// Verify the orphans are now failed with the reason set.
-	for _, id := range []string{"running-job", "queued-job", "cancelling-job"} {
+	for _, id := range []string{"running-job", "cancelling-job"} {
 		j, err := db.GetJob(id)
 		if err != nil {
 			t.Fatalf("GetJob(%s): %v", id, err)
@@ -57,7 +59,10 @@ func TestMarkOrphanedJobsFailed(t *testing.T) {
 		}
 	}
 
-	// Completed and already-failed jobs should not be touched.
+	// Queued, completed and already-failed jobs should not be touched.
+	if j, _ := db.GetJob("queued-job"); j.Status != "queued" {
+		t.Errorf("queued-job status changed unexpectedly: %s", j.Status)
+	}
 	if j, _ := db.GetJob("done-job"); j.Status != "completed" {
 		t.Errorf("done-job status changed unexpectedly: %s", j.Status)
 	}

@@ -3,6 +3,7 @@ package httpserver
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -17,13 +18,14 @@ import (
 
 // Server exposes the crawler over HTTP.
 type Server struct {
-	db      *storage.DB
-	engine  *engine.Engine
-	config  *config.Config
-	limiter *rateLimiter
-	purger  *purgeWorker
-	allowed []string       // allowed CORS origins
-	queue   chan struct{}  // signals the queue worker to check for pending jobs
+	db       *storage.DB
+	engine   *engine.Engine
+	config   *config.Config
+	limiter  *rateLimiter
+	purger   *purgeWorker
+	allowed  []string      // allowed CORS origins
+	queue    chan struct{} // signals the queue worker to check for pending jobs
+	crawlMu  sync.Mutex    // serializes the count+create+promote block in handleCrawl and queueWorker
 }
 
 // New creates a new HTTP server.
@@ -82,24 +84,69 @@ func (s *Server) Handler() http.Handler {
 // queueWorker waits for signals on s.queue and starts the next queued crawl
 // job when a slot becomes available. Uses a buffered channel (capacity 1) so
 // that multiple completion signals coalesce into a single check.
+//
+// The worker takes s.crawlMu around the count + promote block so it never
+// races with handleCrawl: both code paths agree on how many running jobs
+// exist before deciding to launch another one.
 func (s *Server) queueWorker() {
 	for range s.queue {
 		if s.engine == nil || s.db == nil {
 			continue
 		}
-		job, err := s.db.NextQueuedJob()
-		if err != nil || job == nil {
+
+		maxConcurrent := 1
+		if s.config != nil && s.config.MaxConcurrentCrawls > 0 {
+			maxConcurrent = s.config.MaxConcurrentCrawls
+		}
+
+		s.crawlMu.Lock()
+		runningCount, err := s.db.CountRunningJobs("crawl")
+		if err != nil {
+			s.crawlMu.Unlock()
+			slog.Error("queue worker: counting running jobs", "err", err)
 			continue
 		}
-		go func(jobID string) {
-			_ = s.engine.RunCrawl(context.Background(), jobID)
-			// Signal the worker so it can pick up the next job in line.
+		if runningCount >= maxConcurrent {
+			s.crawlMu.Unlock()
+			continue
+		}
+		job, err := s.db.NextQueuedJob()
+		if err != nil || job == nil {
+			s.crawlMu.Unlock()
+			continue
+		}
+		// Promote queued -> running before unlocking so the next iteration
+		// (or a concurrent handleCrawl) sees an accurate count.
+		if err := s.db.UpdateJobStatus(job.ID, "running"); err != nil {
+			s.crawlMu.Unlock()
+			slog.Error("queue worker: promoting queued job", "job", job.ID, "err", err)
+			continue
+		}
+		s.crawlMu.Unlock()
+
+		go s.runCrawlJob(job.ID)
+	}
+}
+
+// runCrawlJob runs a single crawl in the engine, recovering from panics so
+// the queue keeps draining and the job is marked failed instead of leaking.
+// Always signals s.queue on exit (success or panic) so the next queued job
+// can start.
+func (s *Server) runCrawlJob(jobID string) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("crawl panic recovered", "job", jobID, "panic", r)
+			errMsg := fmt.Sprintf("panic: %v", r)
+			_ = s.db.UpdateJobFinished(jobID, "failed", &errMsg)
+		}
+		if s.queue != nil {
 			select {
 			case s.queue <- struct{}{}:
 			default:
 			}
-		}(job.ID)
-	}
+		}
+	}()
+	_ = s.engine.RunCrawl(context.Background(), jobID)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {

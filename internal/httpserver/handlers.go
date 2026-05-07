@@ -1,7 +1,6 @@
 package httpserver
 
 import (
-	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -106,11 +105,7 @@ func (s *Server) handleCrawl(w http.ResponseWriter, r *http.Request) {
 	if s.config != nil && s.config.MaxConcurrentCrawls > 0 {
 		maxConcurrent = s.config.MaxConcurrentCrawls
 	}
-	activeCount, err := s.db.CountActiveJobs("crawl")
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("checking active jobs: %v", err))
-		return
-	}
+
 	crawlConfig := map[string]any{
 		"scopeMode":     "registrable_domain",
 		"allowedHosts":  []string{},
@@ -133,21 +128,40 @@ func (s *Server) handleCrawl(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Serialize the count→create→decide block so two concurrent POSTs can't
+	// both observe activeCount<maxConcurrent and both launch crawls. Without
+	// this lock the concurrency limit is silently violated under load.
+	s.crawlMu.Lock()
+	activeCount, err := s.db.CountActiveJobs("crawl")
+	if err != nil {
+		s.crawlMu.Unlock()
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("checking active jobs: %v", err))
+		return
+	}
+
 	job, err := s.db.CreateJob("crawl", string(configJSON), string(seedJSON))
 	if err != nil {
+		s.crawlMu.Unlock()
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("creating job: %v", err))
 		return
 	}
 
-	// If all slots are occupied, leave the job in "queued" status and signal
-	// the queue worker, which will start it once a running crawl finishes.
-	if activeCount >= maxConcurrent {
-		if s.queue != nil {
-			select {
-			case s.queue <- struct{}{}:
-			default:
-			}
+	runNow := activeCount < maxConcurrent
+	if runNow {
+		// Promote to 'running' inside the lock so the next caller's
+		// CountActiveJobs / CountRunningJobs sees this slot taken.
+		if err := s.db.UpdateJobStatus(job.ID, "running"); err != nil {
+			s.crawlMu.Unlock()
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("promoting job: %v", err))
+			return
 		}
+	}
+	s.crawlMu.Unlock()
+
+	if !runNow {
+		// All slots are occupied. Job is left in 'queued' status. We do NOT
+		// signal the queue worker here — the slot is busy by definition, and
+		// the running crawl will signal once it completes.
 		writeJSON(w, http.StatusAccepted, map[string]string{
 			"jobId":  job.ID,
 			"status": "queued",
@@ -155,18 +169,10 @@ func (s *Server) handleCrawl(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Slot free — start immediately and signal the queue worker when done
-	// so the next queued job (if any) can be picked up.
+	// Slot free — start immediately. runCrawlJob owns panic recovery and the
+	// post-completion queue signal so we don't have to here.
 	if s.engine != nil {
-		go func() {
-			_ = s.engine.RunCrawl(context.Background(), job.ID)
-			if s.queue != nil {
-				select {
-				case s.queue <- struct{}{}:
-				default:
-				}
-			}
-		}()
+		go s.runCrawlJob(job.ID)
 	}
 
 	writeJSON(w, http.StatusAccepted, map[string]string{
@@ -256,7 +262,19 @@ func (s *Server) handleJobCancel(w http.ResponseWriter, r *http.Request, jobID s
 		return
 	}
 
-	if job.Status == "running" || job.Status == "queued" {
+	// Queued jobs have no engine goroutine running them, so transitioning
+	// to 'cancelling' would strand them there forever. Mark cancelled
+	// directly so the queue worker / UI both stop seeing them.
+	if job.Status == "queued" {
+		if err := s.db.UpdateJobStatus(jobID, "cancelled"); err != nil {
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("cancelling queued job: %v", err))
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"jobId": jobID, "status": "cancelled"})
+		return
+	}
+
+	if job.Status == "running" || job.Status == "cancelling" {
 		if err := s.db.UpdateJobStatus(jobID, "cancelling"); err != nil {
 			writeError(w, http.StatusInternalServerError, fmt.Sprintf("cancelling job: %v", err))
 			return
