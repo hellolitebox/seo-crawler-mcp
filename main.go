@@ -75,9 +75,10 @@ func main() {
 		fmt.Fprintf(os.Stderr, "reaped %d orphaned job(s)\n", n)
 	}
 
-	// Pending purges from a process that died mid-DELETE: log them; the HTTP
-	// server's purge worker is created in httpserver.New, so we enqueue from
-	// there once it's wired (see Server.ResumePendingPurges).
+	// Pending purges from a process that died mid-DELETE are kept tombstoned by
+	// default instead of auto-resumed on startup. Large purges share the SQLite
+	// connection and can stall read endpoints during cold start; set
+	// SEO_CRAWLER_RESUME_PURGES_ON_STARTUP=1 for explicit maintenance windows.
 	pendingPurges, _ := db.ResumePendingPurges()
 
 	guard := ssrf.NewGuard(cfg.AllowPrivateNetworks)
@@ -120,11 +121,15 @@ func main() {
 
 	if *httpAddr != "" {
 		httpSrv := httpserver.New(db, eng, cfg)
-		for _, id := range pendingPurges {
-			httpSrv.EnqueuePurge(id)
-		}
 		if len(pendingPurges) > 0 {
-			fmt.Fprintf(os.Stderr, "resumed %d pending purge(s)\n", len(pendingPurges))
+			if os.Getenv("SEO_CRAWLER_RESUME_PURGES_ON_STARTUP") == "1" {
+				for _, id := range pendingPurges {
+					httpSrv.EnqueuePurge(id)
+				}
+				fmt.Fprintf(os.Stderr, "resumed %d pending purge(s)\n", len(pendingPurges))
+			} else {
+				fmt.Fprintf(os.Stderr, "left %d pending purge(s) tombstoned; set SEO_CRAWLER_RESUME_PURGES_ON_STARTUP=1 to resume\n", len(pendingPurges))
+			}
 		}
 		srv := &http.Server{
 			Addr:              *httpAddr,
