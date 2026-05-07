@@ -460,15 +460,35 @@ func (s *Server) handleCancelCrawl(ctx context.Context, req gomcp.CallToolReques
 		return gomcp.NewToolResultError(fmt.Sprintf("job %q: %v", jobID, err)), nil
 	}
 
-	// Only running/queued jobs can be cancelled
-	if job.Status != "running" && job.Status != "queued" {
+	// Only running/queued jobs can be cancelled.
+	if job.Status != "running" && job.Status != "queued" && job.Status != "cancelling" {
 		return gomcp.NewToolResultError(fmt.Sprintf("job %q has status %q, only running or queued jobs can be cancelled", jobID, job.Status)), nil
 	}
 
-	if err := s.db.UpdateJobStatus(jobID, "cancelling"); err != nil {
-		return gomcp.NewToolResultError(fmt.Sprintf("cancelling job %q: %v", jobID, err)), nil
+	status := "cancelling"
+	if job.Status == "queued" {
+		// A queued MCP job may or may not already have a background goroutine
+		// registered. If a run exists, cancel it and let Engine.RunCrawl observe
+		// the cancelling state. If no run exists (for example, no engine is
+		// configured), finish the job as cancelled immediately instead of
+		// stranding it in cancelling forever.
+		if s.cancelRun(jobID, context.Canceled) {
+			if err := s.db.UpdateJobStatus(jobID, "cancelling"); err != nil {
+				return gomcp.NewToolResultError(fmt.Sprintf("cancelling job %q: %v", jobID, err)), nil
+			}
+		} else {
+			msg := context.Canceled.Error()
+			if err := s.db.UpdateJobFinished(jobID, "cancelled", &msg); err != nil {
+				return gomcp.NewToolResultError(fmt.Sprintf("cancelling queued job %q: %v", jobID, err)), nil
+			}
+			status = "cancelled"
+		}
+	} else {
+		if err := s.db.UpdateJobStatus(jobID, "cancelling"); err != nil {
+			return gomcp.NewToolResultError(fmt.Sprintf("cancelling job %q: %v", jobID, err)), nil
+		}
+		s.cancelRun(jobID, context.Canceled)
 	}
-	s.cancelRun(jobID, context.Canceled)
 
 	// Notify clients that the job resource was updated
 	s.mcpServer.SendNotificationToAllClients(gomcp.MethodNotificationResourceUpdated, map[string]any{
@@ -480,7 +500,7 @@ func (s *Server) handleCancelCrawl(ctx context.Context, req gomcp.CallToolReques
 
 	result := map[string]string{
 		"jobId":  jobID,
-		"status": "cancelling",
+		"status": status,
 	}
 	return gomcp.NewToolResultJSON(result)
 }

@@ -298,6 +298,38 @@ func TestCancelCrawl_TransitionsStatus(t *testing.T) {
 	}
 }
 
+func TestCancelCrawl_QueuedWithoutEngineFinishesCancelled(t *testing.T) {
+	db := setupTestDB(t)
+	s := NewServer(ServerConfig{DB: db})
+
+	job, err := db.CreateJob("crawl", `{}`, `["https://example.com"]`)
+	if err != nil {
+		t.Fatalf("creating job: %v", err)
+	}
+
+	req := gomcp.CallToolRequest{}
+	req.Params.Arguments = map[string]any{"jobId": job.ID}
+
+	result, err := s.handleCancelCrawl(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("expected success, got error: %v", result.Content)
+	}
+
+	updated, err := db.GetJob(job.ID)
+	if err != nil {
+		t.Fatalf("getting updated job: %v", err)
+	}
+	if updated.Status != "cancelled" {
+		t.Fatalf("expected queued job without engine to finish cancelled, got %q", updated.Status)
+	}
+	if !updated.FinishedAt.Valid {
+		t.Fatal("expected cancelled queued job to have finished_at set")
+	}
+}
+
 func TestCancelCrawl_RunningEngineFinishesCancelled(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
