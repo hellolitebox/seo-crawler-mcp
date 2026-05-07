@@ -2,6 +2,8 @@ package fetcher
 
 import (
 	"compress/gzip"
+	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -171,6 +173,63 @@ func TestFetchSSRF(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "SSRF") && !strings.Contains(err.Error(), "ssrf") {
 		t.Errorf("error = %q, want it to mention SSRF", err)
+	}
+}
+
+func TestFetchContextCancelsSlowRequest(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-time.After(2 * time.Second):
+			fmt.Fprint(w, "too late")
+		case <-r.Context().Done():
+		}
+	}))
+	defer srv.Close()
+
+	f := New(defaultOpts())
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	_, err := f.FetchContext(ctx, srv.URL)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("expected cancelled fetch error, got nil")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) && !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		t.Fatalf("FetchContext error = %v, want deadline cancellation", err)
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("FetchContext returned after %v, want prompt cancellation", elapsed)
+	}
+}
+
+func TestFetchSSRFBlocksDirectPrivateIPsBeforeDial(t *testing.T) {
+	guard := ssrf.NewGuard(false)
+	opts := defaultOpts()
+	opts.SSRFGuard = guard
+	opts.Timeout = 5 * time.Second
+	f := New(opts)
+
+	for _, rawURL := range []string{
+		"http://10.0.0.1/",
+		"http://192.168.0.1/",
+		"http://169.254.169.254/latest/meta-data/",
+	} {
+		t.Run(rawURL, func(t *testing.T) {
+			start := time.Now()
+			_, err := f.Fetch(rawURL)
+			elapsed := time.Since(start)
+			if err == nil {
+				t.Fatal("expected SSRF error, got nil")
+			}
+			if !strings.Contains(strings.ToLower(err.Error()), "ssrf") {
+				t.Fatalf("error = %q, want SSRF", err)
+			}
+			if elapsed > 200*time.Millisecond {
+				t.Fatalf("blocked direct private IP after %v, want pre-dial failure", elapsed)
+			}
+		})
 	}
 }
 

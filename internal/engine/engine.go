@@ -123,6 +123,17 @@ func isContextCancellation(err error) bool {
 	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
+func (e *Engine) cancelJob(jobID string, err error) error {
+	if err == nil {
+		err = context.Canceled
+	}
+	msg := err.Error()
+	if updateErr := e.db.UpdateJobFinished(jobID, "cancelled", &msg); updateErr != nil {
+		return fmt.Errorf("cancelling job %s: %w", jobID, updateErr)
+	}
+	return context.Canceled
+}
+
 // emitPhase records a phase transition event so the live UI can show what the
 // engine is currently doing (post-crawl phases otherwise look idle).
 func (e *Engine) emitPhase(jobID, phase, message string) {
@@ -151,11 +162,27 @@ func (e *Engine) RunCrawl(ctx context.Context, jobID string) error {
 	if err != nil {
 		return fmt.Errorf("loading job: %w", err)
 	}
+	if job.Status == "cancelled" || job.Status == "cancelling" {
+		return e.cancelJob(jobID, context.Canceled)
+	}
 	if job.Status != "queued" {
 		return fmt.Errorf("job %s has status %q, expected queued", jobID, job.Status)
 	}
+	if err := ctx.Err(); err != nil {
+		return e.cancelJob(jobID, err)
+	}
 	if err := e.db.UpdateJobStarted(jobID); err != nil {
+		current, getErr := e.db.GetJob(jobID)
+		if getErr == nil && (current.Status == "cancelled" || current.Status == "cancelling" || ctx.Err() != nil) {
+			if ctx.Err() != nil {
+				return e.cancelJob(jobID, ctx.Err())
+			}
+			return e.cancelJob(jobID, context.Canceled)
+		}
 		return fmt.Errorf("starting job: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return e.cancelJob(jobID, err)
 	}
 
 	// 2. Purge expired analyze jobs

@@ -280,6 +280,7 @@ func (s *Server) handleJobCancel(w http.ResponseWriter, r *http.Request, jobID s
 			writeError(w, http.StatusInternalServerError, fmt.Sprintf("cancelling queued job: %v", err))
 			return
 		}
+		s.cancelRun(jobID, context.Canceled)
 		writeJSON(w, http.StatusOK, map[string]string{"jobId": jobID, "status": "cancelled"})
 		return
 	}

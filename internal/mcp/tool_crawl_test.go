@@ -3,11 +3,19 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/config"
+	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/engine"
+	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/fetcher"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/storage"
+	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/urlutil"
 	gomcp "github.com/mark3labs/mcp-go/mcp"
 )
 
@@ -290,6 +298,118 @@ func TestCancelCrawl_TransitionsStatus(t *testing.T) {
 	}
 }
 
+func TestCancelCrawl_RunningEngineFinishesCancelled(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-started:
+		default:
+			close(started)
+		}
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, `<html><head><title>slow</title></head><body>slow</body></html>`)
+	}))
+	defer ts.Close()
+	defer close(release)
+
+	db := setupTestDB(t)
+	cfg := config.DefaultConfig()
+	cfg.MaxConcurrentCrawls = 1
+	cfg.GlobalConcurrency = 1
+	cfg.MaxPages = 1
+	cfg.MaxDepth = 0
+	cfg.RequestTimeout = 5 * time.Second
+	cfg.RenderMode = config.RenderModeStatic
+	cfg.RespectRobots = false
+	cfg.SSRFProtection = false
+	f := fetcher.New(fetcher.Options{UserAgent: "test-crawler/1.0", Timeout: 5 * time.Second, MaxResponseBody: 1 << 20, MaxDecompressedBody: 2 << 20, MaxRedirectHops: 3})
+	s := NewServer(ServerConfig{
+		DB:      db,
+		Config:  &cfg,
+		Fetcher: f,
+		Engine:  engine.New(engine.EngineConfig{DB: db, Fetcher: f, RateLimiter: fetcher.NewRateLimiter(1), ScopeChecker: mcpScopeCheckerForTestURL(t, ts.URL), Config: &cfg}),
+	})
+
+	result := callTool(t, s, map[string]any{"url": ts.URL + "/", "maxPages": float64(1), "renderMode": "static"})
+	if result.IsError {
+		t.Fatalf("crawl_site returned error: %v", result.Content)
+	}
+	var res crawlSiteResult
+	for _, content := range result.Content {
+		if tc, ok := content.(gomcp.TextContent); ok {
+			if err := json.Unmarshal([]byte(tc.Text), &res); err != nil {
+				t.Fatalf("parsing crawl result: %v", err)
+			}
+		}
+	}
+	if res.JobID == "" {
+		t.Fatal("expected job id")
+	}
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("crawl did not reach slow handler")
+	}
+
+	req := gomcp.CallToolRequest{}
+	req.Params.Arguments = map[string]any{"jobId": res.JobID}
+	cancelResult, err := s.handleCancelCrawl(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleCancelCrawl: %v", err)
+	}
+	if cancelResult.IsError {
+		t.Fatalf("cancel_crawl returned error: %v", cancelResult.Content)
+	}
+
+	job := waitForMCPJobStatus(t, db, res.JobID, 3*time.Second, "cancelled", "completed", "failed")
+	if job.Status != "cancelled" {
+		t.Fatalf("MCP cancellation final status = %q, error=%v; want cancelled", job.Status, job.Error)
+	}
+}
+
+func waitForMCPJobStatus(t *testing.T, db *storage.DB, jobID string, timeout time.Duration, statuses ...string) *storage.CrawlJob {
+	t.Helper()
+	want := map[string]bool{}
+	for _, status := range statuses {
+		want[status] = true
+	}
+	deadline := time.Now().Add(timeout)
+	var last *storage.CrawlJob
+	for time.Now().Before(deadline) {
+		job, err := db.GetJob(jobID)
+		if err == nil {
+			last = job
+			if want[job.Status] {
+				return job
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if last != nil {
+		t.Fatalf("timed out waiting for job %s statuses %v; last status=%q error=%v", jobID, statuses, last.Status, last.Error)
+	}
+	t.Fatalf("timed out waiting for job %s statuses %v; job not found", jobID, statuses)
+	return nil
+}
+
+func mcpScopeCheckerForTestURL(t *testing.T, rawURL string) *urlutil.ScopeChecker {
+	t.Helper()
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		t.Fatalf("parsing test URL: %v", err)
+	}
+	sc, err := urlutil.NewScopeChecker("exact_host", parsed.Hostname(), nil)
+	if err != nil {
+		t.Fatalf("creating scope checker: %v", err)
+	}
+	return sc
+}
+
 func TestCancelCrawl_RejectsCompletedJob(t *testing.T) {
 	db := setupTestDB(t)
 	s := NewServer(ServerConfig{DB: db})
@@ -334,5 +454,3 @@ func TestCrawlSite_NilDB(t *testing.T) {
 		t.Error("expected error when DB is nil")
 	}
 }
-
-

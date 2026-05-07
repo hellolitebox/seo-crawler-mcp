@@ -82,7 +82,7 @@ func (db *DB) UpdateJobStatus(id, status string) error {
 // UpdateJobStarted sets a job to running with the current timestamp.
 func (db *DB) UpdateJobStarted(id string) error {
 	result, err := db.Exec(
-		`UPDATE crawl_jobs SET status = 'running', started_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`,
+		`UPDATE crawl_jobs SET status = 'running', started_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ? AND status = 'queued'`,
 		id,
 	)
 	if err != nil {
@@ -94,7 +94,11 @@ func (db *DB) UpdateJobStarted(id string) error {
 		return fmt.Errorf("checking rows affected for job %q: %w", id, err)
 	}
 	if rows == 0 {
-		return fmt.Errorf("job %q not found", id)
+		job, getErr := db.GetJob(id)
+		if getErr != nil {
+			return fmt.Errorf("job %q not found", id)
+		}
+		return fmt.Errorf("job %q has status %q, expected queued", id, job.Status)
 	}
 
 	return nil

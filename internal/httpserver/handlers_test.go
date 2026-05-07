@@ -1,14 +1,23 @@
 package httpserver
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/config"
+	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/engine"
+	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/fetcher"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/storage"
+	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/urlutil"
 )
 
 // newTestServer creates a Server backed by a temp-file SQLite DB.
@@ -23,6 +32,46 @@ func newTestServer(t *testing.T) (*Server, http.Handler) {
 	t.Cleanup(func() { db.Close() })
 
 	srv := New(db, nil, nil)
+	return srv, srv.Handler()
+}
+
+func newTestCrawlServer(t *testing.T, rawURL string, requestTimeout time.Duration) (*Server, http.Handler) {
+	t.Helper()
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	db, err := storage.Open(dbPath)
+	if err != nil {
+		t.Fatalf("opening test db: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	cfg := config.DefaultConfig()
+	cfg.MaxConcurrentCrawls = 1
+	cfg.GlobalConcurrency = 1
+	cfg.MaxPages = 1
+	cfg.MaxDepth = 0
+	cfg.RequestTimeout = requestTimeout
+	cfg.RenderMode = config.RenderModeStatic
+	cfg.RespectRobots = false
+	cfg.SSRFProtection = false
+	f := fetcher.New(fetcher.Options{UserAgent: "test-crawler/1.0", Timeout: requestTimeout, MaxResponseBody: 1 << 20, MaxDecompressedBody: 2 << 20, MaxRedirectHops: 3})
+	eng := engine.New(engine.EngineConfig{
+		DB:           db,
+		Fetcher:      f,
+		RateLimiter:  fetcher.NewRateLimiter(1),
+		ScopeChecker: scopeCheckerForTestURL(t, rawURL),
+		Config:       &cfg,
+	})
+	srv := &Server{
+		db:      db,
+		engine:  eng,
+		config:  &cfg,
+		allowed: []string{},
+		limiter: newRateLimiter(10, time.Hour),
+		purger:  newPurgeWorker(db),
+		queue:   make(chan struct{}, 1),
+		running: map[string]context.CancelCauseFunc{},
+		rootCtx: context.Background(),
+	}
 	return srv, srv.Handler()
 }
 
@@ -256,6 +305,169 @@ func TestJobDelete_CancelsRunning(t *testing.T) {
 	if job.Status != "cancelling" {
 		t.Fatalf("expected status=cancelling, got %s", job.Status)
 	}
+}
+
+func TestCrawlImmediateStartCompletesFromQueuedJob(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, `<!doctype html><html><head><title>OK</title></head><body><h1>OK</h1></body></html>`)
+	}))
+	defer ts.Close()
+
+	srv, h := newTestCrawlServer(t, ts.URL, 2*time.Second)
+
+	body := bytes.NewBufferString(fmt.Sprintf(`{"url":%q,"maxPages":1,"renderMode":"static"}`, ts.URL+"/"))
+	req := httptest.NewRequest(http.MethodPost, "/api/crawl", body)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("POST /api/crawl status = %d, body=%s", rr.Code, rr.Body.String())
+	}
+	var resp map[string]string
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+
+	job := waitForJobStatus(t, srv.db, resp["jobId"], 3*time.Second, "completed", "failed", "cancelled")
+	if job.Status != "completed" {
+		t.Fatalf("immediate crawl final status = %q, error=%v; want completed", job.Status, job.Error)
+	}
+}
+
+func TestJobDelete_CancelledQueuedRegisteredRunWins(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, `<html><head><title>should not run</title></head><body>ok</body></html>`)
+	}))
+	defer ts.Close()
+
+	srv, h := newTestCrawlServer(t, ts.URL, 2*time.Second)
+
+	job, err := srv.db.CreateJob("crawl", `{}`, fmt.Sprintf(`[%q]`, ts.URL+"/"))
+	if err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+	ctx, cancel, ok := srv.registerRun(job.ID)
+	if !ok {
+		t.Fatal("registerRun returned !ok")
+	}
+	defer srv.unregisterRun(job.ID)
+	defer cancel(nil)
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/jobs/"+job.ID, nil)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("DELETE status = %d, body=%s", rr.Code, rr.Body.String())
+	}
+	select {
+	case <-ctx.Done():
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("DELETE of queued-but-registered job did not cancel registered run context")
+	}
+
+	err = srv.engine.RunCrawl(ctx, job.ID)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("RunCrawl error = %v, want context.Canceled", err)
+	}
+	updated, err := srv.db.GetJob(job.ID)
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if updated.Status != "cancelled" {
+		t.Fatalf("job status after queued cancellation race = %q, want cancelled", updated.Status)
+	}
+}
+
+func TestJobDelete_RunningCrawlStopsEngineAndFinishesCancelled(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-started:
+		default:
+			close(started)
+		}
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, `<html><head><title>slow</title></head><body>slow</body></html>`)
+	}))
+	defer ts.Close()
+	defer close(release)
+
+	srv, h := newTestCrawlServer(t, ts.URL, 5*time.Second)
+
+	body := bytes.NewBufferString(fmt.Sprintf(`{"url":%q,"maxPages":1,"renderMode":"static"}`, ts.URL+"/"))
+	req := httptest.NewRequest(http.MethodPost, "/api/crawl", body)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("POST /api/crawl status = %d, body=%s", rr.Code, rr.Body.String())
+	}
+	var resp map[string]string
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("crawl did not reach slow handler")
+	}
+
+	delReq := httptest.NewRequest(http.MethodDelete, "/api/jobs/"+resp["jobId"], nil)
+	delRR := httptest.NewRecorder()
+	h.ServeHTTP(delRR, delReq)
+	if delRR.Code != http.StatusOK {
+		t.Fatalf("DELETE status = %d, body=%s", delRR.Code, delRR.Body.String())
+	}
+
+	job := waitForJobStatus(t, srv.db, resp["jobId"], 3*time.Second, "cancelled", "completed", "failed")
+	if job.Status != "cancelled" {
+		t.Fatalf("running cancellation final status = %q, error=%v; want cancelled", job.Status, job.Error)
+	}
+}
+
+func waitForJobStatus(t *testing.T, db *storage.DB, jobID string, timeout time.Duration, statuses ...string) *storage.CrawlJob {
+	t.Helper()
+	want := map[string]bool{}
+	for _, status := range statuses {
+		want[status] = true
+	}
+	deadline := time.Now().Add(timeout)
+	var last *storage.CrawlJob
+	for time.Now().Before(deadline) {
+		job, err := db.GetJob(jobID)
+		if err == nil {
+			last = job
+			if want[job.Status] {
+				return job
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if last != nil {
+		t.Fatalf("timed out waiting for job %s statuses %v; last status=%q error=%v", jobID, statuses, last.Status, last.Error)
+	}
+	t.Fatalf("timed out waiting for job %s statuses %v; job not found", jobID, statuses)
+	return nil
+}
+
+func scopeCheckerForTestURL(t *testing.T, rawURL string) *urlutil.ScopeChecker {
+	t.Helper()
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		t.Fatalf("parsing test URL: %v", err)
+	}
+	sc, err := urlutil.NewScopeChecker("exact_host", parsed.Hostname(), nil)
+	if err != nil {
+		t.Fatalf("creating scope checker: %v", err)
+	}
+	return sc
 }
 
 func TestJobDelete_NotFound(t *testing.T) {

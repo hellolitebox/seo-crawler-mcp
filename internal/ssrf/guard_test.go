@@ -123,6 +123,24 @@ func TestValidateHost_RawIP(t *testing.T) {
 	}
 }
 
+func TestValidateHost_BlocksDirectPrivateAndMetadataIPs(t *testing.T) {
+	g := NewGuard(false)
+
+	for _, host := range []string{
+		"10.0.0.1",
+		"172.16.0.10",
+		"192.168.1.50",
+		"169.254.169.254",
+		"::ffff:169.254.169.254",
+	} {
+		t.Run(host, func(t *testing.T) {
+			if err := g.ValidateHost(host); err == nil {
+				t.Fatalf("ValidateHost(%q) = nil, want blocked", host)
+			}
+		})
+	}
+}
+
 func TestIsBlockedIP_CloudMetadataAlwaysBlocked(t *testing.T) {
 	g := NewGuard(true) // allowPrivateNetworks=true
 
