@@ -47,6 +47,41 @@ func (db *DB) InsertIssue(input IssueInput) (int64, error) {
 	return id, nil
 }
 
+// InsertIssuesBatch inserts many issues in a single transaction. Vastly
+// faster than calling InsertIssue in a loop because it acquires the (single)
+// SQLite write connection once instead of once per row, and uses one prepared
+// statement reused across rows.
+//
+// Use this from any post-crawl phase that emits per-page issues (markdown
+// negotiation, text quality, axe audits, ...) so the API stays responsive
+// while a 3K-row insert runs.
+func (db *DB) InsertIssuesBatch(inputs []IssueInput) error {
+	if len(inputs) == 0 {
+		return nil
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin batch: %w", err)
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare(
+		`INSERT INTO issues (job_id, url_id, issue_type, severity, scope, details_json)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+	)
+	if err != nil {
+		return fmt.Errorf("prepare batch: %w", err)
+	}
+	defer stmt.Close()
+
+	for _, in := range inputs {
+		if _, err := stmt.Exec(in.JobID, in.URLID, in.IssueType, in.Severity, in.Scope, in.DetailsJSON); err != nil {
+			return fmt.Errorf("insert issue %q: %w", in.IssueType, err)
+		}
+	}
+	return tx.Commit()
+}
+
 // GetIssuesByJob returns issues for a job with cursor pagination.
 func (db *DB) GetIssuesByJob(jobID string, limit int, cursor string) ([]Issue, error) {
 	var cursorID int64

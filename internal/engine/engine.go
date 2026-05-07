@@ -2018,35 +2018,30 @@ func (e *Engine) checkMarkdownNegotiation(ctx context.Context, jobID string) {
 	details := string(detailsJSON)
 	e.db.InsertEvent(jobID, "markdown_negotiation", &details, nil)
 
-	// Create issues for markdown negotiation status
+	// Build all issues in memory then write them in a single transaction.
+	// Calling InsertIssue 2.5K times in a loop would acquire/release the
+	// (single) SQLite write connection 2.5K times, blocking other queries.
+	issueBatch := make([]storage.IssueInput, 0, len(results))
 	for _, r := range results {
+		d, _ := json.Marshal(map[string]interface{}{
+			"url":         r.URL,
+			"contentType": r.ContentType,
+		})
+		ds := string(d)
+		itype := "missing_markdown_negotiation"
 		if r.Supports {
-			d, _ := json.Marshal(map[string]interface{}{
-				"url":         r.URL,
-				"contentType": r.ContentType,
-			})
-			ds := string(d)
-			e.db.InsertIssue(storage.IssueInput{
-				JobID:       jobID,
-				IssueType:   "supports_markdown_negotiation",
-				Severity:    "info",
-				Scope:       "page_local",
-				DetailsJSON: &ds,
-			})
-		} else {
-			d, _ := json.Marshal(map[string]interface{}{
-				"url":         r.URL,
-				"contentType": r.ContentType,
-			})
-			ds := string(d)
-			e.db.InsertIssue(storage.IssueInput{
-				JobID:       jobID,
-				IssueType:   "missing_markdown_negotiation",
-				Severity:    "info",
-				Scope:       "page_local",
-				DetailsJSON: &ds,
-			})
+			itype = "supports_markdown_negotiation"
 		}
+		issueBatch = append(issueBatch, storage.IssueInput{
+			JobID:       jobID,
+			IssueType:   itype,
+			Severity:    "info",
+			Scope:       "page_local",
+			DetailsJSON: &ds,
+		})
+	}
+	if err := e.db.InsertIssuesBatch(issueBatch); err != nil {
+		log.Printf("engine: markdown negotiation issues batch insert failed: %v", err)
 	}
 
 	log.Printf("engine: markdown negotiation: %d/%d pages support Accept: text/markdown", supportedCount, total)

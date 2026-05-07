@@ -98,9 +98,12 @@ func (s *Server) handleCrawl(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Concurrent crawl limit.
-	maxConcurrent := 3
-	if s.config != nil {
+	// Concurrent crawl limit. Lowered to 1 because two large crawls (e.g. two
+	// 3K-page sites) compete for the single SQLite write connection during
+	// post-processing and starve every other API request. Override via
+	// s.config.MaxConcurrentCrawls if you really want more.
+	maxConcurrent := 1
+	if s.config != nil && s.config.MaxConcurrentCrawls > 0 {
 		maxConcurrent = s.config.MaxConcurrentCrawls
 	}
 	activeCount, err := s.db.CountActiveJobs("crawl")
