@@ -218,7 +218,8 @@ func TestJobStatus_Found(t *testing.T) {
 	}
 }
 
-func TestJobDelete_TombstonesAndPurgesAsync(t *testing.T) {
+func TestJobDelete_TombstonesWithoutPurgingByDefault(t *testing.T) {
+	t.Setenv("SEO_CRAWLER_PURGE_ON_DELETE", "")
 	srv, h := newTestServer(t)
 	seedJob(t, srv.db, "job-purge", "https://example.com", "completed")
 
@@ -235,16 +236,13 @@ func TestJobDelete_TombstonesAndPurgesAsync(t *testing.T) {
 		t.Fatalf("expected status=deleted, got %v", resp)
 	}
 
-	// The handler returns immediately after tombstoning. The actual purge
-	// happens in a background goroutine — wait briefly for it to complete.
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := srv.db.GetJob("job-purge"); err != nil {
-			return // job is gone, success
-		}
-		time.Sleep(20 * time.Millisecond)
+	job, err := srv.db.GetJob("job-purge")
+	if err != nil {
+		t.Fatalf("job should be tombstoned, not purged: %v", err)
 	}
-	t.Fatalf("expected job to be purged within 2s")
+	if job.Status != "deleting" {
+		t.Fatalf("expected tombstone status deleting, got %q", job.Status)
+	}
 }
 
 func TestJobDelete_TombstoneHidesFromList(t *testing.T) {

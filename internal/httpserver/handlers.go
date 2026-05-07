@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"time"
 
@@ -296,18 +297,19 @@ func (s *Server) handleJobCancel(w http.ResponseWriter, r *http.Request, jobID s
 	}
 
 	// Completed/failed/cancelled job: tombstone it so the UI hides it
-	// immediately, then purge in the background. Cascade-deleting a 200K-URL
-	// job synchronously could lock the single SQLite write conn for tens of
-	// seconds, blocking every other request.
+	// immediately. Do not purge during normal interactive traffic: purging large
+	// jobs shares the single SQLite connection and can block POST /api/crawl and
+	// status reads long enough for the UI to look hung. Physical cleanup is a
+	// maintenance operation, enabled explicitly with SEO_CRAWLER_PURGE_ON_DELETE=1.
 	if err := s.db.UpdateJobStatus(jobID, "deleting"); err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("marking deleted: %v", err))
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"jobId": jobID, "status": "deleted"})
 
-	// Hand off to the singleton purge worker. Multiple deletes in quick
-	// succession don't fight for the SQLite write connection — they queue.
-	s.purger.enqueue(jobID)
+	if os.Getenv("SEO_CRAWLER_PURGE_ON_DELETE") == "1" {
+		s.purger.enqueue(jobID)
+	}
 }
 
 // urlLookup returns a dto.URLLookup backed by the database.
