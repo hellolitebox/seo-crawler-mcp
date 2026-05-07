@@ -186,11 +186,14 @@ func (db *DB) ListJobsPaginated(limit, offset int) ([]CrawlJob, error) {
 }
 
 // purgeChunkSize is how many rows are deleted per table per transaction.
-// Each chunk is its own transaction so the (single) write connection is
-// released between chunks, letting normal API queries interleave instead of
-// being blocked for the entire purge. With 22 child tables and a 200K-row
-// job, we end up with ~50 small transactions instead of one giant lock.
-const purgeChunkSize = 5000
+// Each chunk is intentionally small because this process uses a single SQLite
+// connection. Large chunks make background purges monopolize the connection and
+// stall read endpoints like /api/jobs.
+const purgeChunkSize = 500
+
+// purgeChunkYield is the tiny pause between chunks that lets normal API reads
+// acquire the DB connection while a large background purge is draining.
+const purgeChunkYield = 10 * time.Millisecond
 
 // purgeTables lists tables that reference crawl_jobs(id), ordered from leaves
 // to parents so chunked deletes satisfy immediate SQLite FK checks. Keep tables
@@ -269,6 +272,7 @@ func (db *DB) purgeTableChunked(table, jobID string) error {
 		if n < purgeChunkSize {
 			return nil // last chunk
 		}
+		time.Sleep(purgeChunkYield)
 	}
 }
 
