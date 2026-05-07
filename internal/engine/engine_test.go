@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/config"
+	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/crawl"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/fetcher"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/ssrf"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/storage"
@@ -285,5 +286,78 @@ func TestRunCrawlCancellation(t *testing.T) {
 	job, _ = db.GetJob(job.ID)
 	if job.Status != "cancelled" && job.Status != "completed" {
 		t.Errorf("job status = %q, want cancelled or completed", job.Status)
+	}
+}
+
+func TestPersistItemDoesNotDoNetworkHEADInsideTransaction(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "persist-no-head.db")
+	db, err := storage.Open(dbPath)
+	if err != nil {
+		t.Fatalf("opening database: %v", err)
+	}
+	defer db.Close()
+
+	job, err := db.CreateJob("crawl", `{}`, `["https://example.com/"]`)
+	if err != nil {
+		t.Fatalf("creating job: %v", err)
+	}
+	urlID, err := db.UpsertURL(job.ID, "https://example.com/", "example.com", "fetched", true, "seed")
+	if err != nil {
+		t.Fatalf("upserting url: %v", err)
+	}
+
+	headStarted := make(chan struct{}, 1)
+	slowExternal := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			headStarted <- struct{}{}
+			time.Sleep(500 * time.Millisecond)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer slowExternal.Close()
+
+	eng := &Engine{
+		db:      db,
+		fetcher: fetcher.New(fetcher.Options{Timeout: time.Second}),
+	}
+
+	started := time.Now()
+	err = eng.persistItem(context.Background(), job.ID, persistItem{
+		fetchSeq: 1,
+		parseResult: parseResult{
+			fetchResult: fetchResult{
+				urlID:    urlID,
+				url:      "https://example.com/",
+				host:     "example.com",
+				depth:    0,
+				fetchSeq: 1,
+				result: &fetcher.FetchResult{
+					RequestedURL: "https://example.com/",
+					FinalURL:     "https://example.com/",
+					StatusCode:   http.StatusOK,
+					ContentType:  "text/html",
+				},
+			},
+			edges: []crawl.DiscoveredEdge{{
+				SourceURLID:         urlID,
+				DeclaredTargetURL:   slowExternal.URL,
+				NormalizedTargetURL: slowExternal.URL,
+				SourceKind:          "html",
+				RelationType:        "canonical",
+				DiscoveryMode:       "static",
+				IsInternal:          false,
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("persistItem: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > 200*time.Millisecond {
+		t.Fatalf("persistItem took %v; likely performed network I/O while holding DB transaction", elapsed)
+	}
+	select {
+	case <-headStarted:
+		t.Fatal("persistItem should not issue external HEAD requests")
+	default:
 	}
 }

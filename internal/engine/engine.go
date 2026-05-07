@@ -1619,14 +1619,11 @@ func (e *Engine) persistItem(ctx context.Context, jobID string, item persistItem
 			boolToInt = 1
 		}
 
-		// HEAD request for out-of-scope canonical/hreflang targets
+		// Do not perform network I/O while holding the SQLite transaction. External
+		// canonical/hreflang status checks belong in a post-crawl phase; doing HEAD
+		// requests here blocks the single DB connection and makes live activity look
+		// stuck while a slow third-party URL times out.
 		var targetStatusCode *int
-		if !edge.IsInternal && (edge.RelationType == "canonical" || edge.RelationType == "hreflang") {
-			headResult, headErr := e.fetcher.HeadContext(ctx, edge.NormalizedTargetURL)
-			if headErr == nil && headResult != nil {
-				targetStatusCode = &headResult.StatusCode
-			}
-		}
 
 		if _, edgeErr := tx.ExecContext(ctx,
 			`INSERT INTO edges (job_id, source_url_id, normalized_target_url_id,

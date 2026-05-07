@@ -106,12 +106,13 @@ func TestCrossScopeRedirect_OutOfScopeStatus(t *testing.T) {
 	}
 }
 
-// TestHeadRequestForOutOfScopeCanonical verifies that when a page has a canonical
-// pointing to an out-of-scope URL, a HEAD request is sent to verify it.
-func TestHeadRequestForOutOfScopeCanonical(t *testing.T) {
+// TestOutOfScopeCanonicalDoesNotHeadDuringPersist verifies that external
+// canonical URLs are persisted without doing network I/O inside the SQLite
+// transaction. Target status checks belong in a separate post-crawl phase.
+func TestOutOfScopeCanonicalDoesNotHeadDuringPersist(t *testing.T) {
 	headReceived := false
 
-	// External server that tracks HEAD requests
+	// External server that would track HEAD requests if persistItem issued them.
 	external := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodHead && r.URL.Path == "/canonical-target" {
 			headReceived = true
@@ -204,11 +205,11 @@ func TestHeadRequestForOutOfScopeCanonical(t *testing.T) {
 		t.Fatalf("persistItem: %v", err)
 	}
 
-	if !headReceived {
-		t.Error("expected HEAD request to be sent to out-of-scope canonical target")
+	if headReceived {
+		t.Error("persistItem should not send HEAD requests while holding the DB transaction")
 	}
 
-	// Verify the edge has target_status_code set
+	// Verify the canonical edge is preserved, but target_status_code is left unset.
 	edges, err := db.GetEdgesBySource(job.ID, urlID, 100, "")
 	if err != nil {
 		t.Fatalf("getting edges: %v", err)
@@ -218,10 +219,8 @@ func TestHeadRequestForOutOfScopeCanonical(t *testing.T) {
 	for _, edge := range edges {
 		if edge.RelationType == "canonical" {
 			foundCanonical = true
-			if !edge.TargetStatusCode.Valid {
-				t.Error("canonical edge should have target_status_code set")
-			} else if edge.TargetStatusCode.Int64 != 200 {
-				t.Errorf("canonical edge target_status_code = %d, want 200", edge.TargetStatusCode.Int64)
+			if edge.TargetStatusCode.Valid {
+				t.Errorf("canonical edge target_status_code = %d, want unset", edge.TargetStatusCode.Int64)
 			}
 		}
 	}
