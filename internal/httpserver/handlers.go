@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -248,13 +247,9 @@ func (s *Server) handleJobCancel(w http.ResponseWriter, r *http.Request, jobID s
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"jobId": jobID, "status": "deleted"})
 
-	go func(id string) {
-		if err := s.db.PurgeJob(id); err != nil {
-			slog.Error("purge job failed", "job", id, "err", err)
-		} else {
-			slog.Info("purge job complete", "job", id)
-		}
-	}(jobID)
+	// Hand off to the singleton purge worker. Multiple deletes in quick
+	// succession don't fight for the SQLite write connection — they queue.
+	s.purger.enqueue(jobID)
 }
 
 // urlLookup returns a dto.URLLookup backed by the database.

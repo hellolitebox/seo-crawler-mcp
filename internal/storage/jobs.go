@@ -181,71 +181,86 @@ func (db *DB) ListJobsPaginated(limit, offset int) ([]CrawlJob, error) {
 	return jobs, nil
 }
 
-// PurgeJob deletes a job and all its dependent rows from every child table.
-// We bypass cascade-delete (which is O(n) per child) and instead disable FK
-// enforcement, delete each child table by job_id directly (constant-time per
-// table thanks to indexes), then re-enable FKs. On a 200K-row job this turns
-// a multi-minute lock into a few seconds.
+// purgeChunkSize is how many rows are deleted per table per transaction.
+// Each chunk is its own transaction so the (single) write connection is
+// released between chunks, letting normal API queries interleave instead of
+// being blocked for the entire purge. With 22 child tables and a 200K-row
+// job, we end up with ~50 small transactions instead of one giant lock.
+const purgeChunkSize = 5000
+
+// purgeTables lists every table that references crawl_jobs(id). Order doesn't
+// matter because we delete with FK enforcement deferred per-statement.
+var purgeTables = []string{
+	"asset_references",
+	"assets",
+	"axe_audits",
+	"canonical_clusters",
+	"crawl_events",
+	"duplicate_clusters",
+	"edges",
+	"fetches",
+	"global_issues",
+	"issues",
+	"llms_findings",
+	"markdown_negotiation",
+	"pages",
+	"psi_audits",
+	"redirect_hops",
+	"response_codes_summary",
+	"robots_directives",
+	"security",
+	"sitemap_entries",
+	"text_quality_findings",
+	"url_groups",
+	"urls",
+}
+
+// PurgeJob deletes a job and all its dependent rows. Designed to coexist with
+// normal API traffic on the same SQLite connection: each table is drained in
+// chunks of `purgeChunkSize` inside its own transaction, so other queries can
+// interleave between chunks instead of waiting for the full purge.
 //
-// Caller is responsible for running this off the request thread — it can
-// still hold the (single) DB connection for tens of seconds on huge jobs.
+// Total time on a 200K-row job: tens of seconds, but no single statement holds
+// the write connection for more than ~100 ms.
 func (db *DB) PurgeJob(jobID string) error {
-	// Order doesn't matter when FK enforcement is off. Tables that reference
-	// crawl_jobs(id) directly:
-	tables := []string{
-		"asset_references",
-		"assets",
-		"axe_audits",
-		"canonical_clusters",
-		"crawl_events",
-		"duplicate_clusters",
-		"edges",
-		"fetches",
-		"global_issues",
-		"issues",
-		"llms_findings",
-		"markdown_negotiation",
-		"pages",
-		"psi_audits",
-		"redirect_hops",
-		"response_codes_summary",
-		"robots_directives",
-		"security",
-		"sitemap_entries",
-		"text_quality_findings",
-		"url_groups",
-		"urls",
-	}
-
-	tx, err := db.Begin()
-	if err != nil {
-		return fmt.Errorf("begin: %w", err)
-	}
-	defer tx.Rollback() // no-op if Commit succeeds
-
-	if _, err := tx.Exec(`PRAGMA defer_foreign_keys = ON`); err != nil {
-		return fmt.Errorf("defer fks: %w", err)
-	}
-
-	for _, t := range tables {
-		// Skip tables that don't exist (older schemas). Use a single query that
-		// silently no-ops on a missing table by checking sqlite_master first.
+	for _, t := range purgeTables {
 		var exists int
-		if err := tx.QueryRow(
+		if err := db.QueryRow(
 			`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, t,
 		).Scan(&exists); err != nil || exists == 0 {
 			continue
 		}
-		if _, err := tx.Exec(`DELETE FROM `+t+` WHERE job_id = ?`, jobID); err != nil {
-			return fmt.Errorf("delete from %s: %w", t, err)
+		if err := db.purgeTableChunked(t, jobID); err != nil {
+			return fmt.Errorf("purging %s: %w", t, err)
 		}
 	}
 
-	if _, err := tx.Exec(`DELETE FROM crawl_jobs WHERE id = ?`, jobID); err != nil {
-		return fmt.Errorf("delete crawl_jobs row: %w", err)
+	// Final delete of the parent row — small, single statement.
+	if _, err := db.Exec(`DELETE FROM crawl_jobs WHERE id = ?`, jobID); err != nil {
+		return fmt.Errorf("deleting parent row: %w", err)
 	}
+	return nil
+}
 
-	return tx.Commit()
+// purgeTableChunked deletes all rows for `jobID` in `table` in chunks of
+// purgeChunkSize, releasing the connection between chunks.
+func (db *DB) purgeTableChunked(table, jobID string) error {
+	for {
+		res, err := db.Exec(
+			// SQLite doesn't support DELETE ... LIMIT without a build flag, so we
+			// use rowid-in-subquery, which it does support.
+			`DELETE FROM `+table+` WHERE rowid IN (
+				SELECT rowid FROM `+table+` WHERE job_id = ? LIMIT ?
+			)`, jobID, purgeChunkSize,
+		)
+		if err != nil {
+			return err
+		}
+		n, _ := res.RowsAffected()
+		if n < purgeChunkSize {
+			return nil // last chunk
+		}
+	}
 }
 
 // MarkOrphanedJobsFailed transitions any jobs left in 'running' or 'queued'
@@ -265,6 +280,27 @@ func (db *DB) MarkOrphanedJobsFailed(reason string) (int, error) {
 	}
 	n, _ := res.RowsAffected()
 	return int(n), nil
+}
+
+// ResumePendingPurges returns the IDs of jobs left in 'deleting' status (a
+// previous process died mid-purge). The HTTP layer enqueues these on the
+// purge worker on startup so they don't stay tombstoned forever.
+func (db *DB) ResumePendingPurges() ([]string, error) {
+	rows, err := db.Query(`SELECT id FROM crawl_jobs WHERE status = 'deleting'`)
+	if err != nil {
+		return nil, fmt.Errorf("querying pending purges: %w", err)
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 // CountJobs returns the total number of jobs (excluding tombstoned 'deleting').

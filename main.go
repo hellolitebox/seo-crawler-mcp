@@ -71,6 +71,11 @@ func main() {
 		fmt.Fprintf(os.Stderr, "reaped %d orphaned job(s)\n", n)
 	}
 
+	// Pending purges from a process that died mid-DELETE: log them; the HTTP
+	// server's purge worker is created in httpserver.New, so we enqueue from
+	// there once it's wired (see Server.ResumePendingPurges).
+	pendingPurges, _ := db.ResumePendingPurges()
+
 	guard := ssrf.NewGuard(cfg.AllowPrivateNetworks)
 
 	f := fetcher.New(fetcher.Options{
@@ -111,6 +116,12 @@ func main() {
 
 	if *httpAddr != "" {
 		httpSrv := httpserver.New(db, eng, cfg)
+		for _, id := range pendingPurges {
+			httpSrv.EnqueuePurge(id)
+		}
+		if len(pendingPurges) > 0 {
+			fmt.Fprintf(os.Stderr, "resumed %d pending purge(s)\n", len(pendingPurges))
+		}
 		log.Printf("HTTP server listening on %s", *httpAddr)
 		log.Fatal(http.ListenAndServe(*httpAddr, httpSrv.Handler()))
 		return

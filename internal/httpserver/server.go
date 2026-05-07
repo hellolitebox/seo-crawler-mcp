@@ -20,6 +20,7 @@ type Server struct {
 	engine  *engine.Engine
 	config  *config.Config
 	limiter *rateLimiter
+	purger  *purgeWorker
 	allowed []string // allowed CORS origins
 }
 
@@ -43,6 +44,7 @@ func New(db *storage.DB, eng *engine.Engine, cfg *config.Config) *Server {
 		config:  cfg,
 		allowed: allowed,
 		limiter: newRateLimiter(10, time.Hour), // 10 crawls per IP per hour
+		purger:  newPurgeWorker(db),
 	}
 }
 
