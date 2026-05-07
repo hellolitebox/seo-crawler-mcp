@@ -192,29 +192,34 @@ func (db *DB) ListJobsPaginated(limit, offset int) ([]CrawlJob, error) {
 // job, we end up with ~50 small transactions instead of one giant lock.
 const purgeChunkSize = 5000
 
-// purgeTables lists every table that references crawl_jobs(id). Order doesn't
-// matter because we delete with FK enforcement deferred per-statement.
+// purgeTables lists tables that reference crawl_jobs(id), ordered from leaves
+// to parents so chunked deletes satisfy immediate SQLite FK checks. Keep tables
+// that reference fetches/urls before fetches/urls, and cluster members before
+// their cluster parent tables.
 var purgeTables = []string{
 	"asset_references",
-	"assets",
-	"axe_audits",
-	"canonical_clusters",
-	"crawl_events",
-	"duplicate_clusters",
+	"canonical_cluster_members",
+	"duplicate_cluster_members",
+	"redirect_hops",
+	"pages",
 	"edges",
-	"fetches",
-	"global_issues",
+	"assets",
 	"issues",
+	"duplicate_clusters",
+	"canonical_clusters",
+	"fetches",
+	"axe_audits",
+	"crawl_events",
+	"global_issues",
 	"llms_findings",
 	"markdown_negotiation",
-	"pages",
 	"psi_audits",
-	"redirect_hops",
 	"response_codes_summary",
 	"robots_directives",
 	"security",
 	"sitemap_entries",
 	"text_quality_findings",
+	"url_pattern_groups",
 	"url_groups",
 	"urls",
 }

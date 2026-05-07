@@ -19,7 +19,7 @@ func TestPurgeJob_RemovesAcrossAllChildTables(t *testing.T) {
 	if err != nil {
 		t.Fatalf("upsert url: %v", err)
 	}
-	if _, err := db.InsertFetch(FetchInput{
+	fetchID, err := db.InsertFetch(FetchInput{
 		JobID:          "purge-me",
 		FetchSeq:       1,
 		RequestedURLID: urlID,
@@ -27,8 +27,24 @@ func TestPurgeJob_RemovesAcrossAllChildTables(t *testing.T) {
 		HTTPMethod:     "GET",
 		FetchKind:      "full",
 		RenderMode:     "static",
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("insert fetch: %v", err)
+	}
+	if _, err := db.InsertPage(PageInput{
+		JobID:             "purge-me",
+		URLID:             urlID,
+		FetchID:           fetchID,
+		Depth:             0,
+		IndexabilityState: "indexable",
+	}); err != nil {
+		t.Fatalf("insert page: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO redirect_hops (job_id, fetch_id, hop_index, status_code, from_url, to_url) VALUES (?, ?, 0, 301, ?, ?)`, "purge-me", fetchID, "https://example.com", "https://example.com/"); err != nil {
+		t.Fatalf("insert redirect hop: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO url_pattern_groups (job_id, pattern, name, source) VALUES (?, '/blog/*', 'Blog', 'auto')`, "purge-me"); err != nil {
+		t.Fatalf("insert url pattern group: %v", err)
 	}
 	details := `{"phase":"x","message":"y"}`
 	if _, err := db.InsertEvent("purge-me", "phase", &details, nil); err != nil {
@@ -45,9 +61,9 @@ func TestPurgeJob_RemovesAcrossAllChildTables(t *testing.T) {
 	}
 
 	// Each child table should also be empty for that job.
-	for _, table := range []string{"urls", "fetches", "crawl_events"} {
+	for _, table := range []string{"urls", "fetches", "pages", "redirect_hops", "url_pattern_groups", "crawl_events"} {
 		var n int
-		row := db.QueryRow(`SELECT COUNT(*) FROM ` + table + ` WHERE job_id = ?`, "purge-me")
+		row := db.QueryRow(`SELECT COUNT(*) FROM `+table+` WHERE job_id = ?`, "purge-me")
 		if err := row.Scan(&n); err != nil {
 			t.Errorf("count %s: %v", table, err)
 			continue
