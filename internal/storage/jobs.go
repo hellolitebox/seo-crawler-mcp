@@ -152,8 +152,9 @@ func (db *DB) ListJobs() ([]CrawlJob, error) {
 
 // ListJobsPaginated returns crawl jobs ordered by creation time descending
 // with optional LIMIT/OFFSET. Pass limit=-1 to mean "no limit".
+// Jobs in 'deleting' status (tombstoned, async purge in flight) are excluded.
 func (db *DB) ListJobsPaginated(limit, offset int) ([]CrawlJob, error) {
-	query := `SELECT ` + jobColumns + ` FROM crawl_jobs ORDER BY created_at DESC`
+	query := `SELECT ` + jobColumns + ` FROM crawl_jobs WHERE status != 'deleting' ORDER BY created_at DESC`
 	var args []any
 	if limit > 0 {
 		query += ` LIMIT ? OFFSET ?`
@@ -180,6 +181,73 @@ func (db *DB) ListJobsPaginated(limit, offset int) ([]CrawlJob, error) {
 	return jobs, nil
 }
 
+// PurgeJob deletes a job and all its dependent rows from every child table.
+// We bypass cascade-delete (which is O(n) per child) and instead disable FK
+// enforcement, delete each child table by job_id directly (constant-time per
+// table thanks to indexes), then re-enable FKs. On a 200K-row job this turns
+// a multi-minute lock into a few seconds.
+//
+// Caller is responsible for running this off the request thread — it can
+// still hold the (single) DB connection for tens of seconds on huge jobs.
+func (db *DB) PurgeJob(jobID string) error {
+	// Order doesn't matter when FK enforcement is off. Tables that reference
+	// crawl_jobs(id) directly:
+	tables := []string{
+		"asset_references",
+		"assets",
+		"axe_audits",
+		"canonical_clusters",
+		"crawl_events",
+		"duplicate_clusters",
+		"edges",
+		"fetches",
+		"global_issues",
+		"issues",
+		"llms_findings",
+		"markdown_negotiation",
+		"pages",
+		"psi_audits",
+		"redirect_hops",
+		"response_codes_summary",
+		"robots_directives",
+		"security",
+		"sitemap_entries",
+		"text_quality_findings",
+		"url_groups",
+		"urls",
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin: %w", err)
+	}
+	defer tx.Rollback() // no-op if Commit succeeds
+
+	if _, err := tx.Exec(`PRAGMA defer_foreign_keys = ON`); err != nil {
+		return fmt.Errorf("defer fks: %w", err)
+	}
+
+	for _, t := range tables {
+		// Skip tables that don't exist (older schemas). Use a single query that
+		// silently no-ops on a missing table by checking sqlite_master first.
+		var exists int
+		if err := tx.QueryRow(
+			`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, t,
+		).Scan(&exists); err != nil || exists == 0 {
+			continue
+		}
+		if _, err := tx.Exec(`DELETE FROM `+t+` WHERE job_id = ?`, jobID); err != nil {
+			return fmt.Errorf("delete from %s: %w", t, err)
+		}
+	}
+
+	if _, err := tx.Exec(`DELETE FROM crawl_jobs WHERE id = ?`, jobID); err != nil {
+		return fmt.Errorf("delete crawl_jobs row: %w", err)
+	}
+
+	return tx.Commit()
+}
+
 // MarkOrphanedJobsFailed transitions any jobs left in 'running' or 'queued'
 // state into 'failed'. Called on server startup so jobs that were in-flight
 // when a previous process died don't appear stuck forever in the UI.
@@ -199,10 +267,10 @@ func (db *DB) MarkOrphanedJobsFailed(reason string) (int, error) {
 	return int(n), nil
 }
 
-// CountJobs returns the total number of jobs in the database.
+// CountJobs returns the total number of jobs (excluding tombstoned 'deleting').
 func (db *DB) CountJobs() (int, error) {
 	var count int
-	err := db.QueryRow(`SELECT COUNT(*) FROM crawl_jobs`).Scan(&count)
+	err := db.QueryRow(`SELECT COUNT(*) FROM crawl_jobs WHERE status != 'deleting'`).Scan(&count)
 	if err != nil {
 		return 0, fmt.Errorf("counting jobs: %w", err)
 	}

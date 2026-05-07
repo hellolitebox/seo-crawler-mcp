@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/storage"
 )
@@ -168,7 +169,7 @@ func TestJobStatus_Found(t *testing.T) {
 	}
 }
 
-func TestJobDelete_PurgesCompleted(t *testing.T) {
+func TestJobDelete_TombstonesAndPurgesAsync(t *testing.T) {
 	srv, h := newTestServer(t)
 	seedJob(t, srv.db, "job-purge", "https://example.com", "completed")
 
@@ -185,9 +186,48 @@ func TestJobDelete_PurgesCompleted(t *testing.T) {
 		t.Fatalf("expected status=deleted, got %v", resp)
 	}
 
-	// Verify it's actually gone
-	if _, err := srv.db.GetJob("job-purge"); err == nil {
-		t.Fatalf("expected job to be purged")
+	// The handler returns immediately after tombstoning. The actual purge
+	// happens in a background goroutine — wait briefly for it to complete.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := srv.db.GetJob("job-purge"); err != nil {
+			return // job is gone, success
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("expected job to be purged within 2s")
+}
+
+func TestJobDelete_TombstoneHidesFromList(t *testing.T) {
+	srv, h := newTestServer(t)
+	seedJob(t, srv.db, "alive", "https://a.com", "completed")
+	seedJob(t, srv.db, "deleting", "https://b.com", "completed")
+
+	// Trigger DELETE on the second one.
+	req := httptest.NewRequest(http.MethodDelete, "/api/jobs/deleting", nil)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("DELETE: expected 200, got %d", rr.Code)
+	}
+
+	// The list should immediately exclude tombstoned jobs, even before the
+	// background purge finishes.
+	listReq := httptest.NewRequest(http.MethodGet, "/api/jobs", nil)
+	listRR := httptest.NewRecorder()
+	h.ServeHTTP(listRR, listReq)
+	var listResp struct {
+		Jobs  []map[string]any `json:"jobs"`
+		Total int              `json:"total"`
+	}
+	json.NewDecoder(listRR.Body).Decode(&listResp)
+	if listResp.Total != 1 {
+		t.Fatalf("expected 1 job in list, got %d", listResp.Total)
+	}
+	for _, j := range listResp.Jobs {
+		if j["jobId"] == "deleting" {
+			t.Fatal("'deleting' job should not appear in list")
+		}
 	}
 }
 

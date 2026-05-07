@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -237,13 +238,23 @@ func (s *Server) handleJobCancel(w http.ResponseWriter, r *http.Request, jobID s
 		return
 	}
 
-	// Completed/failed/cancelled job: purge it.
-	if _, err := s.db.Exec(`DELETE FROM crawl_jobs WHERE id = ?`, jobID); err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("deleting job: %v", err))
+	// Completed/failed/cancelled job: tombstone it so the UI hides it
+	// immediately, then purge in the background. Cascade-deleting a 200K-URL
+	// job synchronously could lock the single SQLite write conn for tens of
+	// seconds, blocking every other request.
+	if err := s.db.UpdateJobStatus(jobID, "deleting"); err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("marking deleted: %v", err))
 		return
 	}
-
 	writeJSON(w, http.StatusOK, map[string]string{"jobId": jobID, "status": "deleted"})
+
+	go func(id string) {
+		if err := s.db.PurgeJob(id); err != nil {
+			slog.Error("purge job failed", "job", id, "err", err)
+		} else {
+			slog.Info("purge job complete", "job", id)
+		}
+	}(jobID)
 }
 
 // urlLookup returns a dto.URLLookup backed by the database.
