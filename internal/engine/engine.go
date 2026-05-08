@@ -123,6 +123,26 @@ func recoverWorker(cancel context.CancelCauseFunc, name string) {
 	}
 }
 
+// validateRenderTarget re-checks a URL against the SSRF guard before passing
+// it to a browser renderer. Browser processes (Chromedp / Playwright) do not
+// share the fetcher's DialContext, so the URL must be re-validated here:
+// it may have been written to the DB without going through the fetcher
+// guard, and DNS may have changed since the initial fetch (rebinding).
+// If no guard is configured, this is a no-op.
+func (e *Engine) validateRenderTarget(rawURL string) error {
+	if e.ssrfGuard == nil {
+		return nil
+	}
+	if err := e.ssrfGuard.ValidateURL(rawURL); err != nil {
+		return err
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("ssrf: invalid render URL: %w", err)
+	}
+	return e.ssrfGuard.ValidateHost(parsed.Hostname())
+}
+
 func isContextCancellation(err error) bool {
 	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
@@ -1202,6 +1222,11 @@ func (e *Engine) sitemapGapEscalation(ctx context.Context, jobID string) int {
 	for _, kp := range keyPages {
 		if ctx.Err() != nil {
 			break
+		}
+
+		if err := e.validateRenderTarget(kp.url); err != nil {
+			slog.Warn("engine: sitemap gap: ssrf rejected", "url", kp.url, "err", err)
+			continue
 		}
 
 		// Try Playwright first (better menu discovery via real click handlers),
@@ -2391,6 +2416,10 @@ func (e *Engine) browserEnrichPages(ctx context.Context, jobID string) {
 	for _, pg := range pages {
 		if ctx.Err() != nil {
 			break
+		}
+		if err := e.validateRenderTarget(pg.url); err != nil {
+			slog.Warn("engine: browser enrich: ssrf rejected", "url", pg.url, "err", err)
+			continue
 		}
 		// Use content-only render (no menu clicks) to preserve page's own content
 		pwResult, pwErr := renderer.RenderPageContentOnly(ctx, pg.url)
