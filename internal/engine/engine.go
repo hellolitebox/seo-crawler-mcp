@@ -50,9 +50,14 @@ type Engine struct {
 	fetcher      *fetcher.Fetcher
 	rateLimiter  *fetcher.RateLimiter
 	scopeChecker *urlutil.ScopeChecker
-	ssrfGuard    *ssrf.Guard
-	config       *config.Config
-	renderer     *renderer.Pool
+	// scopeCheckerExplicit is true when the caller supplied a fixed checker in
+	// EngineConfig. Otherwise the checker is derived fresh from each job's seed.
+	// The HTTP server reuses one Engine across many jobs, so caching the first
+	// derived checker leaks scope between different sites.
+	scopeCheckerExplicit bool
+	ssrfGuard            *ssrf.Guard
+	config               *config.Config
+	renderer             *renderer.Pool
 
 	// robotsRules caches parsed robots.txt per host during a crawl.
 	robotsRules   map[string]*robots.RobotsFile
@@ -62,13 +67,14 @@ type Engine struct {
 // New creates a new crawl engine.
 func New(cfg EngineConfig) *Engine {
 	return &Engine{
-		db:           cfg.DB,
-		fetcher:      cfg.Fetcher,
-		rateLimiter:  cfg.RateLimiter,
-		scopeChecker: cfg.ScopeChecker,
-		ssrfGuard:    cfg.SSRFGuard,
-		config:       cfg.Config,
-		renderer:     cfg.Renderer,
+		db:                   cfg.DB,
+		fetcher:              cfg.Fetcher,
+		rateLimiter:          cfg.RateLimiter,
+		scopeChecker:         cfg.ScopeChecker,
+		scopeCheckerExplicit: cfg.ScopeChecker != nil,
+		ssrfGuard:            cfg.SSRFGuard,
+		config:               cfg.Config,
+		renderer:             cfg.Renderer,
 	}
 }
 
@@ -361,10 +367,11 @@ func (e *Engine) seedFrontier(jobID string, job *storage.CrawlJob) (*frontier.Qu
 }
 
 // ensureScopeChecker constructs e.scopeChecker from the first frontier
-// seed if it was not provided via EngineConfig. Per-job because the seed
-// host determines the registrable-domain scope.
+// seed. Derived checkers are rebuilt for every job because the HTTP server
+// reuses one Engine across many unrelated sites. Only a checker explicitly
+// supplied via EngineConfig is kept.
 func (e *Engine) ensureScopeChecker(job *storage.CrawlJob, q *frontier.Queue) error {
-	if e.scopeChecker != nil {
+	if e.scopeCheckerExplicit && e.scopeChecker != nil {
 		return nil
 	}
 	first := q.Peek()

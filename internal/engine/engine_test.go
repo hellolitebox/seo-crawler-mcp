@@ -219,6 +219,83 @@ func TestRunCrawlIntegration(t *testing.T) {
 	}
 }
 
+func TestRunCrawlRebuildsScopeCheckerForEachJob(t *testing.T) {
+	// Regression for production bug: a long-lived HTTP server reuses one Engine
+	// across jobs. The first crawl's scope checker must not reject the next
+	// crawl when the seed host changes.
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprint(w, `<!doctype html><html><head><title>OK</title><meta name="description" content="Enough description for the test page."></head><body><h1>OK</h1><p>Enough body copy for the crawler test.</p></body></html>`)
+	}))
+	defer ts.Close()
+
+	parsed, err := url.Parse(ts.URL)
+	if err != nil {
+		t.Fatalf("parsing test URL: %v", err)
+	}
+	localhostURL := "http://localhost"
+	if parsed.Port() != "" {
+		localhostURL += ":" + parsed.Port()
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "scope-reset.db")
+	db, err := storage.Open(dbPath)
+	if err != nil {
+		t.Fatalf("opening database: %v", err)
+	}
+	defer db.Close()
+
+	cfg := config.DefaultConfig()
+	cfg.ScopeMode = config.ScopeModeExactHost
+	cfg.GlobalConcurrency = 1
+	cfg.MaxPages = 10
+	cfg.AllowPrivateNetworks = true
+	cfg.SSRFProtection = false
+	cfg.RequestTimeout = 5 * time.Second
+	cfg.ThinContentThreshold = 1
+
+	eng := New(EngineConfig{
+		DB: db,
+		Fetcher: fetcher.New(fetcher.Options{
+			UserAgent:           "test-crawler/1.0",
+			Timeout:             5 * time.Second,
+			MaxResponseBody:     5 * 1024 * 1024,
+			MaxDecompressedBody: 20 * 1024 * 1024,
+			MaxRedirectHops:     10,
+		}),
+		RateLimiter: fetcher.NewRateLimiter(cfg.PerHostConcurrency),
+		Config:      &cfg,
+	})
+
+	run := func(rawURL string) storage.CrawlJob {
+		seedURLs, _ := json.Marshal([]string{rawURL + "/"})
+		job, err := db.CreateJob("crawl", `{}`, string(seedURLs))
+		if err != nil {
+			t.Fatalf("creating job for %s: %v", rawURL, err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := eng.RunCrawl(ctx, job.ID); err != nil {
+			t.Fatalf("RunCrawl for %s: %v", rawURL, err)
+		}
+		got, err := db.GetJob(job.ID)
+		if err != nil {
+			t.Fatalf("getting job for %s: %v", rawURL, err)
+		}
+		return *got
+	}
+
+	first := run(localhostURL)
+	if first.PagesCrawled == 0 {
+		t.Fatalf("first crawl pages_crawled = 0, want > 0")
+	}
+
+	second := run(ts.URL)
+	if second.PagesCrawled == 0 {
+		t.Fatalf("second crawl pages_crawled = 0; scope checker from first host leaked into second job")
+	}
+}
+
 func TestRunCrawlCancellation(t *testing.T) {
 	// All pages are slow so cancellation always triggers
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
