@@ -296,6 +296,78 @@ func TestRunCrawlRebuildsScopeCheckerForEachJob(t *testing.T) {
 	}
 }
 
+func TestRunCrawlHonorsMaxPagesWhenFrontierIsLarge(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		if r.URL.Path == "/" {
+			fmt.Fprint(w, `<!doctype html><html><head><title>Home</title><meta name="description" content="Home description for max pages test."></head><body>`)
+			for i := 0; i < 50; i++ {
+				fmt.Fprintf(w, `<a href="/p%d">Page %d</a>`, i, i)
+			}
+			fmt.Fprint(w, `</body></html>`)
+			return
+		}
+		fmt.Fprintf(w, `<!doctype html><html><head><title>%s</title><meta name="description" content="Page description for max pages test."></head><body><p>Body copy.</p></body></html>`, r.URL.Path)
+	}))
+	defer ts.Close()
+
+	dbPath := filepath.Join(t.TempDir(), "max-pages.db")
+	db, err := storage.Open(dbPath)
+	if err != nil {
+		t.Fatalf("opening database: %v", err)
+	}
+	defer db.Close()
+
+	cfg := config.DefaultConfig()
+	cfg.GlobalConcurrency = 8
+	cfg.MaxPages = 5
+	cfg.MaxDepth = 10
+	cfg.AllowPrivateNetworks = true
+	cfg.SSRFProtection = false
+	cfg.RequestTimeout = 5 * time.Second
+	cfg.ThinContentThreshold = 1
+
+	tsURL, _ := url.Parse(ts.URL)
+	sc, err := urlutil.NewScopeChecker("exact_host", tsURL.Hostname(), nil)
+	if err != nil {
+		t.Fatalf("creating scope checker: %v", err)
+	}
+
+	seedURLs, _ := json.Marshal([]string{ts.URL + "/"})
+	job, err := db.CreateJob("crawl", `{}`, string(seedURLs))
+	if err != nil {
+		t.Fatalf("creating job: %v", err)
+	}
+
+	eng := New(EngineConfig{
+		DB: db,
+		Fetcher: fetcher.New(fetcher.Options{
+			UserAgent:           "test-crawler/1.0",
+			Timeout:             5 * time.Second,
+			MaxResponseBody:     5 * 1024 * 1024,
+			MaxDecompressedBody: 20 * 1024 * 1024,
+			MaxRedirectHops:     10,
+		}),
+		RateLimiter:  fetcher.NewRateLimiter(cfg.PerHostConcurrency),
+		ScopeChecker: sc,
+		Config:       &cfg,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := eng.RunCrawl(ctx, job.ID); err != nil {
+		t.Fatalf("RunCrawl: %v", err)
+	}
+
+	got, err := db.GetJob(job.ID)
+	if err != nil {
+		t.Fatalf("getting job: %v", err)
+	}
+	if got.PagesCrawled > cfg.MaxPages {
+		t.Fatalf("pages_crawled = %d, want <= %d", got.PagesCrawled, cfg.MaxPages)
+	}
+}
+
 func TestRunCrawlCancellation(t *testing.T) {
 	// All pages are slow so cancellation always triggers
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

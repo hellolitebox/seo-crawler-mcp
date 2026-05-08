@@ -575,6 +575,7 @@ func (e *Engine) runCrawlPipeline(
 
 	// inFlight tracks items between dispatch and persist completion.
 	var inFlight atomic.Int64
+	var scheduledFetches atomic.Int64
 
 	// Persister (1 goroutine) — serialized writes to SQLite.
 	var persisterWg sync.WaitGroup
@@ -717,21 +718,29 @@ func (e *Engine) runCrawlPipeline(
 loop:
 	for {
 		for {
+			if e.config.MaxPages > 0 && int(scheduledFetches.Load()) >= e.config.MaxPages {
+				break
+			}
 			item, ok := q.Pop()
 			if !ok {
 				break
 			}
 			inFlight.Add(1)
+			scheduledFetches.Add(1)
 			select {
 			case fetchQueue <- item:
 			case <-ctx.Done():
 				inFlight.Add(-1)
+				scheduledFetches.Add(-1)
 				completionErr = context.Cause(ctx)
 				break loop
 			}
 		}
 
-		if q.Len() == 0 && inFlight.Load() == 0 {
+		// Check completion: nothing in queue and nothing in flight. If the max-page
+		// scheduling cap is reached, do not wait for leftover frontier URLs.
+		maxPagesReached := e.config.MaxPages > 0 && int(scheduledFetches.Load()) >= e.config.MaxPages
+		if (q.Len() == 0 || maxPagesReached) && inFlight.Load() == 0 {
 			break loop
 		}
 
