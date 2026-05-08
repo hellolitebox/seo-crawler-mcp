@@ -284,11 +284,22 @@ func (s *Server) rateLimitMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// clientIP returns the apparent client IP for rate limiting and stream
+// caps. Trust order:
+//
+//  1. Fly-Client-IP (set by Fly's edge, not forwardable by clients)
+//  2. X-Forwarded-For (first hop — the leftmost entry)
+//  3. r.RemoteAddr
+//
+// SECURITY: this function trusts X-Forwarded-For if Fly-Client-IP is
+// absent. That's safe behind a reverse proxy that always overwrites
+// XFF (Fly, ALB, Cloudflare). It is NOT safe for direct internet
+// exposure: a client controls XFF and can rotate it to bypass per-IP
+// limits. The --http flag's help text states this contract.
 func clientIP(r *http.Request) string {
 	if flyIP := strings.TrimSpace(r.Header.Get("Fly-Client-IP")); flyIP != "" {
 		return flyIP
 	}
-	// Trust the X-Forwarded-For from Fly's proxy.
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 		if comma := strings.IndexByte(xff, ','); comma > 0 {
 			return strings.TrimSpace(xff[:comma])

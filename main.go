@@ -29,7 +29,10 @@ func main() {
 	checkConfig := flag.Bool("check-config", false, "Validate and print effective config")
 	configPath := flag.String("config", "", "Path to config file (TOML)")
 	dbPath := flag.String("db", "", "Path to SQLite database")
-	httpAddr := flag.String("http", "", "Start HTTP server on this address (e.g. :8080)")
+	httpAddr := flag.String("http", "", "Start HTTP server on this address (e.g. :8080). "+
+		"NOTE: per-IP rate limiting and SSE caps trust X-Forwarded-For and Fly-Client-IP "+
+		"headers from upstream proxies. Run behind a reverse proxy that strips/rewrites "+
+		"these headers; direct internet exposure lets clients spoof their IP and bypass limits.")
 	flag.Parse()
 
 	if *showVersion {
