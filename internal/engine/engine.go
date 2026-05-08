@@ -1468,10 +1468,17 @@ func (e *Engine) sitemapGapEscalation(ctx context.Context, jobID string) int {
 	return newURLsDiscovered
 }
 
+// maxAssetHeadChecks bounds the number of unique asset URLs we HEAD-check
+// post-crawl. Higher values stretch crawl wall time on link-heavy sites
+// without proportionally improving the report; 2000 covers the long tail
+// for typical sites.
+const maxAssetHeadChecks = 2000
+
 // persistItem saves a single crawl result to the database inside a single transaction.
 // headCheckAssets performs HEAD requests on all discovered asset URLs
 // (images, scripts, stylesheets, fonts, media, etc.)
-// and stores the results in the assets table. Caps at 2000 unique assets.
+// and stores the results in the assets table. Caps at maxAssetHeadChecks
+// unique assets.
 func (e *Engine) headCheckAssets(ctx context.Context, jobID string) {
 	// Query all distinct asset URLs from asset_references for this job
 	rows, err := e.db.Query(
@@ -1479,8 +1486,8 @@ func (e *Engine) headCheckAssets(ctx context.Context, jobID string) {
 		 FROM asset_references ar
 		 JOIN urls u ON u.id = ar.asset_url_id
 		 WHERE ar.job_id = ?
-		 LIMIT 2000`,
-		jobID,
+		 LIMIT ?`,
+		jobID, maxAssetHeadChecks,
 	)
 	if err != nil {
 		slog.Error("engine: query assets for HEAD checking failed", "err", err, "job_id", jobID)
