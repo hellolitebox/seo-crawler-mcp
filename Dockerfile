@@ -3,7 +3,10 @@ WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -o seo-crawler-mcp .
+# Strip pip-wheels/ from the Go build context: Go interprets a
+# top-level `vendor/`-shaped dir loosely and gets confused by random
+# binaries living next to go.mod.
+RUN rm -rf pip-wheels && CGO_ENABLED=0 GOOS=linux go build -o seo-crawler-mcp .
 
 # Python 3.10 slim, matching the cp310 wheels in vendor/. The Fly
 # remote builder can't reach PyPI reliably (connection reset by peer,
@@ -28,7 +31,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Playwright + deps from vendored wheels (no PyPI reachout).
-COPY vendor/*.whl /tmp/wheels/
+COPY pip-wheels/*.whl /tmp/wheels/
 RUN pip install --no-cache-dir --no-index /tmp/wheels/*.whl && rm -rf /tmp/wheels
 
 # Both chromedp and our Python launch scripts honour CHROMIUM_PATH so
