@@ -195,3 +195,39 @@ func TestStream_ActivityIncludesPhaseEvents(t *testing.T) {
 		t.Fatalf("expected a phase `activity` event, got: %+v", events)
 	}
 }
+
+func TestStream_PerIPCap(t *testing.T) {
+	s := &Server{streamCount: map[string]int{}}
+
+	const ip = "10.0.0.1"
+	for i := 0; i < maxStreamsPerIP; i++ {
+		if !s.tryClaimStreamSlot(ip) {
+			t.Fatalf("slot %d should have been granted", i)
+		}
+	}
+	if s.tryClaimStreamSlot(ip) {
+		t.Fatalf("expected cap to reject the (max+1)-th claim")
+	}
+
+	// Different IP is unaffected.
+	if !s.tryClaimStreamSlot("10.0.0.2") {
+		t.Fatalf("a different IP should not share the cap")
+	}
+
+	// Releasing one slot lets a new claim through.
+	s.releaseStreamSlot(ip)
+	if !s.tryClaimStreamSlot(ip) {
+		t.Fatalf("a slot should be available after release")
+	}
+
+	// Releasing all slots removes the map entry to bound growth.
+	for i := 0; i < maxStreamsPerIP; i++ {
+		s.releaseStreamSlot(ip)
+	}
+	s.streamMu.Lock()
+	_, present := s.streamCount[ip]
+	s.streamMu.Unlock()
+	if present {
+		t.Fatalf("streamCount should drop the entry when it reaches zero")
+	}
+}

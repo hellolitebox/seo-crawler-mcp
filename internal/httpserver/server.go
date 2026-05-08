@@ -18,6 +18,12 @@ import (
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/storage"
 )
 
+// maxStreamsPerIP caps the number of concurrent SSE connections one client
+// can hold open. Stops a single misbehaving client from pinning many SSE
+// goroutines and DB connections; legitimate UIs need only a handful (one
+// per open dashboard tab).
+const maxStreamsPerIP = 8
+
 // Server exposes the crawler over HTTP.
 type Server struct {
 	db      *storage.DB
@@ -31,6 +37,9 @@ type Server struct {
 	runMu   sync.Mutex
 	running map[string]context.CancelCauseFunc
 	rootCtx context.Context
+
+	streamMu    sync.Mutex
+	streamCount map[string]int // active SSE sessions per client IP
 }
 
 // New creates a new HTTP server.
@@ -48,15 +57,16 @@ func New(db *storage.DB, eng *engine.Engine, cfg *config.Config) *Server {
 		}
 	}
 	s := &Server{
-		db:      db,
-		engine:  eng,
-		config:  cfg,
-		allowed: allowed,
-		limiter: newRateLimiter(10, time.Hour), // 10 crawls per IP per hour
-		purger:  newPurgeWorker(db),
-		queue:   make(chan struct{}, 1),
-		running: map[string]context.CancelCauseFunc{},
-		rootCtx: context.Background(),
+		db:          db,
+		engine:      eng,
+		config:      cfg,
+		allowed:     allowed,
+		limiter:     newRateLimiter(10, time.Hour), // 10 crawls per IP per hour
+		purger:      newPurgeWorker(db),
+		queue:       make(chan struct{}, 1),
+		running:     map[string]context.CancelCauseFunc{},
+		rootCtx:     context.Background(),
+		streamCount: map[string]int{},
 	}
 	go s.queueWorker()
 	// Send a startup signal to pick up any queued jobs that survived a restart
@@ -235,6 +245,32 @@ func loggingMiddleware(next http.Handler) http.Handler {
 			"ip", clientIP(r),
 		)
 	})
+}
+
+// tryClaimStreamSlot reserves an SSE slot for the given client IP if the
+// per-IP cap is not yet reached. Returns true if the slot was claimed
+// (caller MUST releaseStreamSlot), false if the cap is exhausted.
+func (s *Server) tryClaimStreamSlot(ip string) bool {
+	s.streamMu.Lock()
+	defer s.streamMu.Unlock()
+	if s.streamCount[ip] >= maxStreamsPerIP {
+		return false
+	}
+	s.streamCount[ip]++
+	return true
+}
+
+// releaseStreamSlot decrements the active-stream counter for an IP and
+// drops the map entry when it hits zero so the map doesn't grow without
+// bound across the server's lifetime.
+func (s *Server) releaseStreamSlot(ip string) {
+	s.streamMu.Lock()
+	defer s.streamMu.Unlock()
+	if s.streamCount[ip] <= 1 {
+		delete(s.streamCount, ip)
+		return
+	}
+	s.streamCount[ip]--
 }
 
 // rateLimitMiddleware applies the configured rate limiter to a handler.

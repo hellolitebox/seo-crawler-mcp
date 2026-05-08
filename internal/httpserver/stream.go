@@ -266,6 +266,13 @@ func (s *Server) handleJobStreamV2(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ip := clientIP(r)
+	if !s.tryClaimStreamSlot(ip) {
+		writeError(w, http.StatusTooManyRequests, fmt.Sprintf("too many concurrent streams (max %d)", maxStreamsPerIP))
+		return
+	}
+	defer s.releaseStreamSlot(ip)
+
 	session := newStreamSession(w, r, s.db, jobID)
 	if session == nil {
 		writeError(w, http.StatusInternalServerError, "streaming unsupported")
