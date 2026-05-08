@@ -368,6 +368,80 @@ func TestRunCrawlHonorsMaxPagesWhenFrontierIsLarge(t *testing.T) {
 	}
 }
 
+func TestRunCrawlUsesJobRenderModeConfig(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/sitemap.xml":
+			w.Header().Set("Content-Type", "application/xml")
+			fmt.Fprintf(w, `<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>http://%s/hidden</loc></url></urlset>`, r.Host)
+		case "/":
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			fmt.Fprint(w, `<!doctype html><html><head><title>Home</title><meta name="description" content="Home description for render mode test."></head><body><p>Home.</p></body></html>`)
+		default:
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			fmt.Fprint(w, `<!doctype html><html><head><title>Hidden</title><meta name="description" content="Hidden description for render mode test."></head><body><p>Hidden.</p></body></html>`)
+		}
+	}))
+	defer ts.Close()
+
+	dbPath := filepath.Join(t.TempDir(), "render-mode.db")
+	db, err := storage.Open(dbPath)
+	if err != nil {
+		t.Fatalf("opening database: %v", err)
+	}
+	defer db.Close()
+
+	cfg := config.DefaultConfig()
+	cfg.GlobalConcurrency = 1
+	cfg.MaxPages = 10
+	cfg.MaxDepth = 10
+	cfg.RenderMode = config.RenderModeHybrid
+	cfg.AllowPrivateNetworks = true
+	cfg.SSRFProtection = false
+	cfg.RequestTimeout = 5 * time.Second
+	cfg.ThinContentThreshold = 1
+
+	tsURL, _ := url.Parse(ts.URL)
+	sc, err := urlutil.NewScopeChecker("exact_host", tsURL.Hostname(), nil)
+	if err != nil {
+		t.Fatalf("creating scope checker: %v", err)
+	}
+
+	seedURLs, _ := json.Marshal([]string{ts.URL + "/"})
+	job, err := db.CreateJob("crawl", `{"renderMode":"static","maxPages":1}`, string(seedURLs))
+	if err != nil {
+		t.Fatalf("creating job: %v", err)
+	}
+
+	eng := New(EngineConfig{
+		DB: db,
+		Fetcher: fetcher.New(fetcher.Options{
+			UserAgent:           "test-crawler/1.0",
+			Timeout:             5 * time.Second,
+			MaxResponseBody:     5 * 1024 * 1024,
+			MaxDecompressedBody: 20 * 1024 * 1024,
+			MaxRedirectHops:     10,
+		}),
+		RateLimiter:  fetcher.NewRateLimiter(cfg.PerHostConcurrency),
+		ScopeChecker: sc,
+		Config:       &cfg,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := eng.RunCrawl(ctx, job.ID); err != nil {
+		t.Fatalf("RunCrawl: %v", err)
+	}
+
+	var sitemapGapEvents int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM crawl_events WHERE job_id = ? AND event_type = 'sitemap_gap'`, job.ID).Scan(&sitemapGapEvents); err != nil {
+		t.Fatalf("querying sitemap gap events: %v", err)
+	}
+	if sitemapGapEvents != 0 {
+		t.Fatalf("sitemap_gap events = %d, want 0 for job renderMode=static", sitemapGapEvents)
+	}
+}
+
 func TestRunCrawlCancellation(t *testing.T) {
 	// All pages are slow so cancellation always triggers
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

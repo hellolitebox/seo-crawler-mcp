@@ -277,10 +277,12 @@ func (e *Engine) RunCrawl(ctx context.Context, jobID string) error {
 	defer cancel(nil)
 
 	effectiveMaxPages := e.effectiveMaxPages(job)
-	completionErr := e.runCrawlPipeline(ctx, cancel, jobID, q, counters, effectiveMaxPages)
+	effectiveMaxDepth := e.effectiveMaxDepth(job)
+	effectiveRenderMode := e.effectiveRenderMode(job)
+	completionErr := e.runCrawlPipeline(ctx, cancel, jobID, q, counters, effectiveMaxPages, effectiveMaxDepth)
 
 	if completionErr == nil {
-		e.runPostCrawlPhases(ctx, jobID, counters, cancel)
+		e.runPostCrawlPhases(ctx, jobID, counters, cancel, effectiveRenderMode)
 	}
 
 	return e.finalizeJob(ctx, jobID, completionErr, counters)
@@ -413,6 +415,28 @@ func (e *Engine) effectiveMaxPages(job *storage.CrawlJob) int {
 	return maxPages
 }
 
+func (e *Engine) effectiveMaxDepth(job *storage.CrawlJob) int {
+	maxDepth := e.config.MaxDepth
+	var jobCfg struct {
+		MaxDepth int `json:"maxDepth"`
+	}
+	if err := json.Unmarshal([]byte(job.ConfigJSON), &jobCfg); err == nil && jobCfg.MaxDepth > 0 {
+		maxDepth = jobCfg.MaxDepth
+	}
+	return maxDepth
+}
+
+func (e *Engine) effectiveRenderMode(job *storage.CrawlJob) config.RenderMode {
+	renderMode := e.config.RenderMode
+	var jobCfg struct {
+		RenderMode string `json:"renderMode"`
+	}
+	if err := json.Unmarshal([]byte(job.ConfigJSON), &jobCfg); err == nil && jobCfg.RenderMode != "" {
+		renderMode = config.RenderMode(jobCfg.RenderMode)
+	}
+	return renderMode
+}
+
 // onboardSeedHosts performs robots.txt + sitemap discovery for each
 // distinct seed host, populates e.robotsRules and per-host crawl-delay
 // in the rate limiter, and pushes any sitemap-discovered URLs onto the
@@ -519,6 +543,7 @@ func (e *Engine) runCrawlPipeline(
 	q *frontier.Queue,
 	counters *crawlCounters,
 	maxPages int,
+	maxDepth int,
 ) error {
 	// Crawl-trap detection: tracks unique query strings per path so the
 	// trap heuristic counts variants (not raw discoveries) and emits at
@@ -629,7 +654,7 @@ func (e *Engine) runCrawlPipeline(
 			defer recoverWorker(cancel, "parser")
 			defer parserWg.Done()
 			for fr := range fetchResults {
-				pr := e.processParseResult(ctx, jobID, fr, q, &counters.pagesCrawled, &counters.urlsDiscovered, queryVariants, maxPages)
+				pr := e.processParseResult(ctx, jobID, fr, q, &counters.pagesCrawled, &counters.urlsDiscovered, queryVariants, maxPages, maxDepth)
 				counters.issuesFound.Add(int64(len(pr.issues)))
 				select {
 				case persistQueue <- persistItem{
@@ -786,9 +811,9 @@ loop:
 //
 // `cancel` is the pipeline's CancelCauseFunc; passed so panic recovers in
 // goroutines spawned here can unwind the whole crawl.
-func (e *Engine) runPostCrawlPhases(ctx context.Context, jobID string, counters *crawlCounters, cancel context.CancelCauseFunc) {
+func (e *Engine) runPostCrawlPhases(ctx context.Context, jobID string, counters *crawlCounters, cancel context.CancelCauseFunc, renderMode config.RenderMode) {
 	// Sitemap gap browser escalation (hybrid/browser mode).
-	if e.config.RenderMode != config.RenderModeStatic {
+	if renderMode != config.RenderModeStatic {
 		e.emitPhase(jobID, "sitemap_gap", "checking sitemap URLs missing from crawl (JS render)")
 		if escalated := e.sitemapGapEscalation(ctx, jobID); escalated > 0 {
 			slog.Info("engine: sitemap gap escalation discovered new URLs", "count", escalated, "job_id", jobID)
@@ -796,7 +821,7 @@ func (e *Engine) runPostCrawlPhases(ctx context.Context, jobID string, counters 
 	}
 
 	// Browser re-render to capture lazy-loaded content.
-	if e.config.RenderMode != config.RenderModeStatic && renderer.IsPlaywrightAvailable() {
+	if renderMode != config.RenderModeStatic && renderer.IsPlaywrightAvailable() {
 		e.browserEnrichPages(ctx, jobID)
 	}
 
@@ -924,6 +949,7 @@ func (e *Engine) processParseResult(
 	urlsDiscovered *atomic.Int64,
 	queryVariants *queryVariantsTracker,
 	maxPages int,
+	maxDepth int,
 ) parseResult {
 	pr := parseResult{
 		fetchResult: fr,
@@ -1185,7 +1211,7 @@ func (e *Engine) processParseResult(
 
 		// MaxDepth check
 		newDepth := fr.depth + 1
-		if newDepth > e.config.MaxDepth {
+		if newDepth > maxDepth {
 			continue
 		}
 
