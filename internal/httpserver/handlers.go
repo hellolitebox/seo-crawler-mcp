@@ -261,6 +261,14 @@ func (s *Server) handleJobStatus(w http.ResponseWriter, r *http.Request, jobID s
 // If the job is running/queued, it is cancelled. Otherwise, the job and all
 // its related data (URLs, fetches, pages, issues, edges, events, etc.) are
 // purged from the DB via ON DELETE CASCADE.
+//
+// SECURITY: this endpoint has no authentication. The deployment
+// contract is "expose only behind a proxy that authenticates the
+// caller" — same model as the per-IP rate limiter and SSE cap, both
+// of which trust upstream-supplied client identity. Direct internet
+// exposure lets any caller delete any job they can name. If you need
+// auth in-process, wire a token check here (see the Bearer-token
+// option in CLAUDE.md / docs).
 func (s *Server) handleJobCancel(w http.ResponseWriter, r *http.Request, jobID string) {
 	if s.db == nil {
 		writeError(w, http.StatusInternalServerError, "database unavailable")
