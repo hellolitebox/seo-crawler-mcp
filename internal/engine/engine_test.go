@@ -320,7 +320,7 @@ func TestRunCrawlHonorsMaxPagesWhenFrontierIsLarge(t *testing.T) {
 
 	cfg := config.DefaultConfig()
 	cfg.GlobalConcurrency = 8
-	cfg.MaxPages = 5
+	cfg.MaxPages = 100
 	cfg.MaxDepth = 10
 	cfg.AllowPrivateNetworks = true
 	cfg.SSRFProtection = false
@@ -334,7 +334,7 @@ func TestRunCrawlHonorsMaxPagesWhenFrontierIsLarge(t *testing.T) {
 	}
 
 	seedURLs, _ := json.Marshal([]string{ts.URL + "/"})
-	job, err := db.CreateJob("crawl", `{}`, string(seedURLs))
+	job, err := db.CreateJob("crawl", `{"maxPages":5}`, string(seedURLs))
 	if err != nil {
 		t.Fatalf("creating job: %v", err)
 	}
@@ -363,8 +363,8 @@ func TestRunCrawlHonorsMaxPagesWhenFrontierIsLarge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("getting job: %v", err)
 	}
-	if got.PagesCrawled > cfg.MaxPages {
-		t.Fatalf("pages_crawled = %d, want <= %d", got.PagesCrawled, cfg.MaxPages)
+	if got.PagesCrawled > 5 {
+		t.Fatalf("pages_crawled = %d, want <= 5", got.PagesCrawled)
 	}
 }
 

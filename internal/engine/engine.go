@@ -276,7 +276,8 @@ func (e *Engine) RunCrawl(ctx context.Context, jobID string) error {
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
 
-	completionErr := e.runCrawlPipeline(ctx, cancel, jobID, q, counters)
+	effectiveMaxPages := e.effectiveMaxPages(job)
+	completionErr := e.runCrawlPipeline(ctx, cancel, jobID, q, counters, effectiveMaxPages)
 
 	if completionErr == nil {
 		e.runPostCrawlPhases(ctx, jobID, counters, cancel)
@@ -401,6 +402,17 @@ func (e *Engine) ensureScopeChecker(job *storage.CrawlJob, q *frontier.Queue) er
 	return nil
 }
 
+func (e *Engine) effectiveMaxPages(job *storage.CrawlJob) int {
+	maxPages := e.config.MaxPages
+	var jobCfg struct {
+		MaxPages int `json:"maxPages"`
+	}
+	if err := json.Unmarshal([]byte(job.ConfigJSON), &jobCfg); err == nil && jobCfg.MaxPages > 0 {
+		maxPages = jobCfg.MaxPages
+	}
+	return maxPages
+}
+
 // onboardSeedHosts performs robots.txt + sitemap discovery for each
 // distinct seed host, populates e.robotsRules and per-host crawl-delay
 // in the rate limiter, and pushes any sitemap-discovered URLs onto the
@@ -506,6 +518,7 @@ func (e *Engine) runCrawlPipeline(
 	jobID string,
 	q *frontier.Queue,
 	counters *crawlCounters,
+	maxPages int,
 ) error {
 	// Crawl-trap detection: tracks unique query strings per path so the
 	// trap heuristic counts variants (not raw discoveries) and emits at
@@ -616,7 +629,7 @@ func (e *Engine) runCrawlPipeline(
 			defer recoverWorker(cancel, "parser")
 			defer parserWg.Done()
 			for fr := range fetchResults {
-				pr := e.processParseResult(ctx, jobID, fr, q, &counters.pagesCrawled, &counters.urlsDiscovered, queryVariants)
+				pr := e.processParseResult(ctx, jobID, fr, q, &counters.pagesCrawled, &counters.urlsDiscovered, queryVariants, maxPages)
 				counters.issuesFound.Add(int64(len(pr.issues)))
 				select {
 				case persistQueue <- persistItem{
@@ -718,7 +731,7 @@ func (e *Engine) runCrawlPipeline(
 loop:
 	for {
 		for {
-			if e.config.MaxPages > 0 && int(scheduledFetches.Load()) >= e.config.MaxPages {
+			if maxPages > 0 && int(scheduledFetches.Load()) >= maxPages {
 				break
 			}
 			item, ok := q.Pop()
@@ -739,7 +752,7 @@ loop:
 
 		// Check completion: nothing in queue and nothing in flight. If the max-page
 		// scheduling cap is reached, do not wait for leftover frontier URLs.
-		maxPagesReached := e.config.MaxPages > 0 && int(scheduledFetches.Load()) >= e.config.MaxPages
+		maxPagesReached := maxPages > 0 && int(scheduledFetches.Load()) >= maxPages
 		if (q.Len() == 0 || maxPagesReached) && inFlight.Load() == 0 {
 			break loop
 		}
@@ -910,6 +923,7 @@ func (e *Engine) processParseResult(
 	pagesCrawled *atomic.Int64,
 	urlsDiscovered *atomic.Int64,
 	queryVariants *queryVariantsTracker,
+	maxPages int,
 ) parseResult {
 	pr := parseResult{
 		fetchResult: fr,
@@ -955,7 +969,7 @@ func (e *Engine) processParseResult(
 	}
 
 	newCount := pagesCrawled.Add(1)
-	if int(newCount) > e.config.MaxPages {
+	if maxPages > 0 && int(newCount) > maxPages {
 		// Past limit — don't expand edges from this page
 		return pr
 	}
@@ -1176,7 +1190,7 @@ func (e *Engine) processParseResult(
 		}
 
 		// MaxPages check
-		if int(pagesCrawled.Load()) >= e.config.MaxPages {
+		if maxPages > 0 && int(pagesCrawled.Load()) >= maxPages {
 			continue
 		}
 
