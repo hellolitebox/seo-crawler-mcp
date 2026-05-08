@@ -5,28 +5,28 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -o seo-crawler-mcp .
 
-FROM python:3.12-slim-bookworm
-# System deps:
-#  - chromium: shared by chromedp (Go renderer pool) AND Playwright (via
-#    CHROMIUM_PATH below) so we don't ship two browsers in the image.
+# Microsoft's official Playwright image — Ubuntu Jammy with Python 3.10,
+# the playwright pip package, and its bundled browsers (Chromium, Firefox,
+# WebKit) already installed. Avoids fetching from PyPI at image build
+# time, which has been flaky from the Fly remote builder.
+FROM mcr.microsoft.com/playwright/python:v1.49.1-jammy
+
+# Extra runtime needs:
 #  - sqlite3: CLI used by scripts/backup.sh.
 #  - cron: daily backup runner.
-#  - fonts-liberation: makes Chromium render text instead of tofu boxes.
-#  - ca-certificates: TLS for outbound fetches.
+#  - ca-certificates: refreshed TLS roots.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
-    chromium \
     sqlite3 \
     cron \
-    fonts-liberation \
     && rm -rf /var/lib/apt/lists/*
 
-# Playwright Python — used for accessibility audits (axe-core via Playwright)
-# and for the better menu-discovery / lazy-content render paths. We DO NOT
-# run `playwright install`; the launch scripts honour CHROMIUM_PATH and reuse
-# the apt-installed chromium so we keep one copy of the browser in the image.
-RUN pip install --no-cache-dir --retries 5 --timeout 120 playwright==1.49.1
-ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+# Expose Playwright's bundled Chromium at a stable path so both chromedp
+# (Go renderer pool) and the Playwright Python launch scripts use the
+# same binary via CHROMIUM_PATH. The directory name embeds Playwright's
+# build number (e.g. chromium-1148) which changes with every release —
+# resolve it once at build time and symlink to a fixed path.
+RUN ln -s "$(find /ms-playwright -path '*chromium*' -name chrome -type f | head -1)" /usr/bin/chromium
 ENV CHROMIUM_PATH=/usr/bin/chromium
 
 WORKDIR /app
