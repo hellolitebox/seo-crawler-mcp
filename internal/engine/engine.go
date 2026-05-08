@@ -113,6 +113,15 @@ type persistItem struct {
 	fetchSeq int
 }
 
+// crawlCounters holds the live counters for an in-flight crawl. They are
+// mutated concurrently by the pipeline workers and read periodically for
+// status reporting and the final job row update.
+type crawlCounters struct {
+	pagesCrawled   atomic.Int64
+	urlsDiscovered atomic.Int64
+	issuesFound    atomic.Int64
+}
+
 func recoverWorker(cancel context.CancelCauseFunc, name string) {
 	if r := recover(); r != nil {
 		if rerr, ok := r.(error); ok {
@@ -180,53 +189,89 @@ func (e *Engine) emitPhase(jobID, phase, message string) {
 }
 
 // RunCrawl executes a full crawl job. Blocks until complete or cancelled.
+//
+// Pipeline phases: startJob -> seedFrontier -> onboardSeedHosts ->
+// runCrawlPipeline -> runPostCrawlPhases -> finalizeJob. Each phase is a
+// dedicated method to keep this top-level orchestrator readable and to
+// make the phases independently testable.
 func (e *Engine) RunCrawl(ctx context.Context, jobID string) error {
-	// 1. Init: load job, update status
+	job, err := e.startJob(ctx, jobID)
+	if err != nil {
+		return err
+	}
+
+	q, seeds, err := e.seedFrontier(jobID, job)
+	if err != nil {
+		return err
+	}
+
+	e.onboardSeedHosts(ctx, jobID, seeds, q)
+
+	counters := &crawlCounters{}
+	counters.urlsDiscovered.Store(int64(q.Len()))
+
+	// WithCancelCause so any fatal worker error (e.g. persister) unwinds
+	// the whole pipeline AND post-crawl audit goroutines.
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+
+	completionErr := e.runCrawlPipeline(ctx, cancel, jobID, q, counters)
+
+	if completionErr == nil {
+		e.runPostCrawlPhases(ctx, jobID, counters, cancel)
+	}
+
+	return e.finalizeJob(ctx, jobID, completionErr, counters)
+}
+
+// startJob loads the job row, validates that it is in `queued` state,
+// transitions it to `running`, and runs cheap startup chores
+// (purging expired analyze jobs). Returns the loaded job for downstream
+// phases. If the job has already been cancelled or the context is done,
+// returns context.Canceled after writing the cancelled status to DB.
+func (e *Engine) startJob(ctx context.Context, jobID string) (*storage.CrawlJob, error) {
 	job, err := e.db.GetJob(jobID)
 	if err != nil {
-		return fmt.Errorf("loading job: %w", err)
+		return nil, fmt.Errorf("loading job: %w", err)
 	}
 	if job.Status == "cancelled" || job.Status == "cancelling" {
-		return e.cancelJob(jobID, context.Canceled)
+		return nil, e.cancelJob(jobID, context.Canceled)
 	}
 	if job.Status != "queued" {
-		return fmt.Errorf("job %s has status %q, expected queued", jobID, job.Status)
+		return nil, fmt.Errorf("job %s has status %q, expected queued", jobID, job.Status)
 	}
 	if err := ctx.Err(); err != nil {
-		return e.cancelJob(jobID, err)
+		return nil, e.cancelJob(jobID, err)
 	}
 	if err := e.db.UpdateJobStarted(jobID); err != nil {
 		current, getErr := e.db.GetJob(jobID)
 		if getErr == nil && (current.Status == "cancelled" || current.Status == "cancelling" || ctx.Err() != nil) {
 			if ctx.Err() != nil {
-				return e.cancelJob(jobID, ctx.Err())
+				return nil, e.cancelJob(jobID, ctx.Err())
 			}
-			return e.cancelJob(jobID, context.Canceled)
+			return nil, e.cancelJob(jobID, context.Canceled)
 		}
-		return fmt.Errorf("starting job: %w", err)
+		return nil, fmt.Errorf("starting job: %w", err)
 	}
 	if err := ctx.Err(); err != nil {
-		return e.cancelJob(jobID, err)
+		return nil, e.cancelJob(jobID, err)
 	}
 
-	// 2. Purge expired analyze jobs
 	e.db.PurgeExpiredAnalyzeJobs()
+	return job, nil
+}
 
-	// 3. Seed: parse seed URLs, normalize, upsert, push to frontier
+// seedFrontier parses job.SeedURLs, normalizes/upserts each, pushes valid
+// seeds to a fresh frontier queue, and ensures e.scopeChecker is set. The
+// returned []string is the original seed list (used by onboarding for
+// robots.txt and sitemap discovery, which must run per host).
+func (e *Engine) seedFrontier(jobID string, job *storage.CrawlJob) (*frontier.Queue, []string, error) {
 	var seeds []string
 	if err := json.Unmarshal([]byte(job.SeedURLs), &seeds); err != nil {
-		return e.failJob(jobID, fmt.Errorf("parsing seed URLs: %w", err))
+		return nil, nil, e.failJob(jobID, fmt.Errorf("parsing seed URLs: %w", err))
 	}
 
 	q := frontier.New()
-
-	// Track query variant counts per path for crawl trap detection
-	var queryVariantsMu sync.Mutex
-	queryVariants := map[string]int{}
-
-	// Track pages crawled for MaxPages limit
-	var pagesCrawled atomic.Int64
-
 	for _, seedURL := range seeds {
 		normalized, err := urlutil.Normalize(seedURL)
 		if err != nil {
@@ -240,7 +285,7 @@ func (e *Engine) RunCrawl(ctx context.Context, jobID string) error {
 		host := parsed.Hostname()
 		urlID, err := e.db.UpsertURL(jobID, normalized, host, "queued", true, "seed")
 		if err != nil {
-			return e.failJob(jobID, fmt.Errorf("upserting seed URL: %w", err))
+			return nil, nil, e.failJob(jobID, fmt.Errorf("upserting seed URL: %w", err))
 		}
 		q.Push(frontier.Item{
 			URLID:         urlID,
@@ -251,154 +296,173 @@ func (e *Engine) RunCrawl(ctx context.Context, jobID string) error {
 	}
 
 	if q.Len() == 0 {
-		return e.failJob(jobID, fmt.Errorf("no valid seed URLs"))
+		return nil, nil, e.failJob(jobID, fmt.Errorf("no valid seed URLs"))
 	}
 
-	// Create scope checker from first seed if not provided via config.
-	if e.scopeChecker == nil {
-		first := q.Peek()
-		scopeMode := "registrable_domain"
-		var allowedHosts []string
-		if e.config != nil {
-			scopeMode = string(e.config.ScopeMode)
-			allowedHosts = e.config.AllowedHosts
-		}
-		// Try to parse from job config_json as well.
-		var jobCfg struct {
-			ScopeMode    string   `json:"scopeMode"`
-			AllowedHosts []string `json:"allowedHosts"`
-		}
-		if err := json.Unmarshal([]byte(job.ConfigJSON), &jobCfg); err == nil {
-			if jobCfg.ScopeMode != "" {
-				scopeMode = jobCfg.ScopeMode
-			}
-			if len(jobCfg.AllowedHosts) > 0 {
-				allowedHosts = jobCfg.AllowedHosts
-			}
-		}
-		sc, err := urlutil.NewScopeChecker(scopeMode, first.Host, allowedHosts)
-		if err != nil {
-			return e.failJob(jobID, fmt.Errorf("creating scope checker: %w", err))
-		}
-		e.scopeChecker = sc
+	if err := e.ensureScopeChecker(job, q); err != nil {
+		return nil, nil, e.failJob(jobID, err)
 	}
+	return q, seeds, nil
+}
 
-	// ---- Host onboarding: robots.txt + sitemap discovery ----
+// ensureScopeChecker constructs e.scopeChecker from the first frontier
+// seed if it was not provided via EngineConfig. Per-job because the seed
+// host determines the registrable-domain scope.
+func (e *Engine) ensureScopeChecker(job *storage.CrawlJob, q *frontier.Queue) error {
+	if e.scopeChecker != nil {
+		return nil
+	}
+	first := q.Peek()
+	scopeMode := "registrable_domain"
+	var allowedHosts []string
+	if e.config != nil {
+		scopeMode = string(e.config.ScopeMode)
+		allowedHosts = e.config.AllowedHosts
+	}
+	var jobCfg struct {
+		ScopeMode    string   `json:"scopeMode"`
+		AllowedHosts []string `json:"allowedHosts"`
+	}
+	if err := json.Unmarshal([]byte(job.ConfigJSON), &jobCfg); err == nil {
+		if jobCfg.ScopeMode != "" {
+			scopeMode = jobCfg.ScopeMode
+		}
+		if len(jobCfg.AllowedHosts) > 0 {
+			allowedHosts = jobCfg.AllowedHosts
+		}
+	}
+	sc, err := urlutil.NewScopeChecker(scopeMode, first.Host, allowedHosts)
+	if err != nil {
+		return fmt.Errorf("creating scope checker: %w", err)
+	}
+	e.scopeChecker = sc
+	return nil
+}
+
+// onboardSeedHosts performs robots.txt + sitemap discovery for each
+// distinct seed host, populates e.robotsRules and per-host crawl-delay
+// in the rate limiter, and pushes any sitemap-discovered URLs onto the
+// frontier (subject to scope and robots checks).
+func (e *Engine) onboardSeedHosts(ctx context.Context, jobID string, seeds []string, q *frontier.Queue) {
 	e.robotsRules = map[string]*robots.RobotsFile{}
-	{
-		userAgent := e.config.UserAgent
-		if userAgent == "" {
-			userAgent = "seo-crawler-mcp/0.1"
-		}
-		sitemapMax := e.config.MaxSitemapEntries
-		if sitemapMax <= 0 {
-			sitemapMax = 500000
-		}
-		robotsPolicy := string(e.config.RobotsUnreachablePolicy)
-		if robotsPolicy == "" {
-			robotsPolicy = "allow"
-		}
-		onboarder := crawl.NewHostOnboarderWithPolicy(e.fetcher, e.db, sitemapMax, userAgent, robotsPolicy)
 
-		seenHosts := map[string]bool{}
-		for _, seedURL := range seeds {
-			parsed, parseErr := url.Parse(seedURL)
-			if parseErr != nil {
-				continue
-			}
-			// Use parsed.Host (includes port) for URL construction in onboarding.
-			hostWithPort := parsed.Host
-			hostOnly := parsed.Hostname()
-			if seenHosts[hostWithPort] {
-				continue
-			}
-			seenHosts[hostWithPort] = true
-
-			info, onboardErr := onboarder.OnboardHost(ctx, jobID, hostWithPort, parsed.Scheme)
-			if onboardErr != nil {
-				slog.Warn("engine: onboarding host failed", "host", hostWithPort, "err", onboardErr)
-				continue
-			}
-
-			// Cache robots rules for fetch-time checking (keyed by hostname without port)
-			if info.RobotsFile != nil {
-				e.robotsRulesMu.Lock()
-				e.robotsRules[hostOnly] = info.RobotsFile
-				e.robotsRulesMu.Unlock()
-			}
-
-			// Apply crawl delay to rate limiter (keyed by hostname as used in fetcher)
-			if info.CrawlDelay > 0 {
-				e.rateLimiter.SetCrawlDelay(hostOnly, info.CrawlDelay)
-				slog.Info("engine: crawl-delay applied", "host", hostOnly, "delay", info.CrawlDelay)
-			}
-
-			// Add sitemap URLs to frontier
-			for _, entry := range info.SitemapEntries {
-				normalized, normErr := urlutil.Normalize(entry.Loc)
-				if normErr != nil {
-					continue
-				}
-				parsedURL, parseErr2 := url.Parse(normalized)
-				if parseErr2 != nil {
-					continue
-				}
-				entryHost := parsedURL.Hostname()
-
-				// Check scope
-				if e.scopeChecker != nil && !e.scopeChecker.IsInScope(normalized) {
-					continue
-				}
-
-				// Check robots rules before adding
-				if e.config.RespectRobots && info.RobotsFile != nil {
-					if !info.RobotsFile.IsAllowed(userAgent, parsedURL.Path) {
-						continue
-					}
-				}
-
-				urlID, upsertErr := e.db.UpsertURL(jobID, normalized, entryHost, "queued", true, "sitemap")
-				if upsertErr != nil {
-					continue
-				}
-
-				if !q.Contains(urlID) {
-					q.Push(frontier.Item{
-						URLID:         urlID,
-						NormalizedURL: normalized,
-						Host:          entryHost,
-						Depth:         1, // sitemap URLs are depth 1
-					})
-				}
-			}
-
-			// Log onboarding event
-			eventDetails := fmt.Sprintf(`{"host":%q,"sitemapEntries":%d,"crawlDelay":%q}`,
-				hostWithPort, len(info.SitemapEntries), info.CrawlDelay.String())
-			e.db.InsertEvent(jobID, "host_onboarded", &eventDetails, nil)
-		}
+	userAgent := e.config.UserAgent
+	if userAgent == "" {
+		userAgent = "seo-crawler-mcp/0.1"
 	}
+	sitemapMax := e.config.MaxSitemapEntries
+	if sitemapMax <= 0 {
+		sitemapMax = 500000
+	}
+	robotsPolicy := string(e.config.RobotsUnreachablePolicy)
+	if robotsPolicy == "" {
+		robotsPolicy = "allow"
+	}
+	onboarder := crawl.NewHostOnboarderWithPolicy(e.fetcher, e.db, sitemapMax, userAgent, robotsPolicy)
 
-	// Channels
-	// fetchQueue feeds items from the dispatcher to fetcher workers.
+	seenHosts := map[string]bool{}
+	for _, seedURL := range seeds {
+		parsed, parseErr := url.Parse(seedURL)
+		if parseErr != nil {
+			continue
+		}
+		hostWithPort := parsed.Host
+		hostOnly := parsed.Hostname()
+		if seenHosts[hostWithPort] {
+			continue
+		}
+		seenHosts[hostWithPort] = true
+
+		info, onboardErr := onboarder.OnboardHost(ctx, jobID, hostWithPort, parsed.Scheme)
+		if onboardErr != nil {
+			slog.Warn("engine: onboarding host failed", "host", hostWithPort, "err", onboardErr)
+			continue
+		}
+
+		// Cache robots rules for fetch-time checking (keyed by hostname without port).
+		if info.RobotsFile != nil {
+			e.robotsRulesMu.Lock()
+			e.robotsRules[hostOnly] = info.RobotsFile
+			e.robotsRulesMu.Unlock()
+		}
+
+		if info.CrawlDelay > 0 {
+			e.rateLimiter.SetCrawlDelay(hostOnly, info.CrawlDelay)
+			slog.Info("engine: crawl-delay applied", "host", hostOnly, "delay", info.CrawlDelay)
+		}
+
+		for _, entry := range info.SitemapEntries {
+			normalized, normErr := urlutil.Normalize(entry.Loc)
+			if normErr != nil {
+				continue
+			}
+			parsedURL, parseErr2 := url.Parse(normalized)
+			if parseErr2 != nil {
+				continue
+			}
+			entryHost := parsedURL.Hostname()
+
+			if e.scopeChecker != nil && !e.scopeChecker.IsInScope(normalized) {
+				continue
+			}
+			if e.config.RespectRobots && info.RobotsFile != nil {
+				if !info.RobotsFile.IsAllowed(userAgent, parsedURL.Path) {
+					continue
+				}
+			}
+
+			urlID, upsertErr := e.db.UpsertURL(jobID, normalized, entryHost, "queued", true, "sitemap")
+			if upsertErr != nil {
+				continue
+			}
+			if !q.Contains(urlID) {
+				q.Push(frontier.Item{
+					URLID:         urlID,
+					NormalizedURL: normalized,
+					Host:          entryHost,
+					Depth:         1,
+				})
+			}
+		}
+
+		eventDetails := fmt.Sprintf(`{"host":%q,"sitemapEntries":%d,"crawlDelay":%q}`,
+			hostWithPort, len(info.SitemapEntries), info.CrawlDelay.String())
+		e.db.InsertEvent(jobID, "host_onboarded", &eventDetails, nil)
+	}
+}
+
+// runCrawlPipeline runs the fetch -> parse -> persist worker pools and the
+// dispatcher loop that drains the frontier queue. Returns the completion
+// error (nil on clean drain, or the cause set on the cancel context if a
+// worker fatally fails or the job is cancelled).
+//
+// The pipeline owns a status watcher (polls the DB for cancelling state)
+// and a periodic counter flusher; both shut down on ctx.Done.
+func (e *Engine) runCrawlPipeline(
+	ctx context.Context,
+	cancel context.CancelCauseFunc,
+	jobID string,
+	q *frontier.Queue,
+	counters *crawlCounters,
+) error {
+	// Crawl-trap detection: track query variant counts per path.
+	var queryVariantsMu sync.Mutex
+	queryVariants := map[string]int{}
+
 	fetchQueue := make(chan frontier.Item, 64)
 	fetchResults := make(chan fetchResult, 64)
 	persistQueue := make(chan persistItem, 128)
 
-	// Monotonic fetch sequence counter
 	var fetchSeq atomic.Int64
 
-	// Concurrency
 	concurrency := e.config.GlobalConcurrency
 	if concurrency < 1 {
 		concurrency = 8
 	}
 	parserCount := 4
 
-	// Use context.WithCancelCause so any fatal error (e.g. persister) can unwind the whole pipeline.
-	ctx, cancel := context.WithCancelCause(ctx)
-	defer cancel(nil)
-
+	// Status watcher: polls DB for `cancelling` so the user can cancel
+	// from the API while the pipeline is running.
 	statusWatchDone := make(chan struct{})
 	go func() {
 		defer recoverWorker(cancel, "status watcher")
@@ -424,13 +488,7 @@ func (e *Engine) RunCrawl(ctx context.Context, jobID string) error {
 	}()
 	defer close(statusWatchDone)
 
-	// Counters for job stats
-	var urlsDiscovered atomic.Int64
-	urlsDiscovered.Store(int64(q.Len()))
-	var issuesFound atomic.Int64
-
-	// Periodic counter flush: write in-memory atomics to DB every 2 s so
-	// polling clients see live progress instead of all-zeros until completion.
+	// Periodic counter flush so polling clients see live progress.
 	counterTicker := time.NewTicker(2 * time.Second)
 	counterDone := make(chan struct{})
 	go func() {
@@ -441,7 +499,7 @@ func (e *Engine) RunCrawl(ctx context.Context, jobID string) error {
 			case <-ctx.Done():
 				return
 			case <-counterTicker.C:
-				if err := e.db.UpdateJobCounters(jobID, int(pagesCrawled.Load()), int(urlsDiscovered.Load()), int(issuesFound.Load())); err != nil {
+				if err := e.db.UpdateJobCounters(jobID, int(counters.pagesCrawled.Load()), int(counters.urlsDiscovered.Load()), int(counters.issuesFound.Load())); err != nil {
 					slog.Error("engine: counter flush failed", "err", err, "job_id", jobID)
 				}
 			}
@@ -455,7 +513,7 @@ func (e *Engine) RunCrawl(ctx context.Context, jobID string) error {
 	// inFlight tracks items between dispatch and persist completion.
 	var inFlight atomic.Int64
 
-	// ---- Persister (1 goroutine) ----
+	// Persister (1 goroutine) — serialized writes to SQLite.
 	var persisterWg sync.WaitGroup
 	persisterWg.Add(1)
 	go func() {
@@ -486,7 +544,7 @@ func (e *Engine) RunCrawl(ctx context.Context, jobID string) error {
 		}
 	}()
 
-	// ---- Parser Pool ----
+	// Parser pool.
 	var parserWg sync.WaitGroup
 	for range parserCount {
 		parserWg.Add(1)
@@ -494,8 +552,8 @@ func (e *Engine) RunCrawl(ctx context.Context, jobID string) error {
 			defer recoverWorker(cancel, "parser")
 			defer parserWg.Done()
 			for fr := range fetchResults {
-				pr := e.processParseResult(ctx, jobID, fr, q, &pagesCrawled, &urlsDiscovered, &queryVariantsMu, queryVariants)
-				issuesFound.Add(int64(len(pr.issues)))
+				pr := e.processParseResult(ctx, jobID, fr, q, &counters.pagesCrawled, &counters.urlsDiscovered, &queryVariantsMu, queryVariants)
+				counters.issuesFound.Add(int64(len(pr.issues)))
 				select {
 				case persistQueue <- persistItem{
 					parseResult: pr,
@@ -509,7 +567,7 @@ func (e *Engine) RunCrawl(ctx context.Context, jobID string) error {
 		}()
 	}
 
-	// ---- Fetcher Pool ----
+	// Fetcher pool.
 	var fetcherWg sync.WaitGroup
 	for range concurrency {
 		fetcherWg.Add(1)
@@ -517,13 +575,11 @@ func (e *Engine) RunCrawl(ctx context.Context, jobID string) error {
 			defer recoverWorker(cancel, "fetcher")
 			defer fetcherWg.Done()
 			for item := range fetchQueue {
-				// Check scope
 				if !e.scopeChecker.IsInScope(item.NormalizedURL) {
 					inFlight.Add(-1)
 					continue
 				}
 
-				// Check robots.txt rules
 				if e.config.RespectRobots {
 					parsedItem, parseErr := url.Parse(item.NormalizedURL)
 					if parseErr == nil {
@@ -538,22 +594,15 @@ func (e *Engine) RunCrawl(ctx context.Context, jobID string) error {
 					}
 				}
 
-				// Acquire rate limiter
 				if err := e.rateLimiter.AcquireContext(ctx, item.Host); err != nil {
 					inFlight.Add(-1)
 					return
 				}
 
-				// Get fetch sequence (must be unique per fetch)
 				seq := int(fetchSeq.Add(1))
-
-				// Fetch
 				result, fetchErr := e.fetcher.FetchContext(ctx, item.NormalizedURL)
-
-				// Release rate limiter
 				e.rateLimiter.Release(item.Host)
 
-				// Track TTFB for slow-host detection
 				if result != nil {
 					if avgTTFB, full := e.rateLimiter.RecordTTFB(item.Host, result.TTFBMS); full && avgTTFB > 5000 {
 						detailsJSON := fmt.Sprintf(`{"host":%q,"avgTtfbMs":%d}`, item.Host, avgTTFB)
@@ -577,7 +626,6 @@ func (e *Engine) RunCrawl(ctx context.Context, jobID string) error {
 					err:      fetchErr,
 				}
 
-				// Update URL status
 				if fetchErr != nil {
 					e.db.UpdateURLStatus(item.URLID, "errored")
 					detailsJSON := fmt.Sprintf(`{"error":%q,"url":%q}`, fetchErr.Error(), item.NormalizedURL)
@@ -596,19 +644,15 @@ func (e *Engine) RunCrawl(ctx context.Context, jobID string) error {
 		}()
 	}
 
-	// ---- Dispatcher: pulls from frontier and sends to fetchQueue ----
-	// This runs on the main goroutine's ticker loop.
-	// inFlight is incremented HERE (before sending to fetchQueue) and
-	// decremented in the persister (after persist completes).
-	// This eliminates the race between pop and tracking.
-
+	// Dispatcher: drains the frontier into fetchQueue. inFlight is
+	// incremented HERE (before send) and decremented in the persister
+	// (after persist), eliminating the race between pop and tracking.
 	ticker := time.NewTicker(5 * time.Millisecond)
 	defer ticker.Stop()
 
 	var completionErr error
 loop:
 	for {
-		// Drain frontier as much as possible
 		for {
 			item, ok := q.Pop()
 			if !ok {
@@ -624,22 +668,19 @@ loop:
 			}
 		}
 
-		// Check completion: nothing in queue and nothing in flight
 		if q.Len() == 0 && inFlight.Load() == 0 {
 			break loop
 		}
 
-		// Check for cancellation (includes persister fatal errors via WithCancelCause)
 		select {
 		case <-ctx.Done():
 			completionErr = context.Cause(ctx)
 			break loop
 		case <-ticker.C:
-			// Continue loop to check frontier again
 		}
 	}
 
-	// Shutdown pipeline in order
+	// Shutdown pipeline in order.
 	close(fetchQueue)
 	fetcherWg.Wait()
 
@@ -649,113 +690,120 @@ loop:
 	close(persistQueue)
 	persisterWg.Wait()
 
-	// --- Post-crawl: sitemap gap browser escalation (hybrid/browser mode) ---
-	if completionErr == nil && e.config.RenderMode != config.RenderModeStatic {
+	return completionErr
+}
+
+// runPostCrawlPhases runs analyses that happen after the fetch pipeline
+// completes successfully: sitemap-gap browser escalation, lazy-content
+// re-render, asset HEAD checks, PSI+Axe audits, markdown negotiation,
+// text quality checks, edge count recomputation, global issue detection,
+// and materialization. Skipped entirely if the crawl pipeline failed.
+//
+// `cancel` is the pipeline's CancelCauseFunc; passed so panic recovers in
+// goroutines spawned here can unwind the whole crawl.
+func (e *Engine) runPostCrawlPhases(ctx context.Context, jobID string, counters *crawlCounters, cancel context.CancelCauseFunc) {
+	// Sitemap gap browser escalation (hybrid/browser mode).
+	if e.config.RenderMode != config.RenderModeStatic {
 		e.emitPhase(jobID, "sitemap_gap", "checking sitemap URLs missing from crawl (JS render)")
-		escalated := e.sitemapGapEscalation(ctx, jobID)
-		if escalated > 0 {
+		if escalated := e.sitemapGapEscalation(ctx, jobID); escalated > 0 {
 			slog.Info("engine: sitemap gap escalation discovered new URLs", "count", escalated, "job_id", jobID)
 		}
 	}
 
-	// --- Post-crawl: browser re-render all pages to capture lazy-loaded content ---
-	if completionErr == nil && e.config.RenderMode != config.RenderModeStatic && renderer.IsPlaywrightAvailable() {
+	// Browser re-render to capture lazy-loaded content.
+	if e.config.RenderMode != config.RenderModeStatic && renderer.IsPlaywrightAvailable() {
 		e.browserEnrichPages(ctx, jobID)
 	}
 
-	// --- Post-crawl: HEAD-check discovered image assets ---
-	if completionErr == nil {
-		e.headCheckAssets(ctx, jobID)
-	}
+	// HEAD-check discovered image/script/stylesheet assets.
+	e.headCheckAssets(ctx, jobID)
 
-	// --- Post-crawl: Performance + Accessibility audits (parallel) ---
-	if completionErr == nil {
-		var auditWg sync.WaitGroup
-		slog.Info("engine: PSI API key configured", "configured", e.config != nil && e.config.PSIAPIKey != "")
-		if e.config != nil && e.config.PSIAPIKey != "" {
-			auditWg.Add(1)
-			go func() {
-				defer recoverWorker(cancel, "lighthouse audits")
-				defer auditWg.Done()
-				e.runLighthouseAudits(ctx, jobID)
-			}()
-		}
-		if renderer.IsPlaywrightAvailable() {
-			auditWg.Add(1)
-			go func() {
-				defer recoverWorker(cancel, "axe audits")
-				defer auditWg.Done()
-				e.runAxeAudits(ctx, jobID)
-			}()
-		}
-		auditWg.Wait()
+	// Performance + Accessibility audits (parallel).
+	var auditWg sync.WaitGroup
+	slog.Info("engine: PSI API key configured", "configured", e.config != nil && e.config.PSIAPIKey != "")
+	if e.config != nil && e.config.PSIAPIKey != "" {
+		auditWg.Add(1)
+		go func() {
+			defer recoverWorker(cancel, "lighthouse audits")
+			defer auditWg.Done()
+			e.runLighthouseAudits(ctx, jobID)
+		}()
 	}
-
-	// --- Post-crawl: markdown content negotiation check ---
-	if completionErr == nil {
-		e.emitPhase(jobID, "markdown_negotiation", "checking which pages support text/markdown")
-		e.checkMarkdownNegotiation(ctx, jobID)
+	if renderer.IsPlaywrightAvailable() {
+		auditWg.Add(1)
+		go func() {
+			defer recoverWorker(cancel, "axe audits")
+			defer auditWg.Done()
+			e.runAxeAudits(ctx, jobID)
+		}()
 	}
+	auditWg.Wait()
 
-	// --- Post-crawl: text quality checks via LanguageTool ---
-	if completionErr == nil && e.config.LanguageToolURL != "" {
+	// Markdown content negotiation.
+	e.emitPhase(jobID, "markdown_negotiation", "checking which pages support text/markdown")
+	e.checkMarkdownNegotiation(ctx, jobID)
+
+	// Text quality via LanguageTool.
+	if e.config.LanguageToolURL != "" {
 		e.runTextQualityChecks(ctx, jobID)
 	}
 
-	// --- Post-crawl: recalculate inbound/outbound edge counts and true shortest-path depths on pages ---
-	if completionErr == nil {
-		e.db.Exec(`
-			UPDATE pages SET inbound_edge_count = (
-				SELECT COUNT(*) FROM edges e
-				WHERE e.job_id = pages.job_id
-				  AND e.declared_target_url = (SELECT normalized_url FROM urls WHERE id = pages.url_id AND job_id = pages.job_id)
-				  AND e.is_internal = 1 AND e.relation_type = 'link'
-			) WHERE job_id = ?`, jobID)
-		e.db.Exec(`
-			UPDATE pages SET outbound_edge_count = (
-				SELECT COUNT(*) FROM edges e
-				WHERE e.job_id = pages.job_id
-				  AND e.source_url_id = pages.url_id
-				  AND e.is_internal = 1 AND e.relation_type = 'link'
-			) WHERE job_id = ?`, jobID)
-		if depthErr := e.recomputePageDepths(jobID); depthErr != nil {
-			slog.Error("engine: page depth recomputation failed", "err", depthErr, "job_id", jobID)
-		}
-		slog.Info("engine: recalculated edge counts", "job_id", jobID)
+	// Recalculate inbound/outbound edge counts and shortest-path depths.
+	e.db.Exec(`
+		UPDATE pages SET inbound_edge_count = (
+			SELECT COUNT(*) FROM edges e
+			WHERE e.job_id = pages.job_id
+			  AND e.declared_target_url = (SELECT normalized_url FROM urls WHERE id = pages.url_id AND job_id = pages.job_id)
+			  AND e.is_internal = 1 AND e.relation_type = 'link'
+		) WHERE job_id = ?`, jobID)
+	e.db.Exec(`
+		UPDATE pages SET outbound_edge_count = (
+			SELECT COUNT(*) FROM edges e
+			WHERE e.job_id = pages.job_id
+			  AND e.source_url_id = pages.url_id
+			  AND e.is_internal = 1 AND e.relation_type = 'link'
+		) WHERE job_id = ?`, jobID)
+	if depthErr := e.recomputePageDepths(jobID); depthErr != nil {
+		slog.Error("engine: page depth recomputation failed", "err", depthErr, "job_id", jobID)
+	}
+	slog.Info("engine: recalculated edge counts", "job_id", jobID)
+
+	// Global issue detection + materialization.
+	e.emitPhase(jobID, "global_issues", "detecting site-wide issues (duplicates, clusters, gaps)")
+	globalCfg := issues.DefaultGlobalConfig()
+	globalCount, globalErr := issues.DetectGlobalIssues(e.db, jobID, globalCfg)
+	if globalErr != nil {
+		slog.Error("engine: global issue detection failed", "err", globalErr, "job_id", jobID)
+	} else {
+		counters.issuesFound.Add(int64(globalCount))
+		e.emitPhase(jobID, "global_issues_done", fmt.Sprintf("%d global issues detected", globalCount))
 	}
 
-	// --- Post-crawl: global issue detection + materialization ---
-	if completionErr == nil {
-		e.emitPhase(jobID, "global_issues", "detecting site-wide issues (duplicates, clusters, gaps)")
-		globalCfg := issues.DefaultGlobalConfig()
-		globalCount, globalErr := issues.DetectGlobalIssues(e.db, jobID, globalCfg)
-		if globalErr != nil {
-			slog.Error("engine: global issue detection failed", "err", globalErr, "job_id", jobID)
-		} else {
-			issuesFound.Add(int64(globalCount))
-			e.emitPhase(jobID, "global_issues_done", fmt.Sprintf("%d global issues detected", globalCount))
-		}
-
-		// Materialize canonical clusters, duplicate clusters, URL groups
-		e.emitPhase(jobID, "materializing", "writing report rollups")
-		if matErr := materialize.Materialize(e.db, jobID); matErr != nil {
-			slog.Error("engine: materialization failed", "err", matErr, "job_id", jobID)
-		}
-
-		// Re-sync issuesFound from the actual issues table so the job row
-		// reflects everything written by post-crawl phases (text quality, audits, etc.)
-		var actual int
-		if scanErr := e.db.QueryRow(`SELECT COUNT(*) FROM issues WHERE job_id = ?`, jobID).Scan(&actual); scanErr == nil {
-			if int64(actual) > issuesFound.Load() {
-				issuesFound.Store(int64(actual))
-			}
-		}
+	e.emitPhase(jobID, "materializing", "writing report rollups")
+	if matErr := materialize.Materialize(e.db, jobID); matErr != nil {
+		slog.Error("engine: materialization failed", "err", matErr, "job_id", jobID)
 	}
 
-	// Update final counters
-	e.db.UpdateJobCounters(jobID, int(pagesCrawled.Load()), int(urlsDiscovered.Load()), int(issuesFound.Load()))
+	// Re-sync issuesFound from the actual issues table so the job row
+	// reflects everything written by post-crawl phases (text quality, audits, etc.)
+	var actual int
+	if scanErr := e.db.QueryRow(`SELECT COUNT(*) FROM issues WHERE job_id = ?`, jobID).Scan(&actual); scanErr == nil {
+		if int64(actual) > counters.issuesFound.Load() {
+			counters.issuesFound.Store(int64(actual))
+		}
+	}
+}
 
-	// Set final status
+// finalizeJob writes the final counters to the job row and sets the
+// terminal status (completed/failed/cancelled) based on completionErr.
+func (e *Engine) finalizeJob(ctx context.Context, jobID string, completionErr error, counters *crawlCounters) error {
+	e.db.UpdateJobCounters(
+		jobID,
+		int(counters.pagesCrawled.Load()),
+		int(counters.urlsDiscovered.Load()),
+		int(counters.issuesFound.Load()),
+	)
+
 	if completionErr != nil {
 		if isContextCancellation(completionErr) || isContextCancellation(context.Cause(ctx)) {
 			msg := completionErr.Error()
