@@ -5,8 +5,21 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/google/uuid"
+	gonanoid "github.com/matoous/go-nanoid/v2"
 )
+
+// jobIDLength is the character length used for newly-generated job IDs.
+// 12 chars over the default URL-safe alphabet (A-Z a-z 0-9 _ -) gives
+// ~71 bits of entropy: <1e-6 collision probability over 1M jobs, which
+// is well past the lifetime of this DB. Old UUID-shaped jobs keep
+// working because the column is TEXT and nothing validates the format.
+const jobIDLength = 12
+
+// newJobID generates a fresh nanoid suitable for use as a job_id. Panics
+// only if crypto/rand is unavailable, which is unrecoverable anyway.
+func newJobID() string {
+	return gonanoid.Must(jobIDLength)
+}
 
 // jobColumns is the canonical SELECT list for crawl_jobs (13 columns).
 const jobColumns = `id, type, status, config_json, seed_urls, created_at,
@@ -27,7 +40,7 @@ func scanJob(sc interface{ Scan(...any) error }) (CrawlJob, error) {
 
 // CreateJob inserts a new crawl job and returns the populated struct.
 func (db *DB) CreateJob(jobType, configJSON, seedURLsJSON string) (*CrawlJob, error) {
-	id := uuid.New().String()
+	id := newJobID()
 
 	_, err := db.Exec(
 		`INSERT INTO crawl_jobs (id, type, config_json, seed_urls)
@@ -395,7 +408,7 @@ func (db *DB) CountJobsCreatedSince(since time.Time) (int, error) {
 
 // CreateJobWithTTL inserts a new job and sets its ttl_expires_at field.
 func (db *DB) CreateJobWithTTL(jobType, configJSON, seedURLsJSON string, ttl time.Duration) (*CrawlJob, error) {
-	id := uuid.New().String()
+	id := newJobID()
 	ttlStr := time.Now().UTC().Add(ttl).Format("2006-01-02T15:04:05.000Z")
 
 	_, err := db.Exec(
