@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/url"
 	"strconv"
 	"strings"
@@ -145,14 +145,14 @@ func (e *Engine) emitPhase(jobID, phase, message string) {
 		Message string `json:"message"`
 	}{phase, message})
 	if err != nil {
-		log.Printf("engine: emitPhase marshal failed: %v", err)
+		slog.Error("engine: emitPhase marshal failed", "err", err, "job_id", jobID, "phase", phase)
 		return
 	}
 	details := string(payload)
 	if _, err := e.db.InsertEvent(jobID, "phase", &details, nil); err != nil {
-		log.Printf("engine: emitPhase insert failed: %v", err)
+		slog.Error("engine: emitPhase insert failed", "err", err, "job_id", jobID, "phase", phase)
 	}
-	log.Printf("engine: phase=%s %s", phase, message)
+	slog.Info("engine: phase", "phase", phase, "message", message, "job_id", jobID)
 }
 
 // RunCrawl executes a full crawl job. Blocks until complete or cancelled.
@@ -206,7 +206,7 @@ func (e *Engine) RunCrawl(ctx context.Context, jobID string) error {
 	for _, seedURL := range seeds {
 		normalized, err := urlutil.Normalize(seedURL)
 		if err != nil {
-			log.Printf("engine: skipping invalid seed URL %q: %v", seedURL, err)
+			slog.Warn("engine: skipping invalid seed URL", "url", seedURL, "err", err)
 			continue
 		}
 		parsed, err := url.Parse(normalized)
@@ -292,7 +292,7 @@ func (e *Engine) RunCrawl(ctx context.Context, jobID string) error {
 
 			info, onboardErr := onboarder.OnboardHost(ctx, jobID, hostWithPort, parsed.Scheme)
 			if onboardErr != nil {
-				log.Printf("engine: onboarding host %q: %v", hostWithPort, onboardErr)
+				slog.Warn("engine: onboarding host failed", "host", hostWithPort, "err", onboardErr)
 				continue
 			}
 
@@ -306,7 +306,7 @@ func (e *Engine) RunCrawl(ctx context.Context, jobID string) error {
 			// Apply crawl delay to rate limiter (keyed by hostname as used in fetcher)
 			if info.CrawlDelay > 0 {
 				e.rateLimiter.SetCrawlDelay(hostOnly, info.CrawlDelay)
-				log.Printf("engine: crawl-delay for %q set to %v", hostOnly, info.CrawlDelay)
+				slog.Info("engine: crawl-delay applied", "host", hostOnly, "delay", info.CrawlDelay)
 			}
 
 			// Add sitemap URLs to frontier
@@ -418,7 +418,7 @@ func (e *Engine) RunCrawl(ctx context.Context, jobID string) error {
 				return
 			case <-counterTicker.C:
 				if err := e.db.UpdateJobCounters(jobID, int(pagesCrawled.Load()), int(urlsDiscovered.Load()), int(issuesFound.Load())); err != nil {
-					log.Printf("engine: counter flush failed: %v", err)
+					slog.Error("engine: counter flush failed", "err", err, "job_id", jobID)
 				}
 			}
 		}
@@ -630,7 +630,7 @@ loop:
 		e.emitPhase(jobID, "sitemap_gap", "checking sitemap URLs missing from crawl (JS render)")
 		escalated := e.sitemapGapEscalation(ctx, jobID)
 		if escalated > 0 {
-			log.Printf("engine: sitemap gap escalation discovered %d new URLs", escalated)
+			slog.Info("engine: sitemap gap escalation discovered new URLs", "count", escalated, "job_id", jobID)
 		}
 	}
 
@@ -647,7 +647,7 @@ loop:
 	// --- Post-crawl: Performance + Accessibility audits (parallel) ---
 	if completionErr == nil {
 		var auditWg sync.WaitGroup
-		log.Printf("engine: PSI API key configured: %v", e.config != nil && e.config.PSIAPIKey != "")
+		slog.Info("engine: PSI API key configured", "configured", e.config != nil && e.config.PSIAPIKey != "")
 		if e.config != nil && e.config.PSIAPIKey != "" {
 			auditWg.Add(1)
 			go func() {
@@ -695,9 +695,9 @@ loop:
 				  AND e.is_internal = 1 AND e.relation_type = 'link'
 			) WHERE job_id = ?`, jobID)
 		if depthErr := e.recomputePageDepths(jobID); depthErr != nil {
-			log.Printf("engine: page depth recomputation failed: %v", depthErr)
+			slog.Error("engine: page depth recomputation failed", "err", depthErr, "job_id", jobID)
 		}
-		log.Printf("engine: recalculated edge counts for job %s", jobID)
+		slog.Info("engine: recalculated edge counts", "job_id", jobID)
 	}
 
 	// --- Post-crawl: global issue detection + materialization ---
@@ -706,7 +706,7 @@ loop:
 		globalCfg := issues.DefaultGlobalConfig()
 		globalCount, globalErr := issues.DetectGlobalIssues(e.db, jobID, globalCfg)
 		if globalErr != nil {
-			log.Printf("engine: global issue detection failed: %v", globalErr)
+			slog.Error("engine: global issue detection failed", "err", globalErr, "job_id", jobID)
 		} else {
 			issuesFound.Add(int64(globalCount))
 			e.emitPhase(jobID, "global_issues_done", fmt.Sprintf("%d global issues detected", globalCount))
@@ -715,7 +715,7 @@ loop:
 		// Materialize canonical clusters, duplicate clusters, URL groups
 		e.emitPhase(jobID, "materializing", "writing report rollups")
 		if matErr := materialize.Materialize(e.db, jobID); matErr != nil {
-			log.Printf("engine: materialization failed: %v", matErr)
+			slog.Error("engine: materialization failed", "err", matErr, "job_id", jobID)
 		}
 
 		// Re-sync issuesFound from the actual issues table so the job row
@@ -1088,7 +1088,7 @@ func (e *Engine) sitemapGapEscalation(ctx context.Context, jobID string) int {
 		jobID,
 	)
 	if err != nil {
-		log.Printf("engine: sitemap gap: failed to query sitemap entries: %v", err)
+		slog.Error("engine: sitemap gap: query sitemap entries failed", "err", err, "job_id", jobID)
 		return 0
 	}
 	for rows.Next() {
@@ -1115,7 +1115,7 @@ func (e *Engine) sitemapGapEscalation(ctx context.Context, jobID string) int {
 		jobID,
 	)
 	if err != nil {
-		log.Printf("engine: sitemap gap: failed to query static edges: %v", err)
+		slog.Error("engine: sitemap gap: query static edges failed", "err", err, "job_id", jobID)
 		return 0
 	}
 	linkedURLs := map[string]bool{}
@@ -1144,11 +1144,11 @@ func (e *Engine) sitemapGapEscalation(ctx context.Context, jobID string) int {
 		return 0
 	}
 
-	log.Printf("engine: sitemap gap: %d sitemap URLs have no static inbound links", len(gap))
+	slog.Info("engine: sitemap gap detected", "orphan_count", len(gap), "job_id", jobID)
 
 	// 4. Check renderer availability
 	if e.renderer == nil {
-		log.Printf("engine: sitemap gap detected but no renderer available, skipping escalation")
+		slog.Warn("engine: sitemap gap detected but no renderer available, skipping escalation", "job_id", jobID)
 		detailsJSON := fmt.Sprintf(`{"gapCount":%d,"pagesReRendered":0,"newLinksFound":0,"newURLsDiscovered":0,"reason":"no_renderer"}`, len(gap))
 		e.db.InsertEvent(jobID, "sitemap_gap_escalation", &detailsJSON, nil)
 		return 0
@@ -1164,7 +1164,7 @@ func (e *Engine) sitemapGapEscalation(ctx context.Context, jobID string) int {
 		jobID,
 	)
 	if err != nil {
-		log.Printf("engine: sitemap gap: failed to query key pages: %v", err)
+		slog.Error("engine: sitemap gap: query key pages failed", "err", err, "job_id", jobID)
 		return 0
 	}
 	type keyPage struct {
@@ -1209,7 +1209,7 @@ func (e *Engine) sitemapGapEscalation(ctx context.Context, jobID string) int {
 		if renderer.IsPlaywrightAvailable() {
 			pwResult, pwErr := renderer.RenderWithPlaywright(ctx, kp.url)
 			if pwErr != nil {
-				log.Printf("engine: sitemap gap: playwright render failed for %s: %v, falling back to chromedp", kp.url, pwErr)
+				slog.Warn("engine: sitemap gap: playwright render failed, falling back to chromedp", "url", kp.url, "err", pwErr)
 			} else {
 				renderHTML = pwResult.HTML
 				renderFinalURL = kp.url
@@ -1223,7 +1223,7 @@ func (e *Engine) sitemapGapEscalation(ctx context.Context, jobID string) int {
 				DiscoverMenus: true,
 			})
 			if renderErr != nil {
-				log.Printf("engine: sitemap gap: render failed for %s: %v", kp.url, renderErr)
+				slog.Warn("engine: sitemap gap: render failed", "url", kp.url, "err", renderErr)
 				continue
 			}
 			renderHTML = renderResult.HTML
@@ -1234,7 +1234,7 @@ func (e *Engine) sitemapGapEscalation(ctx context.Context, jobID string) int {
 		// Parse the rendered HTML (includes lazy-loaded content after full scroll)
 		page, parseErr := parser.ParseHTML([]byte(renderHTML), renderFinalURL, http.Header{})
 		if parseErr != nil {
-			log.Printf("engine: sitemap gap: parse failed for rendered %s: %v", kp.url, parseErr)
+			slog.Warn("engine: sitemap gap: parse failed for rendered", "url", kp.url, "err", parseErr)
 			continue
 		}
 
@@ -1327,7 +1327,7 @@ func (e *Engine) sitemapGapEscalation(ctx context.Context, jobID string) int {
 			// If this URL is in the gap set, it's a successful escalation
 			if gapSet[norm] {
 				newURLsDiscovered++
-				log.Printf("engine: sitemap gap: browser discovered gap URL %s via %s", norm, kp.url)
+				slog.Info("engine: sitemap gap: browser discovered gap URL", "discovered_url", norm, "via_url", kp.url)
 			}
 		}
 
@@ -1376,7 +1376,7 @@ func (e *Engine) sitemapGapEscalation(ctx context.Context, jobID string) int {
 			)
 			if gapSet[norm] {
 				newURLsDiscovered++
-				log.Printf("engine: sitemap gap: playwright link discovered gap URL %s via %s", norm, kp.url)
+				slog.Info("engine: sitemap gap: playwright link discovered gap URL", "discovered_url", norm, "via_url", kp.url)
 			}
 		}
 	}
@@ -1406,7 +1406,7 @@ func (e *Engine) headCheckAssets(ctx context.Context, jobID string) {
 		jobID,
 	)
 	if err != nil {
-		log.Printf("engine: failed to query assets for HEAD checking: %v", err)
+		slog.Error("engine: query assets for HEAD checking failed", "err", err, "job_id", jobID)
 		return
 	}
 	defer rows.Close()
@@ -1424,7 +1424,7 @@ func (e *Engine) headCheckAssets(ctx context.Context, jobID string) {
 		targets = append(targets, t)
 	}
 	if err := rows.Err(); err != nil {
-		log.Printf("engine: error iterating assets: %v", err)
+		slog.Error("engine: iterating assets failed", "err", err, "job_id", jobID)
 	}
 
 	if len(targets) == 0 {
@@ -1432,7 +1432,7 @@ func (e *Engine) headCheckAssets(ctx context.Context, jobID string) {
 	}
 
 	e.emitPhase(jobID, "asset_checks", fmt.Sprintf("HEAD-checking %d discovered assets", len(targets)))
-	log.Printf("engine: HEAD-checking %d discovered assets", len(targets))
+	slog.Info("engine: head-checking discovered assets", "count", len(targets), "job_id", jobID)
 
 	// Use a small worker pool to avoid overwhelming hosts
 	const headWorkers = 4
@@ -1479,7 +1479,7 @@ func (e *Engine) headCheckAssets(ctx context.Context, jobID string) {
 		}()
 	}
 	wg.Wait()
-	log.Printf("engine: completed HEAD-checking assets")
+	slog.Info("engine: head-checking assets complete", "job_id", jobID)
 }
 
 func (e *Engine) persistItem(ctx context.Context, jobID string, item persistItem) error {
@@ -1820,7 +1820,7 @@ func (e *Engine) runLighthouseAudits(ctx context.Context, jobID string) {
 		jobID,
 	)
 	if err != nil {
-		log.Printf("engine: PSI audit query failed: %v", err)
+		slog.Error("engine: PSI audit query failed", "err", err, "job_id", jobID)
 		return
 	}
 	var urls []string
@@ -1842,8 +1842,11 @@ func (e *Engine) runLighthouseAudits(ctx context.Context, jobID string) {
 		strategies = append(strategies, "desktop")
 	}
 
-	log.Printf("engine: running PSI audits on %d pages (%d strategies, %d total calls)",
-		len(urls), len(strategies), len(urls)*len(strategies))
+	slog.Info("engine: running PSI audits",
+		"pages", len(urls),
+		"strategies", len(strategies),
+		"total_calls", len(urls)*len(strategies),
+		"job_id", jobID)
 
 	// Build work items
 	type psiWork struct {
@@ -1889,7 +1892,7 @@ func (e *Engine) runLighthouseAudits(ctx context.Context, jobID string) {
 					mu.Lock()
 					failed++
 					mu.Unlock()
-					log.Printf("engine: PSI audit failed for %s (%s): %v", item.url, item.strategy, psiErr)
+					slog.Warn("engine: PSI audit failed", "url", item.url, "strategy", item.strategy, "err", psiErr)
 					continue
 				}
 
@@ -1906,7 +1909,7 @@ func (e *Engine) runLighthouseAudits(ctx context.Context, jobID string) {
 	}
 	wg.Wait()
 
-	log.Printf("engine: completed PSI audits (%d results, %d failed)", audited, failed)
+	slog.Info("engine: PSI audits complete", "audited", audited, "failed", failed, "job_id", jobID)
 }
 
 // runAxeAudits runs axe-core accessibility audits on all crawled pages
@@ -1918,7 +1921,7 @@ func (e *Engine) runAxeAudits(ctx context.Context, jobID string) {
 		jobID,
 	)
 	if err != nil {
-		log.Printf("engine: Axe audit query failed: %v", err)
+		slog.Error("engine: Axe audit query failed", "err", err, "job_id", jobID)
 		return
 	}
 	var urls []string
@@ -1934,12 +1937,12 @@ func (e *Engine) runAxeAudits(ctx context.Context, jobID string) {
 		return
 	}
 
-	log.Printf("engine: running Axe accessibility audits on %d pages (batch mode)", len(urls))
+	slog.Info("engine: running Axe accessibility audits (batch mode)", "pages", len(urls), "job_id", jobID)
 
 	// Run all URLs in a single batch — one browser launch for all pages
 	results, batchErr := renderer.RunAxeAuditBatch(ctx, urls)
 	if batchErr != nil {
-		log.Printf("engine: Axe batch audit failed: %v", batchErr)
+		slog.Error("engine: Axe batch audit failed", "err", batchErr, "job_id", jobID)
 		return
 	}
 
@@ -1952,7 +1955,7 @@ func (e *Engine) runAxeAudits(ctx context.Context, jobID string) {
 		audited++
 	}
 
-	log.Printf("engine: completed Axe accessibility audits (%d results)", audited)
+	slog.Info("engine: Axe accessibility audits complete", "audited", audited, "job_id", jobID)
 }
 
 // failJob marks a job as failed with the given error.
@@ -1994,7 +1997,7 @@ func (e *Engine) checkMarkdownNegotiation(ctx context.Context, jobID string) {
 		WHERE p.job_id = ?
 	`, jobID)
 	if err != nil {
-		log.Printf("engine: markdown negotiation query failed: %v", err)
+		slog.Error("engine: markdown negotiation query failed", "err", err, "job_id", jobID)
 		return
 	}
 	defer rows.Close()
@@ -2010,7 +2013,7 @@ func (e *Engine) checkMarkdownNegotiation(ctx context.Context, jobID string) {
 		return
 	}
 
-	log.Printf("engine: checking markdown content negotiation on %d pages", len(urls))
+	slog.Info("engine: checking markdown content negotiation", "pages", len(urls), "job_id", jobID)
 
 	client := &http.Client{Timeout: 5 * time.Second} // shorter timeout: most servers respond fast or 404
 
@@ -2120,10 +2123,10 @@ func (e *Engine) checkMarkdownNegotiation(ctx context.Context, jobID string) {
 		})
 	}
 	if err := e.db.InsertIssuesBatch(issueBatch); err != nil {
-		log.Printf("engine: markdown negotiation issues batch insert failed: %v", err)
+		slog.Error("engine: markdown negotiation issues batch insert failed", "err", err, "job_id", jobID)
 	}
 
-	log.Printf("engine: markdown negotiation: %d/%d pages support Accept: text/markdown", supportedCount, total)
+	slog.Info("engine: markdown negotiation summary", "supported", supportedCount, "total", total, "job_id", jobID)
 }
 
 // runTextQualityChecks runs LanguageTool on all crawled pages and creates
@@ -2131,7 +2134,7 @@ func (e *Engine) checkMarkdownNegotiation(ctx context.Context, jobID string) {
 func (e *Engine) runTextQualityChecks(ctx context.Context, jobID string) {
 	client := textquality.NewLTClient(e.config.LanguageToolURL)
 	if !client.IsAvailable(ctx) {
-		log.Printf("engine: LanguageTool not available at %s, skipping text quality checks", e.config.LanguageToolURL)
+		slog.Info("engine: LanguageTool not available, skipping text quality checks", "url", e.config.LanguageToolURL)
 		return
 	}
 
@@ -2143,7 +2146,7 @@ func (e *Engine) runTextQualityChecks(ctx context.Context, jobID string) {
 		WHERE p.job_id = ? AND p.word_count > 0
 	`, jobID)
 	if err != nil {
-		log.Printf("engine: text quality query failed: %v", err)
+		slog.Error("engine: text quality query failed", "err", err, "job_id", jobID)
 		return
 	}
 	defer rows.Close()
@@ -2222,9 +2225,9 @@ func (e *Engine) runTextQualityChecks(ctx context.Context, jobID string) {
 			}
 		}
 	}
-	log.Printf("engine: text quality custom dictionary: %d words", len(customDict))
+	slog.Info("engine: text quality custom dictionary loaded", "words", len(customDict))
 
-	log.Printf("engine: running text quality checks on %d pages via LanguageTool", len(pages))
+	slog.Info("engine: running text quality checks via LanguageTool", "pages", len(pages), "job_id", jobID)
 	totalFindings := 0
 	checkOpts := textquality.CheckOptions{CustomDict: customDict}
 
@@ -2243,7 +2246,7 @@ func (e *Engine) runTextQualityChecks(ctx context.Context, jobID string) {
 		}
 		result, err := client.Check(ctx, parsed.ExtractedText, "en-US", checkOpts)
 		if err != nil {
-			log.Printf("engine: text quality check failed for %s: %v", pg.url, err)
+			slog.Warn("engine: text quality check failed", "url", pg.url, "err", err)
 			continue
 		}
 		if len(result.Matches) == 0 {
@@ -2338,7 +2341,7 @@ func (e *Engine) runTextQualityChecks(ctx context.Context, jobID string) {
 		}
 	}
 
-	log.Printf("engine: text quality checks complete: %d findings across %d pages", totalFindings, len(pages))
+	slog.Info("engine: text quality checks complete", "findings", totalFindings, "pages", len(pages), "job_id", jobID)
 }
 
 // browserEnrichPages re-renders pages with Playwright (full scroll) to capture
@@ -2353,7 +2356,7 @@ func (e *Engine) browserEnrichPages(ctx context.Context, jobID string) {
 		  AND (p.js_suspect = 1 OR p.word_count < ? OR p.word_count IS NULL)
 	`, jobID, e.config.ThinContentThreshold*3)
 	if err != nil {
-		log.Printf("engine: browser enrich: query failed: %v", err)
+		slog.Error("engine: browser enrich: query failed", "err", err, "job_id", jobID)
 		return
 	}
 	defer rows.Close()
@@ -2378,7 +2381,7 @@ func (e *Engine) browserEnrichPages(ctx context.Context, jobID string) {
 		return
 	}
 
-	log.Printf("engine: browser enrich: re-rendering %d pages with full scroll", len(pages))
+	slog.Info("engine: browser enrich: re-rendering with full scroll", "pages", len(pages), "job_id", jobID)
 	enriched := 0
 
 	for _, pg := range pages {
@@ -2446,7 +2449,7 @@ func (e *Engine) browserEnrichPages(ctx context.Context, jobID string) {
 		}
 	}
 
-	log.Printf("engine: browser enrich: updated %d/%d pages with richer content", enriched, len(pages))
+	slog.Info("engine: browser enrich: updated pages with richer content", "enriched", enriched, "total", len(pages), "job_id", jobID)
 }
 
 func marshalStringSlice(items []string) string {

@@ -8,7 +8,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 )
@@ -88,7 +88,7 @@ func FetchAndParseContext(ctx context.Context, sitemapURL string, maxEntries int
 
 		data, err := fetchSitemapContent(ctx, current, client)
 		if err != nil {
-			log.Printf("warning: skipping sitemap %q: %v", current, err)
+			slog.Warn("sitemap: skipping unreadable", "url", current, "err", err)
 			continue
 		}
 
@@ -104,7 +104,7 @@ func FetchAndParseContext(ctx context.Context, sitemapURL string, maxEntries int
 		// Try as urlset.
 		parsed, err := ParseXML(data)
 		if err != nil {
-			log.Printf("warning: skipping malformed sitemap %q: %v", current, err)
+			slog.Warn("sitemap: skipping malformed", "url", current, "err", err)
 			continue
 		}
 

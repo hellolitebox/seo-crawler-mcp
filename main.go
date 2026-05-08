@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -141,9 +141,10 @@ func main() {
 		}
 
 		go func() {
-			log.Printf("HTTP server listening on %s", *httpAddr)
+			slog.Info("http server listening", "addr", *httpAddr)
 			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-				log.Fatalf("http server: %v", err)
+				slog.Error("http server failed", "err", err)
+				os.Exit(1)
 			}
 		}()
 
@@ -153,7 +154,7 @@ func main() {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
 		if err := srv.Shutdown(ctx); err != nil {
-			log.Printf("http shutdown: %v", err)
+			slog.Error("http shutdown failed", "err", err)
 		}
 		return
 	}
