@@ -37,6 +37,20 @@ func NewRateLimiter(perHostConcurrency int) *RateLimiter {
 	}
 }
 
+// Reset clears all per-host state (semaphores, crawl delays, TTFB
+// samples). Call between crawls when the same RateLimiter instance is
+// shared across jobs to avoid unbounded growth and to prevent stale
+// crawl-delay or slow-host data from leaking across jobs.
+//
+// Not safe to call while a crawl is in progress: existing AcquireContext
+// callers hold references to hostState values that would be orphaned.
+func (rl *RateLimiter) Reset() {
+	rl.hosts.Range(func(k, _ any) bool {
+		rl.hosts.Delete(k)
+		return true
+	})
+}
+
 func (rl *RateLimiter) getState(host string) *hostState {
 	val, ok := rl.hosts.Load(host)
 	if ok {

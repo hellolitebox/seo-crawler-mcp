@@ -200,6 +200,11 @@ func (e *Engine) RunCrawl(ctx context.Context, jobID string) error {
 		return err
 	}
 
+	// Clear cross-job state in shared services before this job populates them.
+	// (e.robotsRules is reset inside onboardSeedHosts; the rate limiter doesn't
+	// reset itself.)
+	e.rateLimiter.Reset()
+
 	q, seeds, err := e.seedFrontier(jobID, job)
 	if err != nil {
 		return err
