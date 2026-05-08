@@ -25,7 +25,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # and for the better menu-discovery / lazy-content render paths. We DO NOT
 # run `playwright install`; the launch scripts honour CHROMIUM_PATH and reuse
 # the apt-installed chromium so we keep one copy of the browser in the image.
-RUN pip install --no-cache-dir playwright==1.49.1
+RUN pip install --no-cache-dir --retries 5 --timeout 120 playwright==1.49.1
 ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 ENV CHROMIUM_PATH=/usr/bin/chromium
 
