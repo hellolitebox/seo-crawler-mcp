@@ -115,6 +115,10 @@ type persistItem struct {
 
 func recoverWorker(cancel context.CancelCauseFunc, name string) {
 	if r := recover(); r != nil {
+		if rerr, ok := r.(error); ok {
+			cancel(fmt.Errorf("%s panic: %w", name, rerr))
+			return
+		}
 		cancel(fmt.Errorf("%s panic: %v", name, r))
 	}
 }
