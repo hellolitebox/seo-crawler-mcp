@@ -1334,10 +1334,14 @@ func (e *Engine) sitemapGapEscalation(ctx context.Context, jobID string) int {
 	newURLsDiscovered := 0
 	pagesReRendered := 0
 
-	for _, kp := range keyPages {
+	e.emitPhase(jobID, "sitemap_gap_progress", fmt.Sprintf("found %d sitemap URLs missing from crawl, re-rendering %d key pages", len(gap), len(keyPages)))
+
+	for i, kp := range keyPages {
 		if ctx.Err() != nil {
 			break
 		}
+
+		e.emitPhase(jobID, "sitemap_gap_progress", fmt.Sprintf("re-rendering page %d/%d (%d new URLs found so far)", i+1, len(keyPages), newURLsDiscovered))
 
 		if err := e.validateRenderTarget(kp.url); err != nil {
 			slog.Warn("engine: sitemap gap: ssrf rejected", "url", kp.url, "err", err)
@@ -1585,6 +1589,12 @@ func (e *Engine) headCheckAssets(ctx context.Context, jobID string) {
 	e.emitPhase(jobID, "asset_checks", fmt.Sprintf("HEAD-checking %d discovered assets", len(targets)))
 	slog.Info("engine: head-checking discovered assets", "count", len(targets), "job_id", jobID)
 
+	assetProgressEvery := len(targets) / 10
+	if assetProgressEvery < 25 {
+		assetProgressEvery = 25
+	}
+	var processed atomic.Int64
+
 	// Use a small worker pool to avoid overwhelming hosts
 	const headWorkers = 4
 	work := make(chan assetTarget, len(targets))
@@ -1624,7 +1634,9 @@ func (e *Engine) headCheckAssets(ctx context.Context, jobID string) {
 					ContentLength: contentLength,
 				}); insertErr != nil {
 					// May fail on duplicate; that's fine
-					continue
+				}
+				if n := int(processed.Add(1)); n%assetProgressEvery == 0 || n == len(targets) {
+					e.emitPhase(jobID, "asset_checks_progress", fmt.Sprintf("checked %d/%d assets", n, len(targets)))
 				}
 			}
 		}()
@@ -1999,6 +2011,13 @@ func (e *Engine) runLighthouseAudits(ctx context.Context, jobID string) {
 		"total_calls", len(urls)*len(strategies),
 		"job_id", jobID)
 
+	totalCalls := len(urls) * len(strategies)
+	e.emitPhase(jobID, "psi_audits", fmt.Sprintf("running %d PageSpeed audits (%d pages × %d strategies)", totalCalls, len(urls), len(strategies)))
+	psiProgressEvery := totalCalls / 10
+	if psiProgressEvery < 5 {
+		psiProgressEvery = 5
+	}
+
 	// Build work items
 	type psiWork struct {
 		url      string
@@ -2054,7 +2073,11 @@ func (e *Engine) runLighthouseAudits(ctx context.Context, jobID string) {
 
 				mu.Lock()
 				audited++
+				done := audited + failed
 				mu.Unlock()
+				if done%psiProgressEvery == 0 || done == totalCalls {
+					e.emitPhase(jobID, "psi_progress", fmt.Sprintf("audited %d/%d (%d failed)", done, totalCalls, failed))
+				}
 			}
 		}()
 	}
@@ -2089,6 +2112,7 @@ func (e *Engine) runAxeAudits(ctx context.Context, jobID string) {
 	}
 
 	slog.Info("engine: running Axe accessibility audits (batch mode)", "pages", len(urls), "job_id", jobID)
+	e.emitPhase(jobID, "axe_audits", fmt.Sprintf("running Axe accessibility audits on %d pages (single Playwright batch)", len(urls)))
 
 	// Run all URLs in a single batch — one browser launch for all pages
 	results, batchErr := renderer.RunAxeAuditBatch(ctx, urls)
@@ -2179,10 +2203,13 @@ func (e *Engine) checkMarkdownNegotiation(ctx context.Context, jobID string) {
 	// ~40s for 2K pages. The job table progress counters keep moving thanks to
 	// the periodic flush ticker, and we also emit a progress phase event
 	// every `progressEvery` pages so the live log keeps moving.
-	const (
-		workers       = 16
-		progressEvery = 200
-	)
+	const workers = 16
+	// Dynamic threshold: 200 was right for huge crawls but left small ones
+	// silent for minutes. Aim for ~10 progress events regardless of size.
+	progressEvery := len(urls) / 10
+	if progressEvery < 20 {
+		progressEvery = 20
+	}
 
 	var (
 		results    = make([]mdResult, len(urls))
@@ -2219,7 +2246,7 @@ func (e *Engine) checkMarkdownNegotiation(ctx context.Context, jobID string) {
 				}
 				results[idx] = res
 
-				if n := processed.Add(1); n%progressEvery == 0 || int(n) == len(urls) {
+				if n := int(processed.Add(1)); n%progressEvery == 0 || n == len(urls) {
 					e.emitPhase(jobID, "markdown_progress", fmt.Sprintf("checked %d/%d pages", n, len(urls)))
 				}
 			}
@@ -2379,12 +2406,20 @@ func (e *Engine) runTextQualityChecks(ctx context.Context, jobID string) {
 	slog.Info("engine: text quality custom dictionary loaded", "words", len(customDict))
 
 	slog.Info("engine: running text quality checks via LanguageTool", "pages", len(pages), "job_id", jobID)
+	e.emitPhase(jobID, "text_quality", fmt.Sprintf("checking spelling/grammar on %d pages via LanguageTool", len(pages)))
+	tqProgressEvery := len(pages) / 10
+	if tqProgressEvery < 5 {
+		tqProgressEvery = 5
+	}
 	totalFindings := 0
 	checkOpts := textquality.CheckOptions{CustomDict: customDict}
 
-	for _, pg := range pages {
+	for i, pg := range pages {
 		if ctx.Err() != nil {
 			break
+		}
+		if (i+1)%tqProgressEvery == 0 || i+1 == len(pages) {
+			e.emitPhase(jobID, "text_quality_progress", fmt.Sprintf("checked %d/%d pages (%d findings so far)", i+1, len(pages), totalFindings))
 		}
 		// Re-fetch and extract visible text for this page
 		fetchResult, fetchErr := e.fetcher.FetchContext(ctx, pg.url)
@@ -2533,11 +2568,19 @@ func (e *Engine) browserEnrichPages(ctx context.Context, jobID string) {
 	}
 
 	slog.Info("engine: browser enrich: re-rendering with full scroll", "pages", len(pages), "job_id", jobID)
+	e.emitPhase(jobID, "browser_enrich", fmt.Sprintf("re-rendering %d JS-suspect pages to capture lazy content", len(pages)))
+	progressEvery := len(pages) / 10
+	if progressEvery < 5 {
+		progressEvery = 5
+	}
 	enriched := 0
 
-	for _, pg := range pages {
+	for i, pg := range pages {
 		if ctx.Err() != nil {
 			break
+		}
+		if (i+1)%progressEvery == 0 || i+1 == len(pages) {
+			e.emitPhase(jobID, "browser_enrich_progress", fmt.Sprintf("rendered %d/%d pages (%d enriched)", i+1, len(pages), enriched))
 		}
 		if err := e.validateRenderTarget(pg.url); err != nil {
 			slog.Warn("engine: browser enrich: ssrf rejected", "url", pg.url, "err", err)
