@@ -805,9 +805,19 @@ func (e *Engine) runPostCrawlPhases(ctx context.Context, jobID string, counters 
 	}
 
 	// Recalculate inbound/outbound edge counts and shortest-path depths.
+	// inbound_edge_count counts every <a href>; inbound_linking_pages
+	// counts distinct source pages, which is what dashboards usually
+	// want when they ask "how many pages link here".
 	e.db.Exec(`
 		UPDATE pages SET inbound_edge_count = (
 			SELECT COUNT(*) FROM edges e
+			WHERE e.job_id = pages.job_id
+			  AND e.declared_target_url = (SELECT normalized_url FROM urls WHERE id = pages.url_id AND job_id = pages.job_id)
+			  AND e.is_internal = 1 AND e.relation_type = 'link'
+		) WHERE job_id = ?`, jobID)
+	e.db.Exec(`
+		UPDATE pages SET inbound_linking_pages = (
+			SELECT COUNT(DISTINCT e.source_url_id) FROM edges e
 			WHERE e.job_id = pages.job_id
 			  AND e.declared_target_url = (SELECT normalized_url FROM urls WHERE id = pages.url_id AND job_id = pages.job_id)
 			  AND e.is_internal = 1 AND e.relation_type = 'link'

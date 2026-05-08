@@ -60,7 +60,8 @@ const pageColumns = `id, job_id, url_id, fetch_id, depth,
 	twitter_card, twitter_title, twitter_description, twitter_image,
 	jsonld_raw, jsonld_types_json, images_json,
 	word_count, main_content_word_count, content_hash,
-	js_suspect, url_group, outbound_edge_count, inbound_edge_count`
+	js_suspect, url_group, outbound_edge_count, inbound_edge_count,
+	inbound_linking_pages`
 
 // scanPage scans a row into a Page using the pageColumns order.
 func scanPage(sc interface{ Scan(...any) error }) (Page, error) {
@@ -78,6 +79,7 @@ func scanPage(sc interface{ Scan(...any) error }) (Page, error) {
 		&p.JSONLDRaw, &p.JSONLDTypesJSON, &p.ImagesJSON,
 		&p.WordCount, &p.MainContentWordCount, &p.ContentHash,
 		&jsSuspect, &p.URLGroup, &p.OutboundEdgeCount, &p.InboundEdgeCount,
+		&p.InboundLinkingPages,
 	)
 	p.JSSuspect = jsSuspect == 1
 	return p, err

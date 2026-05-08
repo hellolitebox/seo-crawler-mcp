@@ -99,6 +99,7 @@ type Page struct {
 	URLGroup                sql.NullString `json:"urlGroup,omitempty"`
 	OutboundEdgeCount       int64          `json:"outboundEdgeCount"`
 	InboundEdgeCount        int64          `json:"inboundEdgeCount"`
+	InboundLinkingPages     int64          `json:"inboundLinkingPages"`
 }
 
 // Edge represents a link between two URLs.

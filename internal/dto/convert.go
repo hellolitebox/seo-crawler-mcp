@@ -17,8 +17,9 @@ func PageFromStorage(p storage.Page, lookup URLLookup) PageDTO {
 		Depth:             int(p.Depth),
 		IndexabilityState: p.IndexabilityState,
 		JSSuspect:         p.JSSuspect,
-		OutboundEdgeCount: int(p.OutboundEdgeCount),
-		InboundEdgeCount:  int(p.InboundEdgeCount),
+		OutboundEdgeCount:   int(p.OutboundEdgeCount),
+		InboundEdgeCount:    int(p.InboundEdgeCount),
+		InboundLinkingPages: int(p.InboundLinkingPages),
 	}
 
 	dto.Title = strPtr(p.Title)

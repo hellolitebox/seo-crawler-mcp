@@ -44,6 +44,7 @@ type PageDTO struct {
 	URLGroup              *string  `json:"urlGroup,omitempty"`
 	OutboundEdgeCount     int      `json:"outboundEdgeCount"`
 	InboundEdgeCount      int      `json:"inboundEdgeCount"`
+	InboundLinkingPages   int      `json:"inboundLinkingPages"`
 }
 
 // EdgeDTO is the JSON-friendly representation of a link edge.
