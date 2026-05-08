@@ -109,27 +109,25 @@ func (rl *RateLimiter) SetCrawlDelay(host string, delay time.Duration) {
 	state.mu.Unlock()
 }
 
-// ThrottleHost temporarily reduces the host to a single concurrent slot and
-// enforces the given delay before the next request. The original concurrency
-// is restored after the delay expires.
+// ThrottleHost temporarily extends the host's crawl delay to dur (if
+// it's greater than the current delay) and schedules its restoration
+// after that period. Uses time.AfterFunc so the timer lives in the
+// runtime timer wheel — no blocked goroutine per throttled host, and
+// the timer is cheap to leave running if the crawl ends mid-throttle.
 func (rl *RateLimiter) ThrottleHost(host string, dur time.Duration) {
 	state := rl.getState(host)
 	state.mu.Lock()
 	defer state.mu.Unlock()
 
-	// Set crawl delay to the throttle duration.
 	if dur > state.delay {
 		state.delay = dur
 	}
 
-	// Schedule restoration of the original delay after the throttle period.
-	go func() {
-		time.Sleep(dur)
+	time.AfterFunc(dur, func() {
 		state.mu.Lock()
-		// Only reset if it hasn't been set to something larger in the meantime.
 		state.delay = 0
 		state.mu.Unlock()
-	}()
+	})
 }
 
 // RecordTTFB records a TTFB sample for a host and returns the average TTFB in
