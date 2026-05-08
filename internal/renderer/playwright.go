@@ -69,15 +69,17 @@ func RenderPageContentOnly(ctx context.Context, pageURL string) (*PlaywrightResu
 	defer cancel()
 
 	script := `
-import sys, json
+import os, sys, json
 from playwright.sync_api import sync_playwright
 import time as _time
 
 url = sys.argv[1]
 result = {"html": "", "links": []}
 
+_chromium_path = os.environ.get("CHROMIUM_PATH") or None
+
 with sync_playwright() as p:
-    browser = p.chromium.launch(headless=True)
+    browser = p.chromium.launch(headless=True, executable_path=_chromium_path)
     page = browser.new_page(viewport={"width": 1440, "height": 900})
     page.goto(url, wait_until="networkidle", timeout=30000)
     page.wait_for_timeout(2000)
@@ -125,13 +127,15 @@ print(json.dumps(result))
 
 func playwrightScript() string {
 	return `
-import sys, json
+import os, sys, json
 from playwright.sync_api import sync_playwright
 
 url = sys.argv[1]
 
+_chromium_path = os.environ.get("CHROMIUM_PATH") or None
+
 with sync_playwright() as p:
-    browser = p.chromium.launch(headless=True)
+    browser = p.chromium.launch(headless=True, executable_path=_chromium_path)
 
     result = {"html": "", "links": []}
 

@@ -94,15 +94,17 @@ func RunAxeAuditBatch(ctx context.Context, urls []string) ([]*AxeResult, error) 
 
 func axeBatchScript() string {
 	return `
-import sys, json
+import os, sys, json
 from playwright.sync_api import sync_playwright
 
 urls = json.loads(sys.stdin.read())
 
 results = []
 
+_chromium_path = os.environ.get("CHROMIUM_PATH") or None
+
 with sync_playwright() as p:
-    browser = p.chromium.launch(headless=True)
+    browser = p.chromium.launch(headless=True, executable_path=_chromium_path)
 
     for url in urls:
         try:
