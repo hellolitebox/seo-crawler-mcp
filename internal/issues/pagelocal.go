@@ -124,9 +124,16 @@ func DefaultThresholds() Thresholds {
 	}
 }
 
+// initialIssueCapacity is a working set hint for the per-page issues slice.
+// Empirically, well-formed pages produce ~10–20 issues; pages with many
+// errors (broken images, layout problems) can hit ~40. Sizing the
+// backing array up-front avoids 4–6 grow-and-copies per page on a
+// hot path that runs once per crawled URL.
+const initialIssueCapacity = 32
+
 // DetectPageLocalIssues runs all Phase 1 detectors and returns found issues.
 func DetectPageLocalIssues(ctx PageContext, thresholds Thresholds, depth int) []DetectedIssue {
-	issues := []DetectedIssue{}
+	issues := make([]DetectedIssue, 0, initialIssueCapacity)
 
 	// HTTP Status
 	if ctx.StatusCode >= 400 && ctx.StatusCode <= 499 {
