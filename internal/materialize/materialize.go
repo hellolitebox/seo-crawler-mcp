@@ -4,6 +4,7 @@ package materialize
 
 import (
 	"fmt"
+	"strconv"
 
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/storage"
 )
@@ -213,12 +214,13 @@ func materializeDuplicateClusters(db *storage.DB, jobID string) error {
 }
 
 // splitIDs splits a comma-separated string of integers into a slice.
+// Preserves slice length on parse failure (appends 0) to keep parallel
+// slices like urlIDs/fetchSeqs aligned.
 func splitIDs(s string) []int64 {
 	parts := splitComma(s)
 	ids := make([]int64, 0, len(parts))
 	for _, p := range parts {
-		var id int64
-		fmt.Sscanf(p, "%d", &id)
+		id, _ := strconv.ParseInt(p, 10, 64)
 		ids = append(ids, id)
 	}
 	return ids

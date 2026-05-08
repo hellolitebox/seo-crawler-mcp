@@ -4,6 +4,7 @@ package issues
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/storage"
@@ -1047,8 +1048,7 @@ func parseInt64List(raw string) []int64 {
 	parts := strings.Split(raw, ",")
 	values := make([]int64, 0, len(parts))
 	for _, part := range parts {
-		var value int64
-		fmt.Sscanf(strings.TrimSpace(part), "%d", &value)
+		value, _ := strconv.ParseInt(strings.TrimSpace(part), 10, 64)
 		values = append(values, value)
 	}
 	return values
