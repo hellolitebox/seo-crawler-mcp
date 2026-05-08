@@ -421,36 +421,21 @@ func (s *Server) handleJobReport(w http.ResponseWriter, r *http.Request, jobID s
 		issuesNextOffset = &n
 	}
 
-	report := map[string]any{
-		"summary": summary,
-		"pages": map[string]any{
-			"results":    pageDTOs,
-			"totalCount": pagesTotalCount,
-			"nextOffset": pagesNextOffset,
-			"limit":      pagesLimit,
-			"offset":     pagesOffset,
-		},
-		"issues": map[string]any{
-			"results":    issueDTOs,
-			"totalCount": issuesTotalCount,
-			"nextOffset": issuesNextOffset,
-			"limit":      issuesLimit,
-			"offset":     issuesOffset,
-		},
-		"external_links":    []any{},
-		"response_codes":    []any{},
-		"robots_directives": []any{},
-		"sitemap_entries":   []any{},
-		"urls":              []any{},
-		"internal_edges":    []any{},
-		"assets":            []any{},
-		"asset_references":  []any{},
-		"redirect_hops":     []any{},
-		"llms_findings":     []any{},
-		"crawl_events":      []any{},
-		"psi_audits":        []any{},
-		"axe_audits":        []any{},
-		"security":          []any{},
+	report := loadReportExtras(r.Context(), s.db, jobID)
+	report["summary"] = summary
+	report["pages"] = map[string]any{
+		"results":    pageDTOs,
+		"totalCount": pagesTotalCount,
+		"nextOffset": pagesNextOffset,
+		"limit":      pagesLimit,
+		"offset":     pagesOffset,
+	}
+	report["issues"] = map[string]any{
+		"results":    issueDTOs,
+		"totalCount": issuesTotalCount,
+		"nextOffset": issuesNextOffset,
+		"limit":      issuesLimit,
+		"offset":     issuesOffset,
 	}
 
 	writeJSON(w, http.StatusOK, report)
