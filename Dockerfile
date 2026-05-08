@@ -5,29 +5,36 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -o seo-crawler-mcp .
 
-# Microsoft's official Playwright image — Ubuntu Jammy with Python 3.10,
-# the playwright pip package, and its bundled browsers (Chromium, Firefox,
-# WebKit) already installed. Avoids fetching from PyPI at image build
-# time, which has been flaky from the Fly remote builder.
-FROM mcr.microsoft.com/playwright/python:v1.49.1-jammy
+# Python 3.10 slim, matching the cp310 wheels in vendor/. The Fly
+# remote builder can't reach PyPI reliably (connection reset by peer,
+# 5/5 retries), so we install Playwright + deps from pre-downloaded
+# wheels copied into the image. Re-fetch with scripts/fetch-vendor-wheels.sh
+# whenever the Playwright pin in this file changes.
+FROM python:3.10-slim-bookworm
 
-# Extra runtime needs:
+# System deps:
+#  - chromium: shared by chromedp (Go) and Playwright (Python) via
+#    CHROMIUM_PATH below — one browser binary in the image.
 #  - sqlite3: CLI used by scripts/backup.sh.
 #  - cron: daily backup runner.
+#  - fonts-liberation: real text glyphs in screenshots / rendered HTML.
 #  - ca-certificates: refreshed TLS roots.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
+    chromium \
     sqlite3 \
     cron \
+    fonts-liberation \
     && rm -rf /var/lib/apt/lists/*
 
-# Expose Playwright's bundled Chromium at a stable path so both chromedp
-# (Go renderer pool) and the Playwright Python launch scripts use the
-# same binary via CHROMIUM_PATH. The directory name embeds Playwright's
-# build number (e.g. chromium-1148) which changes with every release —
-# resolve it once at build time and symlink to a fixed path.
-RUN ln -s "$(find /ms-playwright -path '*chromium*' -name chrome -type f | head -1)" /usr/bin/chromium
+# Install Playwright + deps from vendored wheels (no PyPI reachout).
+COPY vendor/*.whl /tmp/wheels/
+RUN pip install --no-cache-dir --no-index /tmp/wheels/*.whl && rm -rf /tmp/wheels
+
+# Both chromedp and our Python launch scripts honour CHROMIUM_PATH so
+# they share one browser binary instead of carrying two copies.
 ENV CHROMIUM_PATH=/usr/bin/chromium
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 
 WORKDIR /app
 COPY --from=builder /app/seo-crawler-mcp .
