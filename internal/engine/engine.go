@@ -122,6 +122,56 @@ type crawlCounters struct {
 	issuesFound    atomic.Int64
 }
 
+// queryVariantsTracker counts UNIQUE query strings observed per URL path
+// and remembers which paths have already produced a crawl_trap_suspected
+// issue, so the trap heuristic emits at most one issue per path no
+// matter how many trap-shaped links the crawl finds.
+//
+// The previous implementation incremented a counter per discovered edge
+// without deduping queries and emitted an issue on every discovery past
+// the threshold, which caused thousands of duplicate issues on sites
+// with one or two faceted-search paths linked from many pages.
+type queryVariantsTracker struct {
+	mu      sync.Mutex
+	seen    map[string]map[string]struct{} // path -> set of unique RawQuery values
+	flagged map[string]bool                // path -> issue already emitted?
+}
+
+func newQueryVariantsTracker() *queryVariantsTracker {
+	return &queryVariantsTracker{
+		seen:    map[string]map[string]struct{}{},
+		flagged: map[string]bool{},
+	}
+}
+
+// observe records a (path, query) pair and returns:
+//   - count: the number of unique queries seen for this path so far,
+//   - shouldEmitIssue: true iff this is the first call that pushes count
+//     strictly past `threshold` AND no issue has been emitted yet for
+//     this path.
+//
+// Callers that get shouldEmitIssue=true should write exactly one
+// crawl_trap_suspected issue and then continue skipping further
+// discoveries for the same path (count remains > threshold for those).
+func (t *queryVariantsTracker) observe(path, query string, threshold int) (count int, shouldEmitIssue bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	bucket, ok := t.seen[path]
+	if !ok {
+		bucket = map[string]struct{}{}
+		t.seen[path] = bucket
+	}
+	bucket[query] = struct{}{}
+	count = len(bucket)
+
+	if count > threshold && !t.flagged[path] {
+		t.flagged[path] = true
+		shouldEmitIssue = true
+	}
+	return count, shouldEmitIssue
+}
+
 func recoverWorker(cancel context.CancelCauseFunc, name string) {
 	if r := recover(); r != nil {
 		if rerr, ok := r.(error); ok {
@@ -450,9 +500,10 @@ func (e *Engine) runCrawlPipeline(
 	q *frontier.Queue,
 	counters *crawlCounters,
 ) error {
-	// Crawl-trap detection: track query variant counts per path.
-	var queryVariantsMu sync.Mutex
-	queryVariants := map[string]int{}
+	// Crawl-trap detection: tracks unique query strings per path so the
+	// trap heuristic counts variants (not raw discoveries) and emits at
+	// most one issue per path.
+	queryVariants := newQueryVariantsTracker()
 
 	fetchQueue := make(chan frontier.Item, 64)
 	fetchResults := make(chan fetchResult, 64)
@@ -557,7 +608,7 @@ func (e *Engine) runCrawlPipeline(
 			defer recoverWorker(cancel, "parser")
 			defer parserWg.Done()
 			for fr := range fetchResults {
-				pr := e.processParseResult(ctx, jobID, fr, q, &counters.pagesCrawled, &counters.urlsDiscovered, &queryVariantsMu, queryVariants)
+				pr := e.processParseResult(ctx, jobID, fr, q, &counters.pagesCrawled, &counters.urlsDiscovered, queryVariants)
 				counters.issuesFound.Add(int64(len(pr.issues)))
 				select {
 				case persistQueue <- persistItem{
@@ -832,8 +883,7 @@ func (e *Engine) processParseResult(
 	q *frontier.Queue,
 	pagesCrawled *atomic.Int64,
 	urlsDiscovered *atomic.Int64,
-	queryVariantsMu *sync.Mutex,
-	queryVariants map[string]int,
+	queryVariants *queryVariantsTracker,
 ) parseResult {
 	pr := parseResult{
 		fetchResult: fr,
@@ -1109,28 +1159,30 @@ func (e *Engine) processParseResult(
 			continue
 		}
 
-		// Crawl trap: query variant limit
+		// Crawl trap: query variant limit. Counts UNIQUE query strings
+		// per path (not edge discoveries) and emits at most one issue
+		// per path. Once a path is flagged, subsequent variant URLs are
+		// silently skipped from the frontier.
 		parsed, parseErr := url.Parse(normalized)
 		if parseErr != nil {
 			continue
 		}
 		pathKey := parsed.Path
 		if parsed.RawQuery != "" {
-			queryVariantsMu.Lock()
-			queryVariants[pathKey]++
-			count := queryVariants[pathKey]
-			queryVariantsMu.Unlock()
+			count, shouldEmit := queryVariants.observe(pathKey, parsed.RawQuery, e.config.MaxQueryVariantsPerPath)
 			if count > e.config.MaxQueryVariantsPerPath {
-				detailsJSON := fmt.Sprintf(`{"path":%q,"queryVariants":%d,"limit":%d,"url":%q}`,
-					pathKey, count, e.config.MaxQueryVariantsPerPath, normalized)
-				e.db.InsertIssue(storage.IssueInput{
-					JobID:       jobID,
-					URLID:       nil,
-					IssueType:   "crawl_trap_suspected",
-					Severity:    "info",
-					Scope:       "page_local",
-					DetailsJSON: &detailsJSON,
-				})
+				if shouldEmit {
+					detailsJSON := fmt.Sprintf(`{"path":%q,"uniqueQueryVariants":%d,"limit":%d,"sampleUrl":%q}`,
+						pathKey, count, e.config.MaxQueryVariantsPerPath, normalized)
+					e.db.InsertIssue(storage.IssueInput{
+						JobID:       jobID,
+						URLID:       nil,
+						IssueType:   "crawl_trap_suspected",
+						Severity:    "info",
+						Scope:       "global",
+						DetailsJSON: &detailsJSON,
+					})
+				}
 				continue
 			}
 		}
