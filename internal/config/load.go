@@ -28,10 +28,10 @@ type tomlConfig struct {
 	MaxPages int `toml:"max_pages"`
 	MaxDepth int `toml:"max_depth"`
 
-	RenderMode           string   `toml:"render_mode"`
-	RenderWaitMs         int      `toml:"render_wait_ms"`
-	MaxBrowserInstances  int      `toml:"max_browser_instances"`
-	BrowserRenderTimeout string   `toml:"browser_render_timeout"`
+	RenderMode           string `toml:"render_mode"`
+	RenderWaitMs         int    `toml:"render_wait_ms"`
+	MaxBrowserInstances  int    `toml:"max_browser_instances"`
+	BrowserRenderTimeout string `toml:"browser_render_timeout"`
 	ForceRenderPatterns  []string `toml:"force_render_patterns"`
 
 	RespectRobots           *bool  `toml:"respect_robots"`
@@ -58,19 +58,12 @@ type tomlConfig struct {
 
 	MaxSitemapEntries int `toml:"max_sitemap_entries"`
 
-	MaxQueueMemoryMB int                  `toml:"max_queue_memory_mb"`
-	DBPath           string               `toml:"db_path"`
-	MaxJobAge        string               `toml:"max_job_age"`
-	PSIAPIKey        string               `toml:"psi_api_key"`
-	PSIDesktop       bool                 `toml:"psi_desktop"`
-	LanguageToolURL  string               `toml:"languagetool_url"`
-	URLGroups        []tomlURLGroupConfig `toml:"url_groups"`
-}
-
-type tomlURLGroupConfig struct {
-	Name                 string `toml:"name"`
-	Pattern              string `toml:"pattern"`
-	ThinContentThreshold *int   `toml:"thin_content_threshold"`
+	MaxQueueMemoryMB int    `toml:"max_queue_memory_mb"`
+	DBPath           string `toml:"db_path"`
+	MaxJobAge        string `toml:"max_job_age"`
+	PSIAPIKey        string `toml:"psi_api_key"`
+	PSIDesktop       bool   `toml:"psi_desktop"`
+	LanguageToolURL  string `toml:"languagetool_url"`
 }
 
 // LoadConfig loads configuration with precedence: env vars > config file > defaults.
@@ -237,16 +230,6 @@ func LoadFromFile(path string) (*Config, error) {
 	}
 	if tc.LanguageToolURL != "" {
 		cfg.LanguageToolURL = tc.LanguageToolURL
-	}
-	if tc.URLGroups != nil {
-		cfg.URLGroups = make([]URLGroupConfig, 0, len(tc.URLGroups))
-		for _, group := range tc.URLGroups {
-			cfg.URLGroups = append(cfg.URLGroups, URLGroupConfig{
-				Name:                 group.Name,
-				Pattern:              group.Pattern,
-				ThinContentThreshold: group.ThinContentThreshold,
-			})
-		}
 	}
 
 	return &cfg, nil

@@ -105,10 +105,12 @@ func (s *Server) handleInvestigateURLPrompt(
 	}
 
 	// Get issues for this URL
-	issues, err := s.db.GetIssuesByURL(jobID, urlRec.ID)
+	issues, err := s.db.GetIssuesByJob(jobID, 500, "")
 	if err == nil {
 		for _, issue := range issues {
-			investigation.Issues = append(investigation.Issues, issue)
+			if issue.URLID.Valid && issue.URLID.Int64 == urlRec.ID {
+				investigation.Issues = append(investigation.Issues, issue)
+			}
 		}
 	}
 	if investigation.Issues == nil {

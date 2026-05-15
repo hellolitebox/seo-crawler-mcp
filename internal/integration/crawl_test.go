@@ -160,11 +160,6 @@ func TestFullCrawl(t *testing.T) {
 		t.Errorf("expected missing_description issues, got %d", issuesByType["missing_description"])
 	}
 
-	// duplicate_title: blog/post-1 and blog/post-2 intentionally share a title
-	if issuesByType["duplicate_title"] < 1 {
-		t.Errorf("expected duplicate_title issues, got %d", issuesByType["duplicate_title"])
-	}
-
 	// --- Edges ---
 	edgeCount, err := db.CountEdges(job.ID)
 	if err != nil {
@@ -319,9 +314,10 @@ func TestFullCrawl(t *testing.T) {
 	foundOK := false
 	for _, a := range assets {
 		if a.StatusCode.Valid && a.StatusCode.Int64 == 200 &&
-			a.ContentType.Valid && (a.ContentType.String == "image/jpeg" ||
-			a.ContentType.String == "image/png" ||
-			a.ContentType.String == "image/gif") {
+			a.ContentType.Valid && (
+			a.ContentType.String == "image/jpeg" ||
+				a.ContentType.String == "image/png" ||
+				a.ContentType.String == "image/gif") {
 			foundOK = true
 			break
 		}

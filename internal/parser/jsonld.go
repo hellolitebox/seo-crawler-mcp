@@ -19,10 +19,7 @@ type JSONLDBlockParsed struct {
 func ExtractJSONLD(doc *goquery.Document) []JSONLDBlockParsed {
 	blocks := []JSONLDBlockParsed{}
 
-	doc.Find("script").Each(func(_ int, s *goquery.Selection) {
-		if !attrEqualFold(s, "type", "application/ld+json") {
-			return
-		}
+	doc.Find(`script[type="application/ld+json"]`).Each(func(_ int, s *goquery.Selection) {
 		raw := strings.TrimSpace(s.Text())
 		if raw == "" {
 			return

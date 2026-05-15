@@ -187,65 +187,6 @@ func TestInvestigateURLPrompt(t *testing.T) {
 	}
 }
 
-func TestInvestigateURLPromptUsesURLScopedIssues(t *testing.T) {
-	db := setupTestDB(t)
-	cfg := config.DefaultConfig()
-	s := NewServer(ServerConfig{DB: db, Config: &cfg})
-
-	job, err := db.CreateJob("crawl", `{}`, `["https://example.com"]`)
-	if err != nil {
-		t.Fatalf("creating job: %v", err)
-	}
-
-	targetURLID, err := db.UpsertURL(job.ID, "https://example.com/target", "example.com", "pending", true, "link")
-	if err != nil {
-		t.Fatalf("inserting target URL: %v", err)
-	}
-
-	for i := 0; i < 501; i++ {
-		_, err := db.InsertIssue(storage.IssueInput{
-			JobID:     job.ID,
-			IssueType: "global_noise",
-			Severity:  "info",
-			Scope:     "global",
-		})
-		if err != nil {
-			t.Fatalf("inserting noise issue %d: %v", i, err)
-		}
-	}
-
-	_, err = db.InsertIssue(storage.IssueInput{
-		JobID:     job.ID,
-		URLID:     &targetURLID,
-		IssueType: "missing_title",
-		Severity:  "warning",
-		Scope:     "page",
-	})
-	if err != nil {
-		t.Fatalf("inserting target issue: %v", err)
-	}
-
-	req := gomcp.GetPromptRequest{}
-	req.Params.Name = "investigate_url"
-	req.Params.Arguments = map[string]string{
-		"jobId": job.ID,
-		"url":   "https://example.com/target",
-	}
-
-	result, err := s.handleInvestigateURLPrompt(context.Background(), req)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	tc, ok := result.Messages[0].Content.(gomcp.TextContent)
-	if !ok {
-		t.Fatalf("expected TextContent, got %T", result.Messages[0].Content)
-	}
-	if !strings.Contains(tc.Text, "missing_title") {
-		t.Fatal("prompt text did not include target URL issue beyond first 500 job issues")
-	}
-}
-
 func TestInvestigateURLPrompt_MissingArgs(t *testing.T) {
 	db := setupTestDB(t)
 	cfg := config.DefaultConfig()

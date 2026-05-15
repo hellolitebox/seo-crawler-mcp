@@ -3,7 +3,6 @@ package storage
 import (
 	"fmt"
 	"strconv"
-	"strings"
 )
 
 // EdgeInput holds parameters for InsertEdge.
@@ -20,11 +19,6 @@ type EdgeInput struct {
 	DeclaredTargetURL     string
 	FinalTargetURLID      *int64
 	TargetStatusCode      *int
-}
-
-type EdgeFilter struct {
-	RelationType string
-	SourceKind   string
 }
 
 // edgeColumns is the canonical SELECT list for edges.
@@ -74,10 +68,6 @@ func (db *DB) InsertEdge(input EdgeInput) (int64, error) {
 
 // GetEdgesBySource returns edges originating from a source URL with cursor pagination.
 func (db *DB) GetEdgesBySource(jobID string, sourceURLID int64, limit int, cursor string) ([]Edge, error) {
-	return db.GetEdgesBySourceFiltered(jobID, sourceURLID, limit, cursor, EdgeFilter{})
-}
-
-func (db *DB) GetEdgesBySourceFiltered(jobID string, sourceURLID int64, limit int, cursor string, filter EdgeFilter) ([]Edge, error) {
 	var cursorID int64
 	if cursor != "" {
 		var parseErr error
@@ -87,22 +77,11 @@ func (db *DB) GetEdgesBySourceFiltered(jobID string, sourceURLID int64, limit in
 		}
 	}
 
-	where := []string{"job_id = ?", "source_url_id = ?", "id > ?"}
-	args := []any{jobID, sourceURLID, cursorID}
-	if filter.RelationType != "" {
-		where = append(where, "relation_type = ?")
-		args = append(args, filter.RelationType)
-	}
-	if filter.SourceKind != "" {
-		where = append(where, "source_kind = ?")
-		args = append(args, filter.SourceKind)
-	}
-	args = append(args, limit)
 	rows, err := db.Query(
 		`SELECT `+edgeColumns+` FROM edges
-		 WHERE `+strings.Join(where, " AND ")+`
+		 WHERE job_id = ? AND source_url_id = ? AND id > ?
 		 ORDER BY id ASC LIMIT ?`,
-		args...,
+		jobID, sourceURLID, cursorID, limit,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("querying edges by source URL %d in job %q: %w", sourceURLID, jobID, err)
@@ -126,10 +105,6 @@ func (db *DB) GetEdgesBySourceFiltered(jobID string, sourceURLID int64, limit in
 
 // GetEdgesByTarget returns edges pointing to a target URL with cursor pagination.
 func (db *DB) GetEdgesByTarget(jobID string, targetURLID int64, limit int, cursor string) ([]Edge, error) {
-	return db.GetEdgesByTargetFiltered(jobID, targetURLID, limit, cursor, EdgeFilter{})
-}
-
-func (db *DB) GetEdgesByTargetFiltered(jobID string, targetURLID int64, limit int, cursor string, filter EdgeFilter) ([]Edge, error) {
 	var cursorID int64
 	if cursor != "" {
 		var parseErr error
@@ -139,22 +114,11 @@ func (db *DB) GetEdgesByTargetFiltered(jobID string, targetURLID int64, limit in
 		}
 	}
 
-	where := []string{"job_id = ?", "normalized_target_url_id = ?", "id > ?"}
-	args := []any{jobID, targetURLID, cursorID}
-	if filter.RelationType != "" {
-		where = append(where, "relation_type = ?")
-		args = append(args, filter.RelationType)
-	}
-	if filter.SourceKind != "" {
-		where = append(where, "source_kind = ?")
-		args = append(args, filter.SourceKind)
-	}
-	args = append(args, limit)
 	rows, err := db.Query(
 		`SELECT `+edgeColumns+` FROM edges
-		 WHERE `+strings.Join(where, " AND ")+`
+		 WHERE job_id = ? AND normalized_target_url_id = ? AND id > ?
 		 ORDER BY id ASC LIMIT ?`,
-		args...,
+		jobID, targetURLID, cursorID, limit,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("querying edges by target URL %d in job %q: %w", targetURLID, jobID, err)
@@ -188,3 +152,5 @@ func (db *DB) CountEdges(jobID string) (int, error) {
 
 	return count, nil
 }
+
+

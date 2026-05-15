@@ -301,23 +301,21 @@ func (e *Engine) startJob(ctx context.Context, jobID string) (*storage.CrawlJob,
 	if job.Status == "cancelled" || job.Status == "cancelling" {
 		return nil, e.cancelJob(jobID, context.Canceled)
 	}
-	if job.Status != "queued" && job.Status != "running" {
-		return nil, fmt.Errorf("job %s has status %q, expected queued or running", jobID, job.Status)
+	if job.Status != "queued" {
+		return nil, fmt.Errorf("job %s has status %q, expected queued", jobID, job.Status)
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, e.cancelJob(jobID, err)
 	}
-	if job.Status == "queued" {
-		if err := e.db.UpdateJobStarted(jobID); err != nil {
-			current, getErr := e.db.GetJob(jobID)
-			if getErr == nil && (current.Status == "cancelled" || current.Status == "cancelling" || ctx.Err() != nil) {
-				if ctx.Err() != nil {
-					return nil, e.cancelJob(jobID, ctx.Err())
-				}
-				return nil, e.cancelJob(jobID, context.Canceled)
+	if err := e.db.UpdateJobStarted(jobID); err != nil {
+		current, getErr := e.db.GetJob(jobID)
+		if getErr == nil && (current.Status == "cancelled" || current.Status == "cancelling" || ctx.Err() != nil) {
+			if ctx.Err() != nil {
+				return nil, e.cancelJob(jobID, ctx.Err())
 			}
-			return nil, fmt.Errorf("starting job: %w", err)
+			return nil, e.cancelJob(jobID, context.Canceled)
 		}
+		return nil, fmt.Errorf("starting job: %w", err)
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, e.cancelJob(jobID, err)
@@ -864,9 +862,27 @@ func (e *Engine) runPostCrawlPhases(ctx context.Context, jobID string, counters 
 	// inbound_edge_count counts every <a href>; inbound_linking_pages
 	// counts distinct source pages, which is what dashboards usually
 	// want when they ask "how many pages link here".
-	if countErr := e.recalculatePageEdgeCounts(jobID); countErr != nil {
-		slog.Error("engine: page edge count recalculation failed", "err", countErr, "job_id", jobID)
-	}
+	e.db.Exec(`
+		UPDATE pages SET inbound_edge_count = (
+			SELECT COUNT(*) FROM edges e
+			WHERE e.job_id = pages.job_id
+			  AND e.declared_target_url = (SELECT normalized_url FROM urls WHERE id = pages.url_id AND job_id = pages.job_id)
+			  AND e.is_internal = 1 AND e.relation_type = 'link'
+		) WHERE job_id = ?`, jobID)
+	e.db.Exec(`
+		UPDATE pages SET inbound_linking_pages = (
+			SELECT COUNT(DISTINCT e.source_url_id) FROM edges e
+			WHERE e.job_id = pages.job_id
+			  AND e.declared_target_url = (SELECT normalized_url FROM urls WHERE id = pages.url_id AND job_id = pages.job_id)
+			  AND e.is_internal = 1 AND e.relation_type = 'link'
+		) WHERE job_id = ?`, jobID)
+	e.db.Exec(`
+		UPDATE pages SET outbound_edge_count = (
+			SELECT COUNT(*) FROM edges e
+			WHERE e.job_id = pages.job_id
+			  AND e.source_url_id = pages.url_id
+			  AND e.is_internal = 1 AND e.relation_type = 'link'
+		) WHERE job_id = ?`, jobID)
 	if depthErr := e.recomputePageDepths(jobID); depthErr != nil {
 		slog.Error("engine: page depth recomputation failed", "err", depthErr, "job_id", jobID)
 	}
@@ -2130,12 +2146,6 @@ func (e *Engine) runLighthouseAudits(ctx context.Context, jobID string) {
 // using a single Playwright browser instance (batch mode).
 // Results are stored as crawl events with type "axe_audit".
 func (e *Engine) runAxeAudits(ctx context.Context, jobID string) {
-	if e.browserPostCrawlAuditsDisabled() {
-		slog.Info("engine: skipping Axe accessibility audits because SSRF protection is enabled", "job_id", jobID)
-		e.emitPhase(jobID, "axe_audits_skipped", "skipping Axe audits because browser navigation cannot use the SSRF-protected HTTP transport")
-		return
-	}
-
 	rows, err := e.db.Query(
 		`SELECT u.normalized_url FROM pages p JOIN urls u ON u.id = p.url_id WHERE p.job_id = ? LIMIT 50`,
 		jobID,
@@ -2153,10 +2163,6 @@ func (e *Engine) runAxeAudits(ctx context.Context, jobID string) {
 	}
 	rows.Close()
 
-	if len(urls) == 0 {
-		return
-	}
-	urls = e.filterPostCrawlURLs(urls, "axe audit")
 	if len(urls) == 0 {
 		return
 	}
@@ -2181,10 +2187,6 @@ func (e *Engine) runAxeAudits(ctx context.Context, jobID string) {
 	}
 
 	slog.Info("engine: Axe accessibility audits complete", "audited", audited, "job_id", jobID)
-}
-
-func (e *Engine) browserPostCrawlAuditsDisabled() bool {
-	return e.ssrfGuard != nil
 }
 
 // failJob marks a job as failed with the given error.
@@ -2241,14 +2243,10 @@ func (e *Engine) checkMarkdownNegotiation(ctx context.Context, jobID string) {
 	if len(urls) == 0 {
 		return
 	}
-	urls = e.filterPostCrawlURLs(urls, "markdown negotiation")
-	if len(urls) == 0 {
-		return
-	}
 
 	slog.Info("engine: checking markdown content negotiation", "pages", len(urls), "job_id", jobID)
 
-	client := e.postCrawlHTTPClient(5 * time.Second) // shorter timeout: most servers respond fast or 404
+	client := &http.Client{Timeout: 5 * time.Second} // shorter timeout: most servers respond fast or 404
 
 	type mdResult struct {
 		URL           string `json:"url"`
@@ -2363,31 +2361,6 @@ func (e *Engine) checkMarkdownNegotiation(ctx context.Context, jobID string) {
 	}
 
 	slog.Info("engine: markdown negotiation summary", "supported", supportedCount, "total", total, "job_id", jobID)
-}
-
-func (e *Engine) postCrawlHTTPClient(timeout time.Duration) *http.Client {
-	if e.fetcher == nil {
-		return &http.Client{Timeout: timeout}
-	}
-	client := e.fetcher.SafeClient()
-	client.Timeout = timeout
-	return client
-}
-
-func (e *Engine) filterPostCrawlURLs(urls []string, phase string) []string {
-	if e.ssrfGuard == nil {
-		return urls
-	}
-
-	safe := make([]string, 0, len(urls))
-	for _, u := range urls {
-		if err := e.validateRenderTarget(u); err != nil {
-			slog.Warn("engine: post-crawl URL rejected by SSRF guard", "phase", phase, "url", u, "err", err)
-			continue
-		}
-		safe = append(safe, u)
-	}
-	return safe
 }
 
 // runTextQualityChecks runs LanguageTool on all crawled pages and creates
@@ -2812,6 +2785,7 @@ func (e *Engine) recomputePageDepths(jobID string) error {
 	if err != nil {
 		return fmt.Errorf("query pages: %w", err)
 	}
+	defer pageRows.Close()
 
 	type pageNode struct {
 		urlID int64
@@ -2828,11 +2802,7 @@ func (e *Engine) recomputePageDepths(jobID string) error {
 		pages[normalizedURL] = pageNode{urlID: urlID, depth: depth}
 	}
 	if err := pageRows.Err(); err != nil {
-		pageRows.Close()
 		return fmt.Errorf("iterate pages: %w", err)
-	}
-	if err := pageRows.Close(); err != nil {
-		return fmt.Errorf("close pages rows: %w", err)
 	}
 	if len(pages) == 0 {
 		return nil
@@ -2840,12 +2810,12 @@ func (e *Engine) recomputePageDepths(jobID string) error {
 
 	adj := map[string][]string{}
 	edgeRows, err := e.db.Query(`
-			SELECT su.normalized_url, tu.normalized_url
-			FROM edges e
-			JOIN urls su ON su.id = e.source_url_id AND su.job_id = e.job_id
-			JOIN urls tu ON tu.id = e.normalized_target_url_id AND tu.job_id = e.job_id
-			JOIN pages sp ON sp.url_id = su.id AND sp.job_id = su.job_id
-			JOIN pages tp ON tp.url_id = tu.id AND tp.job_id = tu.job_id
+		SELECT su.normalized_url, tu.normalized_url
+		FROM edges e
+		JOIN urls su ON su.id = e.source_url_id AND su.job_id = e.job_id
+		JOIN urls tu ON tu.normalized_url = e.declared_target_url AND tu.job_id = e.job_id
+		JOIN pages sp ON sp.url_id = su.id AND sp.job_id = su.job_id
+		JOIN pages tp ON tp.url_id = tu.id AND tp.job_id = tu.job_id
 		WHERE e.job_id = ?
 		  AND e.is_internal = 1
 		  AND e.relation_type = 'link'
@@ -2853,20 +2823,16 @@ func (e *Engine) recomputePageDepths(jobID string) error {
 	if err != nil {
 		return fmt.Errorf("query edges: %w", err)
 	}
+	defer edgeRows.Close()
 	for edgeRows.Next() {
 		var sourceURL, targetURL string
 		if err := edgeRows.Scan(&sourceURL, &targetURL); err != nil {
-			edgeRows.Close()
 			return fmt.Errorf("scan edge: %w", err)
 		}
 		adj[sourceURL] = append(adj[sourceURL], targetURL)
 	}
 	if err := edgeRows.Err(); err != nil {
-		edgeRows.Close()
 		return fmt.Errorf("iterate edges: %w", err)
-	}
-	if err := edgeRows.Close(); err != nil {
-		return fmt.Errorf("close edge rows: %w", err)
 	}
 
 	depths := map[string]int{}
@@ -2921,39 +2887,5 @@ func (e *Engine) recomputePageDepths(jobID string) error {
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit depth tx: %w", err)
 	}
-	return nil
-}
-
-func (e *Engine) recalculatePageEdgeCounts(jobID string) error {
-	if _, err := e.db.Exec(`
-		UPDATE pages SET inbound_edge_count = (
-			SELECT COUNT(*) FROM edges e
-			WHERE e.job_id = pages.job_id
-			  AND e.normalized_target_url_id = pages.url_id
-			  AND e.is_internal = 1 AND e.relation_type = 'link'
-		) WHERE job_id = ?`, jobID); err != nil {
-		return fmt.Errorf("updating inbound edge counts: %w", err)
-	}
-
-	if _, err := e.db.Exec(`
-		UPDATE pages SET inbound_linking_pages = (
-			SELECT COUNT(DISTINCT e.source_url_id) FROM edges e
-			WHERE e.job_id = pages.job_id
-			  AND e.normalized_target_url_id = pages.url_id
-			  AND e.is_internal = 1 AND e.relation_type = 'link'
-		) WHERE job_id = ?`, jobID); err != nil {
-		return fmt.Errorf("updating inbound linking page counts: %w", err)
-	}
-
-	if _, err := e.db.Exec(`
-		UPDATE pages SET outbound_edge_count = (
-			SELECT COUNT(*) FROM edges e
-			WHERE e.job_id = pages.job_id
-			  AND e.source_url_id = pages.url_id
-			  AND e.is_internal = 1 AND e.relation_type = 'link'
-		) WHERE job_id = ?`, jobID); err != nil {
-		return fmt.Errorf("updating outbound edge counts: %w", err)
-	}
-
 	return nil
 }

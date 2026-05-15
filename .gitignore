@@ -1,7 +1,6 @@
 # Local binaries / builds
 /seo-crawler-mcp
 *.test
-.clawpatch/
 
 # Databases
 *.db

@@ -180,16 +180,6 @@ func (rf *RobotsFile) findGroup(ua string) *agentGroup {
 	if g, ok := rf.groups[uaLower]; ok {
 		return g
 	}
-	product := uaLower
-	if fields := strings.Fields(product); len(fields) > 0 {
-		product = fields[0]
-	}
-	if beforeSlash, _, ok := strings.Cut(product, "/"); ok {
-		product = beforeSlash
-	}
-	if g, ok := rf.groups[product]; ok {
-		return g
-	}
 	if g, ok := rf.groups["*"]; ok {
 		return g
 	}
@@ -214,7 +204,6 @@ func matchPattern(path, pattern string) bool {
 	if hasAnchor {
 		p = p[:len(p)-1]
 	}
-	trailingWildcard := strings.HasSuffix(p, "*")
 
 	if !strings.Contains(p, "*") {
 		// Simple prefix match or exact match with anchor.
@@ -247,7 +236,7 @@ func matchPattern(path, pattern string) bool {
 	}
 
 	if hasAnchor {
-		return trailingWildcard || remaining == ""
+		return remaining == ""
 	}
 	return true
 }

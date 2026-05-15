@@ -128,7 +128,7 @@ func (s *Server) queueWorker() {
 			s.crawlMu.Unlock()
 			continue
 		}
-		job, err := s.db.ClaimNextQueuedJob()
+		job, err := s.db.NextQueuedJob()
 		if err != nil || job == nil {
 			s.crawlMu.Unlock()
 			continue

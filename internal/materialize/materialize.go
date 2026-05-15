@@ -3,7 +3,6 @@
 package materialize
 
 import (
-	"database/sql"
 	"fmt"
 	"strconv"
 
@@ -12,37 +11,16 @@ import (
 
 // Materialize runs post-crawl materialization for a completed job.
 func Materialize(db *storage.DB, jobID string) error {
-	tx, err := db.Begin()
-	if err != nil {
-		return fmt.Errorf("beginning materialize transaction for job %q: %w", jobID, err)
-	}
-	committed := false
-	defer func() {
-		if !committed {
-			_ = tx.Rollback()
-		}
-	}()
-
-	if err := materializeCanonicalClusters(tx, jobID); err != nil {
+	if err := materializeCanonicalClusters(db, jobID); err != nil {
 		return fmt.Errorf("materializing canonical clusters for job %q: %w", jobID, err)
 	}
-	if err := materializeDuplicateClusters(tx, jobID); err != nil {
+	if err := materializeDuplicateClusters(db, jobID); err != nil {
 		return fmt.Errorf("materializing duplicate clusters for job %q: %w", jobID, err)
 	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("committing materialized views for job %q: %w", jobID, err)
-	}
-	committed = true
 	return nil
 }
 
-type sqlRunner interface {
-	Exec(query string, args ...any) (sql.Result, error)
-	Query(query string, args ...any) (*sql.Rows, error)
-	QueryRow(query string, args ...any) *sql.Row
-}
-
-func materializeCanonicalClusters(db sqlRunner, jobID string) error {
+func materializeCanonicalClusters(db *storage.DB, jobID string) error {
 	// Clear existing clusters for this job
 	if _, err := db.Exec(`DELETE FROM canonical_cluster_members WHERE job_id = ?`, jobID); err != nil {
 		return fmt.Errorf("clearing canonical cluster members: %w", err)
@@ -93,9 +71,9 @@ func materializeCanonicalClusters(db sqlRunner, jobID string) error {
 		err := db.QueryRow(`
 			SELECT f.status_code FROM urls u
 			JOIN fetches f ON f.requested_url_id = u.id AND f.job_id = u.job_id
-			WHERE u.job_id = ? AND f.job_id = ? AND u.normalized_url = ? AND f.status_code IS NOT NULL
+			WHERE u.job_id = ? AND u.normalized_url = ? AND f.status_code IS NOT NULL
 			ORDER BY f.fetch_seq DESC LIMIT 1
-		`, jobID, jobID, c.canonicalURL).Scan(&sc)
+		`, jobID, c.canonicalURL).Scan(&sc)
 		if err == nil {
 			targetStatusCode = &sc
 		}
@@ -108,10 +86,7 @@ func materializeCanonicalClusters(db sqlRunner, jobID string) error {
 			return fmt.Errorf("inserting canonical cluster for %q: %w", c.canonicalURL, err)
 		}
 
-		clusterID, err := result.LastInsertId()
-		if err != nil {
-			return fmt.Errorf("getting canonical cluster id: %w", err)
-		}
+		clusterID, _ := result.LastInsertId()
 
 		// Insert members
 		urlIDs := splitIDs(c.urlIDs)
@@ -126,7 +101,7 @@ func materializeCanonicalClusters(db sqlRunner, jobID string) error {
 	return nil
 }
 
-func materializeDuplicateClusters(db sqlRunner, jobID string) error {
+func materializeDuplicateClusters(db *storage.DB, jobID string) error {
 	// Clear existing clusters for this job
 	if _, err := db.Exec(`DELETE FROM duplicate_cluster_members WHERE job_id = ?`, jobID); err != nil {
 		return fmt.Errorf("clearing duplicate cluster members: %w", err)
@@ -220,10 +195,7 @@ func materializeDuplicateClusters(db sqlRunner, jobID string) error {
 				return fmt.Errorf("inserting duplicate cluster: %w", err)
 			}
 
-			clusterID, err := result.LastInsertId()
-			if err != nil {
-				return fmt.Errorf("getting duplicate cluster id: %w", err)
-			}
+			clusterID, _ := result.LastInsertId()
 
 			for i, urlID := range urlIDs {
 				var fetchSeq int64

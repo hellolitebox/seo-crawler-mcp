@@ -4,6 +4,7 @@ package parser
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -86,52 +87,52 @@ type DiscoveredAsset struct {
 
 // ParseResult holds all extracted SEO data from an HTML page.
 type ParseResult struct {
-	Title                      string
-	TitleLength                int
-	MetaDescription            string
-	DescriptionLength          int
-	MetaRobots                 string
-	XRobotsTag                 string
-	IndexabilityState          string
-	CanonicalRaw               string
-	CanonicalResolved          string
-	CanonicalType              string // self, cross, absent
-	RelNext                    *RelLink
-	RelPrev                    *RelLink
-	Hreflangs                  []HreflangEntry
-	Headings                   HeadingSet
-	OpenGraph                  OGTags
-	TwitterCard                TwitterTags
-	JSONLDBlocks               []JSONLDBlock
-	JSONLDTypes                []string
-	Links                      []DiscoveredLink
-	Images                     []DiscoveredImage
-	ExtractedWordCount         int
-	MainContentWordCount       int
-	Assets                     []DiscoveredAsset
-	ContentHash                string
-	JSSuspect                  bool
-	ScriptCount                int
-	HasSPARoot                 bool
-	TitleOutsideHead           bool
-	MetaRobotsOutsideHead      bool
-	TitleCount                 int
-	DescriptionCount           int
+	Title                string
+	TitleLength          int
+	MetaDescription      string
+	DescriptionLength    int
+	MetaRobots           string
+	XRobotsTag           string
+	IndexabilityState    string
+	CanonicalRaw         string
+	CanonicalResolved    string
+	CanonicalType        string // self, cross, absent
+	RelNext              *RelLink
+	RelPrev              *RelLink
+	Hreflangs            []HreflangEntry
+	Headings             HeadingSet
+	OpenGraph            OGTags
+	TwitterCard          TwitterTags
+	JSONLDBlocks         []JSONLDBlock
+	JSONLDTypes          []string
+	Links                []DiscoveredLink
+	Images               []DiscoveredImage
+	ExtractedWordCount   int
+	MainContentWordCount int
+	Assets                    []DiscoveredAsset
+	ContentHash               string
+	JSSuspect                 bool
+	ScriptCount               int
+	HasSPARoot                bool
+	TitleOutsideHead          bool
+	MetaRobotsOutsideHead     bool
+	TitleCount                int
+	DescriptionCount          int
 	MetaDescriptionOutsideHead bool
-	FirstHeadingLevel          int      // level of the first heading encountered (1-6), 0 if none
-	H1AltTextOnly              []string // alt texts from H1s that contain only an <img>
-	CanonicalCount             int
-	CanonicalOutsideHead       bool
+	FirstHeadingLevel         int // level of the first heading encountered (1-6), 0 if none
+	H1AltTextOnly             []string // alt texts from H1s that contain only an <img>
+	CanonicalCount            int
+	CanonicalOutsideHead      bool
 
 	// Medium-priority detectors
-	FormInsecureActions     []string // form action URLs starting with "http://"
-	ProtocolRelativeCount   int      // count of href/src attributes starting with "//"
-	HreflangOutsideHead     bool     // hreflang link tags found in <body>
-	InvalidHTMLInHead       []string // non-standard elements found in <head> (div, span, p, etc.)
-	HeadTagCount            int      // number of <head> elements
-	BodyTagCount            int      // number of <body> elements
-	ExtractedText           string   // visible text content (for content checks like lorem ipsum)
-	ExtractedTextWithBounds string   // visible text with block-boundary markers for cross-component detection
+	FormInsecureActions       []string // form action URLs starting with "http://"
+	ProtocolRelativeCount     int      // count of href/src attributes starting with "//"
+	HreflangOutsideHead      bool     // hreflang link tags found in <body>
+	InvalidHTMLInHead        []string // non-standard elements found in <head> (div, span, p, etc.)
+	HeadTagCount              int      // number of <head> elements
+	BodyTagCount              int      // number of <body> elements
+	ExtractedText             string   // visible text content (for content checks like lorem ipsum)
+	ExtractedTextWithBounds   string   // visible text with block-boundary markers for cross-component detection
 }
 
 // ParseHTML extracts SEO metadata from raw HTML bytes.
@@ -152,12 +153,12 @@ func ParseHTML(body []byte, pageURL string, responseHeaders http.Header) (*Parse
 	}
 
 	r := &ParseResult{
-		Hreflangs:    make([]HreflangEntry, 0),
+		Hreflangs:  make([]HreflangEntry, 0),
 		JSONLDBlocks: make([]JSONLDBlock, 0),
-		JSONLDTypes:  make([]string, 0),
-		Links:        make([]DiscoveredLink, 0),
-		Images:       make([]DiscoveredImage, 0),
-		Assets:       make([]DiscoveredAsset, 0),
+		JSONLDTypes: make([]string, 0),
+		Links:      make([]DiscoveredLink, 0),
+		Images:     make([]DiscoveredImage, 0),
+		Assets:     make([]DiscoveredAsset, 0),
 	}
 	r.Headings = HeadingSet{
 		H1: make([]string, 0),
@@ -174,12 +175,12 @@ func ParseHTML(body []byte, pageURL string, responseHeaders http.Header) (*Parse
 	r.TitleCount = doc.Find("title").Length()
 
 	// Meta description
-	r.MetaDescription = metaName(doc, "description")
+	r.MetaDescription = doc.Find(`meta[name="description"]`).AttrOr("content", "")
 	r.DescriptionLength = utf8.RuneCountInString(r.MetaDescription)
-	r.DescriptionCount = metaNameCount(doc, "description")
+	r.DescriptionCount = doc.Find(`meta[name="description"]`).Length()
 
 	// Meta robots
-	r.MetaRobots = metaName(doc, "robots")
+	r.MetaRobots = doc.Find(`meta[name="robots"]`).AttrOr("content", "")
 
 	// X-Robots-Tag
 	r.XRobotsTag = responseHeaders.Get("X-Robots-Tag")
@@ -196,19 +197,13 @@ func ParseHTML(body []byte, pageURL string, responseHeaders http.Header) (*Parse
 	extractCanonical(doc, baseURL, pageURL, r)
 
 	// Rel next/prev
-	doc.Find(`link[href]`).Each(func(_ int, s *goquery.Selection) {
-		if !attrHasToken(s, "rel", "next") {
-			return
-		}
+	doc.Find(`link[rel="next"]`).Each(func(_ int, s *goquery.Selection) {
 		if href, ok := s.Attr("href"); ok {
 			resolved := resolveURL(baseURL, href)
 			r.RelNext = &RelLink{Raw: href, Resolved: resolved}
 		}
 	})
-	doc.Find(`link[href]`).Each(func(_ int, s *goquery.Selection) {
-		if !attrHasToken(s, "rel", "prev") {
-			return
-		}
+	doc.Find(`link[rel="prev"]`).Each(func(_ int, s *goquery.Selection) {
 		if href, ok := s.Attr("href"); ok {
 			resolved := resolveURL(baseURL, href)
 			r.RelPrev = &RelLink{Raw: href, Resolved: resolved}
@@ -216,10 +211,7 @@ func ParseHTML(body []byte, pageURL string, responseHeaders http.Header) (*Parse
 	})
 
 	// Hreflang
-	doc.Find(`link[hreflang][href]`).Each(func(_ int, s *goquery.Selection) {
-		if !attrHasToken(s, "rel", "alternate") {
-			return
-		}
+	doc.Find(`link[rel="alternate"][hreflang]`).Each(func(_ int, s *goquery.Selection) {
 		lang, _ := s.Attr("hreflang")
 		href, _ := s.Attr("href")
 		if lang != "" && href != "" {
@@ -273,14 +265,41 @@ func ParseHTML(body []byte, pageURL string, responseHeaders http.Header) (*Parse
 	}
 
 	// JSON-LD
-	for _, parsedBlock := range ExtractJSONLD(doc) {
-		block := JSONLDBlock{Raw: parsedBlock.Raw, Malformed: parsedBlock.Malformed}
-		if len(parsedBlock.Types) > 0 {
-			block.Type = strings.Join(parsedBlock.Types, ", ")
-			r.JSONLDTypes = append(r.JSONLDTypes, parsedBlock.Types...)
+	doc.Find(`script[type="application/ld+json"]`).Each(func(_ int, s *goquery.Selection) {
+		raw := strings.TrimSpace(s.Text())
+		block := JSONLDBlock{Raw: raw}
+
+		// Try as object first
+		var parsed map[string]interface{}
+		if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+			// Try as array (e.g. [{"@type":"Organization"}, {"@type":"WebSite"}])
+			var arr []interface{}
+			if err := json.Unmarshal([]byte(raw), &arr); err != nil {
+				block.Malformed = true
+			} else {
+				var types []string
+				for _, item := range arr {
+					if m, ok := item.(map[string]interface{}); ok {
+						if t, ok := m["@type"]; ok {
+							if ts, ok := t.(string); ok {
+								types = append(types, ts)
+							}
+						}
+					}
+				}
+				if len(types) > 0 {
+					block.Type = strings.Join(types, ", ")
+					r.JSONLDTypes = append(r.JSONLDTypes, types...)
+				}
+			}
+		} else if t, ok := parsed["@type"]; ok {
+			if ts, ok := t.(string); ok {
+				block.Type = ts
+				r.JSONLDTypes = append(r.JSONLDTypes, ts)
+			}
 		}
 		r.JSONLDBlocks = append(r.JSONLDBlocks, block)
-	}
+	})
 
 	// Links
 	doc.Find("a[href]").Each(func(_ int, s *goquery.Selection) {
@@ -423,7 +442,7 @@ func ParseHTML(body []byte, pageURL string, responseHeaders http.Header) (*Parse
 	r.ScriptCount = doc.Find("script").Length()
 	spaIDs := []string{"root", "__next", "app", "__nuxt"}
 	for _, id := range spaIDs {
-		if doc.Find("#"+id).Length() > 0 {
+		if doc.Find("#" + id).Length() > 0 {
 			r.HasSPARoot = true
 			break
 		}
@@ -453,25 +472,19 @@ func ParseHTML(body []byte, pageURL string, responseHeaders http.Header) (*Parse
 	})
 
 	// Detect meta robots outside <head> (inside <body>)
-	doc.Find("body meta[name]").Each(func(_ int, s *goquery.Selection) {
-		if attrEqualFold(s, "name", "robots") {
-			r.MetaRobotsOutsideHead = true
-		}
+	doc.Find("body meta[name='robots']").Each(func(_ int, s *goquery.Selection) {
+		r.MetaRobotsOutsideHead = true
 	})
 
 	// Detect meta description outside <head> (inside <body>)
-	doc.Find("body meta[name]").Each(func(_ int, s *goquery.Selection) {
-		if attrEqualFold(s, "name", "description") {
-			r.MetaDescriptionOutsideHead = true
-		}
+	doc.Find("body meta[name='description']").Each(func(_ int, s *goquery.Selection) {
+		r.MetaDescriptionOutsideHead = true
 	})
 
 	// Canonical count and outside head
-	r.CanonicalCount = linkRelCount(doc, "canonical")
-	doc.Find("body link[href]").Each(func(_ int, s *goquery.Selection) {
-		if attrHasToken(s, "rel", "canonical") {
-			r.CanonicalOutsideHead = true
-		}
+	r.CanonicalCount = doc.Find(`link[rel="canonical"]`).Length()
+	doc.Find("body link[rel='canonical']").Each(func(_ int, s *goquery.Selection) {
+		r.CanonicalOutsideHead = true
 	})
 
 	// First heading level (document order)
@@ -533,10 +546,8 @@ func ParseHTML(body []byte, pageURL string, responseHeaders http.Header) (*Parse
 	})
 
 	// Hreflang outside head
-	doc.Find("body link[hreflang]").Each(func(_ int, s *goquery.Selection) {
-		if attrHasToken(s, "rel", "alternate") {
-			r.HreflangOutsideHead = true
-		}
+	doc.Find("body link[rel='alternate'][hreflang]").Each(func(_ int, s *goquery.Selection) {
+		r.HreflangOutsideHead = true
 	})
 
 	// Invalid HTML in head
@@ -558,7 +569,7 @@ func ParseHTML(body []byte, pageURL string, responseHeaders http.Header) (*Parse
 }
 
 func extractCanonical(doc *goquery.Document, baseURL *url.URL, pageURL string, r *ParseResult) {
-	canonical := linkHrefByRel(doc, "canonical")
+	canonical := doc.Find(`link[rel="canonical"]`).AttrOr("href", "")
 	if canonical == "" {
 		r.CanonicalType = "absent"
 		return
@@ -605,77 +616,11 @@ func containsDirective(val, directive string) bool {
 }
 
 func metaProperty(doc *goquery.Document, property string) string {
-	var content string
-	doc.Find("meta[property]").EachWithBreak(func(_ int, s *goquery.Selection) bool {
-		if attrEqualFold(s, "property", property) {
-			content = s.AttrOr("content", "")
-			return false
-		}
-		return true
-	})
-	return content
+	return doc.Find(fmt.Sprintf(`meta[property="%s"]`, property)).AttrOr("content", "")
 }
 
 func metaName(doc *goquery.Document, name string) string {
-	var content string
-	doc.Find("meta[name]").EachWithBreak(func(_ int, s *goquery.Selection) bool {
-		if attrEqualFold(s, "name", name) {
-			content = s.AttrOr("content", "")
-			return false
-		}
-		return true
-	})
-	return content
-}
-
-func metaNameCount(doc *goquery.Document, name string) int {
-	count := 0
-	doc.Find("meta[name]").Each(func(_ int, s *goquery.Selection) {
-		if attrEqualFold(s, "name", name) {
-			count++
-		}
-	})
-	return count
-}
-
-func linkHrefByRel(doc *goquery.Document, rel string) string {
-	var href string
-	doc.Find("link[href]").EachWithBreak(func(_ int, s *goquery.Selection) bool {
-		if attrHasToken(s, "rel", rel) {
-			href = s.AttrOr("href", "")
-			return false
-		}
-		return true
-	})
-	return href
-}
-
-func linkRelCount(doc *goquery.Document, rel string) int {
-	count := 0
-	doc.Find("link").Each(func(_ int, s *goquery.Selection) {
-		if attrHasToken(s, "rel", rel) {
-			count++
-		}
-	})
-	return count
-}
-
-func attrEqualFold(s *goquery.Selection, attrName, want string) bool {
-	got, ok := s.Attr(attrName)
-	return ok && strings.EqualFold(strings.TrimSpace(got), want)
-}
-
-func attrHasToken(s *goquery.Selection, attrName, want string) bool {
-	got, ok := s.Attr(attrName)
-	if !ok {
-		return false
-	}
-	for _, token := range strings.Fields(got) {
-		if strings.EqualFold(token, want) {
-			return true
-		}
-	}
-	return false
+	return doc.Find(fmt.Sprintf(`meta[name="%s"]`, name)).AttrOr("content", "")
 }
 
 var skipAssetPrefixes = []string{"data:", "blob:", "javascript:"}

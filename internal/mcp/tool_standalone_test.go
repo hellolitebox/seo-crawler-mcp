@@ -8,7 +8,6 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/config"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/fetcher"
 	gomcp "github.com/mark3labs/mcp-go/mcp"
 )
@@ -79,47 +78,6 @@ func TestAnalyzeURL(t *testing.T) {
 	}
 	if len(resp.Links) < 2 {
 		t.Errorf("expected at least 2 links, got %d", len(resp.Links))
-	}
-}
-
-func TestAnalyzeURLFinishesTrackingJob(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, `<html><head><title>Tracked</title></head><body><h1>Tracked</h1><p>Body text.</p></body></html>`)
-	}))
-	defer srv.Close()
-
-	db := setupTestDB(t)
-	cfg := config.DefaultConfig()
-	cfg.MaxConcurrentAnalyze = 1
-	f := newTestFetcher()
-	s := NewServer(ServerConfig{DB: db, Fetcher: f, Config: &cfg})
-
-	req := gomcp.CallToolRequest{}
-	req.Params.Arguments = map[string]any{"url": srv.URL + "/"}
-
-	result, err := s.handleAnalyzeURL(context.Background(), req)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result.IsError {
-		t.Fatalf("expected success, got error: %v", result.Content)
-	}
-
-	active, err := db.CountActiveJobs("analyze")
-	if err != nil {
-		t.Fatalf("CountActiveJobs: %v", err)
-	}
-	if active != 0 {
-		t.Fatalf("expected 0 active analyze jobs after synchronous completion, got %d", active)
-	}
-
-	result, err = s.handleAnalyzeURL(context.Background(), req)
-	if err != nil {
-		t.Fatalf("unexpected error on second analyze: %v", err)
-	}
-	if result.IsError {
-		t.Fatalf("expected second analyze to avoid stale concurrency limit, got error: %v", result.Content)
 	}
 }
 
@@ -317,44 +275,6 @@ func TestParseSitemap(t *testing.T) {
 	}
 	if len(resp.Entries) != 3 {
 		t.Errorf("expected 3 entries in array, got %d", len(resp.Entries))
-	}
-}
-
-func TestParseSitemapSkipsExternalIndexChildren(t *testing.T) {
-	externalRequests := 0
-	external := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		externalRequests++
-		w.Header().Set("Content-Type", "application/xml")
-		fmt.Fprint(w, `<?xml version="1.0" encoding="UTF-8"?>
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-  <url><loc>https://external.test/page</loc></url>
-</urlset>`)
-	}))
-	defer external.Close()
-
-	index := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/xml")
-		fmt.Fprintf(w, `<?xml version="1.0" encoding="UTF-8"?>
-<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-  <sitemap><loc>%s/sitemap.xml</loc></sitemap>
-</sitemapindex>`, external.URL)
-	}))
-	defer index.Close()
-
-	f := newTestFetcher()
-	s := NewServer(ServerConfig{Fetcher: f})
-	req := gomcp.CallToolRequest{}
-	req.Params.Arguments = map[string]any{"url": index.URL + "/sitemap_index.xml"}
-
-	result, err := s.handleParseSitemap(context.Background(), req)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result.IsError {
-		t.Fatalf("expected success, got error: %v", result.Content)
-	}
-	if externalRequests != 0 {
-		t.Fatalf("expected external child sitemap not to be fetched, got %d requests", externalRequests)
 	}
 }
 

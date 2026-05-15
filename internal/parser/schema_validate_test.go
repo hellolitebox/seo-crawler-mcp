@@ -248,28 +248,6 @@ func TestValidateJSONLD_EmptyStringCountsAsMissing(t *testing.T) {
 	}
 }
 
-func TestValidateJSONLD_WhitespaceStringCountsAsMissing(t *testing.T) {
-	raw := `{"@type": "Article", "headline": "   ", "author": "X", "datePublished": "2024-01-01"}`
-	results := ValidateJSONLD(raw)
-
-	if len(results) != 1 {
-		t.Fatalf("expected 1 result, got %d", len(results))
-	}
-	r := results[0]
-	if r.Valid {
-		t.Error("expected Valid=false for whitespace-only headline")
-	}
-	found := false
-	for _, p := range r.MissingRequired {
-		if p == "headline" {
-			found = true
-		}
-	}
-	if !found {
-		t.Errorf("expected headline in missingRequired, got %v", r.MissingRequired)
-	}
-}
-
 func TestValidateJSONLD_NullValueCountsAsMissing(t *testing.T) {
 	raw := `{"@type": "Article", "headline": null, "author": "X", "datePublished": "2024-01-01"}`
 	results := ValidateJSONLD(raw)

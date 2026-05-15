@@ -6,8 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/url"
-	"strings"
 	"time"
 
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/fetcher"
@@ -71,13 +69,6 @@ func NewHostOnboarderWithPolicy(f *fetcher.Fetcher, db *storage.DB, sitemapMax i
 
 // OnboardHost performs all discovery for a host. Safe to call concurrently.
 func (h *HostOnboarder) OnboardHost(ctx context.Context, jobID, host, scheme string) (*HostInfo, error) {
-	normalizedHost, normalizedScheme, err := validateOrigin(host, scheme)
-	if err != nil {
-		return nil, err
-	}
-	host = normalizedHost
-	scheme = normalizedScheme
-
 	info := &HostInfo{
 		Host:           host,
 		SitemapURLs:    []string{},
@@ -100,21 +91,6 @@ func (h *HostOnboarder) OnboardHost(ctx context.Context, jobID, host, scheme str
 	h.discoverLlmsTxt(ctx, jobID, host, scheme, info)
 
 	return info, nil
-}
-
-func validateOrigin(host, scheme string) (string, string, error) {
-	scheme = strings.ToLower(strings.TrimSpace(scheme))
-	if scheme != "http" && scheme != "https" {
-		return "", "", fmt.Errorf("invalid onboarding scheme %q", scheme)
-	}
-	if host == "" || strings.ContainsAny(host, "/?#") || strings.Contains(host, "@") {
-		return "", "", fmt.Errorf("invalid onboarding host %q", host)
-	}
-	parsed, err := url.Parse(scheme + "://" + host)
-	if err != nil || parsed.Host == "" || parsed.Host != host || parsed.User != nil || parsed.Hostname() == "" {
-		return "", "", fmt.Errorf("invalid onboarding host %q", host)
-	}
-	return parsed.Host, scheme, nil
 }
 
 // discoverRobots fetches and parses robots.txt for the host.
@@ -232,7 +208,7 @@ func (h *HostOnboarder) discoverSitemaps(ctx context.Context, jobID, host, schem
 		}
 
 		remaining := h.sitemapMax - len(allEntries)
-		entries, _, err := sitemap.FetchAndParseContextScoped(ctx, sitemapURL, remaining, h.httpClient, sameSitemapHost(host))
+		entries, _, err := sitemap.FetchAndParseContext(ctx, sitemapURL, remaining, h.httpClient)
 		if err != nil {
 			info.Events = append(info.Events, fmt.Sprintf("sitemap fetch/parse error for %q: %v", sitemapURL, err))
 			continue
@@ -268,17 +244,6 @@ func (h *HostOnboarder) discoverSitemaps(ctx context.Context, jobID, host, schem
 		if _, err := h.db.InsertSitemapEntry(input); err != nil {
 			info.Events = append(info.Events, fmt.Sprintf("warning: failed to store sitemap entry %q: %v", e.Loc, err))
 		}
-	}
-}
-
-func sameSitemapHost(host string) func(string) bool {
-	return func(rawURL string) bool {
-		parsed, err := url.Parse(rawURL)
-		if err != nil {
-			return false
-		}
-		scheme := strings.ToLower(parsed.Scheme)
-		return (scheme == "http" || scheme == "https") && strings.EqualFold(parsed.Host, host)
 	}
 }
 

@@ -78,42 +78,6 @@ func TestHTTPEquivMeta(t *testing.T) {
 	}
 }
 
-func TestMetaCharsetIgnoresNonCharsetAttributes(t *testing.T) {
-	body := []byte(`<html><head><meta data-charset="iso-8859-1"></head><body>café</body></html>`)
-	result, err := DetectAndConvert(body, "text/html")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if string(result) != string(body) {
-		t.Fatalf("expected UTF-8 passthrough, got %q", string(result))
-	}
-}
-
-func TestMetaCharsetAllowsWhitespaceAroundEquals(t *testing.T) {
-	iso := append([]byte(`<html><head><meta charset = "iso-8859-1"></head><body>`), 0xe9)
-	iso = append(iso, []byte(`</body></html>`)...)
-	result, err := DetectAndConvert(iso, "text/html")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !containsUTF8(result, "é") {
-		t.Errorf("expected converted UTF-8 é, got %q", string(result))
-	}
-}
-
-func TestHTTPEquivMetaAllowsWhitespaceAroundEquals(t *testing.T) {
-	prefix := `<html><head><meta http-equiv = "Content-Type" content = "text/html; charset=iso-8859-1"></head><body>`
-	iso := append([]byte(prefix), 0xe9)
-	iso = append(iso, []byte("</body></html>")...)
-	result, err := DetectAndConvert(iso, "")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !containsUTF8(result, "é") {
-		t.Errorf("expected converted UTF-8 é")
-	}
-}
-
 func containsUTF8(data []byte, s string) bool {
 	for i := range data {
 		if i+len(s) <= len(data) && string(data[i:i+len(s)]) == s {

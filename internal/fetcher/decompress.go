@@ -3,10 +3,8 @@
 package fetcher
 
 import (
-	"bytes"
 	"compress/flate"
 	"compress/gzip"
-	"compress/zlib"
 	"fmt"
 	"io"
 	"strings"
@@ -28,15 +26,7 @@ func decompressAndLimit(body io.Reader, contentEncoding string, maxDecompressed 
 		return io.LimitReader(gr, maxDecompressed), nil
 
 	case "deflate":
-		data, err := io.ReadAll(body)
-		if err != nil {
-			return nil, fmt.Errorf("fetcher: reading deflate body failed: %w", err)
-		}
-		zr, err := zlib.NewReader(bytes.NewReader(data))
-		if err == nil {
-			return io.LimitReader(zr, maxDecompressed), nil
-		}
-		fr := flate.NewReader(bytes.NewReader(data))
+		fr := flate.NewReader(body)
 		return io.LimitReader(fr, maxDecompressed), nil
 
 	case "", "identity":

@@ -67,42 +67,6 @@ func TestCreateAndGetJob(t *testing.T) {
 	}
 }
 
-func TestClaimNextQueuedJobClaimsDistinctJobs(t *testing.T) {
-	db := testDB(t)
-
-	job1, err := db.CreateJob("crawl", `{}`, `["https://example.com/1"]`)
-	if err != nil {
-		t.Fatalf("CreateJob 1: %v", err)
-	}
-	job2, err := db.CreateJob("crawl", `{}`, `["https://example.com/2"]`)
-	if err != nil {
-		t.Fatalf("CreateJob 2: %v", err)
-	}
-
-	claimed1, err := db.ClaimNextQueuedJob()
-	if err != nil {
-		t.Fatalf("ClaimNextQueuedJob 1: %v", err)
-	}
-	claimed2, err := db.ClaimNextQueuedJob()
-	if err != nil {
-		t.Fatalf("ClaimNextQueuedJob 2: %v", err)
-	}
-	claimed3, err := db.ClaimNextQueuedJob()
-	if err != nil {
-		t.Fatalf("ClaimNextQueuedJob 3: %v", err)
-	}
-
-	if claimed1 == nil || claimed1.ID != job1.ID || claimed1.Status != "running" {
-		t.Fatalf("first claimed job = %+v, want %s running", claimed1, job1.ID)
-	}
-	if claimed2 == nil || claimed2.ID != job2.ID || claimed2.Status != "running" {
-		t.Fatalf("second claimed job = %+v, want %s running", claimed2, job2.ID)
-	}
-	if claimed3 != nil {
-		t.Fatalf("third claimed job = %+v, want nil", claimed3)
-	}
-}
-
 func TestUpdateJobStatus(t *testing.T) {
 	db := testDB(t)
 

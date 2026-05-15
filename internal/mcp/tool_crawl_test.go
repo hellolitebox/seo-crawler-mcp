@@ -94,59 +94,6 @@ func TestCrawlSite_CreatesJob(t *testing.T) {
 	}
 }
 
-func TestCrawlSiteViaHTTPForwardsCrawlOptions(t *testing.T) {
-	var body crawlSiteArgs
-	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/crawl" {
-			t.Fatalf("unexpected path %q", r.URL.Path)
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Fatalf("decoding body: %v", err)
-		}
-		w.WriteHeader(http.StatusAccepted)
-		_, _ = w.Write([]byte(`{"jobId":"remote-job","status":"queued"}`))
-	}))
-	defer remote.Close()
-	t.Setenv("SEO_CRAWLER_HTTP_API", remote.URL)
-
-	s := NewServer(ServerConfig{})
-	req := gomcp.CallToolRequest{}
-	req.Params.Arguments = map[string]any{
-		"url":           "https://example.com",
-		"urls":          []any{"https://example.com/extra"},
-		"scopeMode":     "allowlist",
-		"allowedHosts":  []any{"example.com", "cdn.example.com"},
-		"maxPages":      float64(123),
-		"maxDepth":      float64(4),
-		"renderMode":    "hybrid",
-		"respectRobots": false,
-		"dryRun":        true,
-	}
-
-	result, err := s.handleCrawlSite(context.Background(), req)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result.IsError {
-		t.Fatalf("expected success, got error: %v", result.Content)
-	}
-	if body.URL != "https://example.com" || body.MaxPages != 123 || body.MaxDepth != 4 || body.RenderMode != "hybrid" {
-		t.Fatalf("remote body omitted core options: %+v", body)
-	}
-	if body.ScopeMode != "allowlist" || len(body.AllowedHosts) != 2 || body.AllowedHosts[1] != "cdn.example.com" {
-		t.Fatalf("remote body omitted scope options: %+v", body)
-	}
-	if body.RespectRobots == nil || *body.RespectRobots {
-		t.Fatalf("remote body omitted respectRobots=false: %+v", body)
-	}
-	if !body.DryRun {
-		t.Fatalf("remote body omitted dryRun=true: %+v", body)
-	}
-	if len(body.URLs) != 1 || body.URLs[0] != "https://example.com/extra" {
-		t.Fatalf("remote body omitted additional URLs: %+v", body)
-	}
-}
-
 func TestCrawlSite_RequiresURL(t *testing.T) {
 	db := setupTestDB(t)
 	s := NewServer(ServerConfig{DB: db})

@@ -38,8 +38,6 @@ func DetectGlobalIssues(db *storage.DB, jobID string, cfg GlobalConfig) (int, er
 		detectDuplicateTitles,
 		detectDuplicateDescriptions,
 		detectDuplicateContent,
-		detectDuplicateH1,
-		detectDuplicateH2,
 		detectOrphanPages,
 		detectDeepPages,
 		detectHreflangNotReciprocal,
@@ -47,8 +45,6 @@ func DetectGlobalIssues(db *storage.DB, jobID string, cfg GlobalConfig) (int, er
 		detectCanonicalToNon200,
 		detectCanonicalChain,
 		detectCanonicalToRedirect,
-		detectNonIndexableCanonical,
-		detectUnlinkedCanonical,
 		detectBrokenPaginationChain,
 		detectPaginationCanonicalMismatch,
 		detectSitemapNon200,
@@ -778,7 +774,7 @@ func detectInSitemapNotCrawled(db *storage.DB, jobID string, _ GlobalConfig) (in
 		SELECT se.url
 		FROM sitemap_entries se
 		LEFT JOIN urls u ON u.job_id = se.job_id AND u.normalized_url = se.url
-		WHERE se.job_id = ? AND (u.id IS NULL OR u.status != 'fetched')
+		WHERE se.job_id = ? AND (u.id IS NULL OR u.status = 'pending')
 	`, jobID)
 	if err != nil {
 		return 0, fmt.Errorf("querying in_sitemap_not_crawled: %w", err)

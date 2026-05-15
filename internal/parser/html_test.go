@@ -171,10 +171,10 @@ func TestParseSPAStub(t *testing.T) {
 
 func TestCanonicalType(t *testing.T) {
 	tests := []struct {
-		name     string
-		html     string
-		pageURL  string
-		wantType string
+		name      string
+		html      string
+		pageURL   string
+		wantType  string
 	}{
 		{
 			name:     "self",
@@ -234,31 +234,6 @@ func TestJSONLDExtraction(t *testing.T) {
 	}
 }
 
-func TestParseHTML_JSONLDGraphAndTypeArray(t *testing.T) {
-	html := `<html><head>
-		<script type="application/ld+json">{"@graph":[{"@type":"WebPage"},{"@type":"BreadcrumbList"}]}</script>
-		<script type="application/ld+json">{"@type":["Article","NewsArticle"],"headline":"Test"}</script>
-	</head><body></body></html>`
-
-	r, err := ParseHTML([]byte(html), "https://example.com", http.Header{})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	want := []string{"WebPage", "BreadcrumbList", "Article", "NewsArticle"}
-	if len(r.JSONLDTypes) != len(want) {
-		t.Fatalf("JSONLDTypes = %v, want %v", r.JSONLDTypes, want)
-	}
-	for i := range want {
-		if r.JSONLDTypes[i] != want[i] {
-			t.Fatalf("JSONLDTypes = %v, want %v", r.JSONLDTypes, want)
-		}
-	}
-	if r.JSONLDBlocks[0].Malformed || r.JSONLDBlocks[1].Malformed {
-		t.Fatalf("blocks marked malformed: %+v", r.JSONLDBlocks)
-	}
-}
-
 func TestJSONLDMalformed(t *testing.T) {
 	html := `<html><head>
 		<script type="application/ld+json">{invalid json}</script>
@@ -308,73 +283,6 @@ func TestNoindexMeta(t *testing.T) {
 	}
 	if r.IndexabilityState != "noindex_meta" {
 		t.Errorf("IndexabilityState = %q, want noindex_meta", r.IndexabilityState)
-	}
-}
-
-func TestMetadataAttributeValuesAreCaseInsensitive(t *testing.T) {
-	html := `<html><head>
-		<meta name="Description" content="Mixed case description">
-		<meta name="Robots" content="noindex, follow">
-		<link rel="Canonical" href="https://example.com/page">
-		<link rel="NEXT" href="/page-2">
-		<link rel="prev alternate" href="/page-0">
-		<link rel="ALTERNATE" hreflang="en" href="/en">
-		<script type="Application/LD+Json">{"@type":"WebPage"}</script>
-	</head><body></body></html>`
-
-	r, err := ParseHTML([]byte(html), "https://example.com/page", http.Header{})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if r.MetaDescription != "Mixed case description" {
-		t.Fatalf("MetaDescription = %q", r.MetaDescription)
-	}
-	if r.IndexabilityState != "noindex_meta" {
-		t.Fatalf("IndexabilityState = %q, want noindex_meta", r.IndexabilityState)
-	}
-	if r.CanonicalResolved != "https://example.com/page" || r.CanonicalType != "self" {
-		t.Fatalf("canonical = %q / %q", r.CanonicalResolved, r.CanonicalType)
-	}
-	if r.RelNext == nil || r.RelNext.Resolved != "https://example.com/page-2" {
-		t.Fatalf("RelNext = %+v", r.RelNext)
-	}
-	if r.RelPrev == nil || r.RelPrev.Resolved != "https://example.com/page-0" {
-		t.Fatalf("RelPrev = %+v", r.RelPrev)
-	}
-	if len(r.Hreflangs) != 1 || r.Hreflangs[0].URL != "https://example.com/en" {
-		t.Fatalf("Hreflangs = %+v", r.Hreflangs)
-	}
-	if len(r.JSONLDTypes) != 1 || r.JSONLDTypes[0] != "WebPage" {
-		t.Fatalf("JSONLDTypes = %v", r.JSONLDTypes)
-	}
-}
-
-func TestOutsideHeadMetadataAttributeValuesAreCaseInsensitive(t *testing.T) {
-	html := `<html><head>
-		<link rel="CANONICAL preload" href="https://example.com/head">
-	</head><body>
-		<meta name="Robots" content="noindex, follow">
-		<meta name="Description" content="Body description">
-		<link rel="canonical alternate" href="https://example.com/body">
-	</body></html>`
-
-	r, err := ParseHTML([]byte(html), "https://example.com/page", http.Header{})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if !r.MetaRobotsOutsideHead {
-		t.Fatal("MetaRobotsOutsideHead = false, want true")
-	}
-	if !r.MetaDescriptionOutsideHead {
-		t.Fatal("MetaDescriptionOutsideHead = false, want true")
-	}
-	if !r.CanonicalOutsideHead {
-		t.Fatal("CanonicalOutsideHead = false, want true")
-	}
-	if r.CanonicalCount != 2 {
-		t.Fatalf("CanonicalCount = %d, want 2", r.CanonicalCount)
 	}
 }
 
@@ -679,9 +587,9 @@ func TestParseHTML_ImageSizeAttributes(t *testing.T) {
 	}
 
 	tests := []struct {
-		idx   int
-		wantW bool
-		wantH bool
+		idx       int
+		wantW     bool
+		wantH     bool
 	}{
 		{0, true, true},   // both
 		{1, true, false},  // width only

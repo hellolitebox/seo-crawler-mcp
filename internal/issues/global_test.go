@@ -296,28 +296,6 @@ func TestDetectSitemapReconciliation(t *testing.T) {
 	}
 }
 
-func TestDetectSitemapReconciliation_DiscoveredButUnfetched(t *testing.T) {
-	db := testDB(t)
-	jobID := "job-sitemap-discovered"
-	seedJob(t, db, jobID)
-
-	seedURL(t, db, jobID, "https://example.com/discovered", "example.com", "discovered", "browser")
-	_, err := db.Exec(`INSERT INTO sitemap_entries (job_id, url, source_sitemap_url, source_host) VALUES (?, ?, ?, ?)`,
-		jobID, "https://example.com/discovered", "https://example.com/sitemap.xml", "example.com")
-	if err != nil {
-		t.Fatalf("seeding sitemap entry: %v", err)
-	}
-
-	cfg := DefaultGlobalConfig()
-	n, err := detectInSitemapNotCrawled(db, jobID, cfg)
-	if err != nil {
-		t.Fatalf("detectInSitemapNotCrawled: %v", err)
-	}
-	if n != 1 {
-		t.Errorf("expected 1 in-sitemap-not-crawled issue, got %d", n)
-	}
-}
-
 func TestCleanCrawl_NoGlobalIssues(t *testing.T) {
 	db := testDB(t)
 	jobID := "job-clean"
@@ -408,29 +386,6 @@ func TestDetectDuplicateH1(t *testing.T) {
 	}
 }
 
-func TestDetectGlobalIssuesIncludesDuplicateH1(t *testing.T) {
-	db := testDB(t)
-	jobID := "job-global-dup-h1"
-	seedJob(t, db, jobID)
-
-	u1 := seedURL(t, db, jobID, "https://example.com/a", "example.com", "fetched", "seed")
-	u2 := seedURL(t, db, jobID, "https://example.com/b", "example.com", "fetched", "crawl")
-
-	f1 := seedFetch(t, db, jobID, 1, u1, 200)
-	f2 := seedFetch(t, db, jobID, 2, u2, 200)
-
-	seedPage(t, db, jobID, u1, f1, map[string]any{"title": "Page A", "h1_json": "[\"Shared Heading\"]"})
-	seedPage(t, db, jobID, u2, f2, map[string]any{"title": "Page B", "h1_json": "[\"Shared Heading\"]"})
-
-	_, err := DetectGlobalIssues(db, jobID, DefaultGlobalConfig())
-	if err != nil {
-		t.Fatalf("DetectGlobalIssues: %v", err)
-	}
-	if c := countIssuesByType(t, db, jobID, "duplicate_h1"); c != 1 {
-		t.Errorf("expected DetectGlobalIssues to emit 1 duplicate_h1 issue, got %d", c)
-	}
-}
-
 func TestDetectDuplicateH2(t *testing.T) {
 	db := testDB(t)
 	jobID := "job-dup-h2"
@@ -472,7 +427,7 @@ func TestDetectNonIndexableCanonical(t *testing.T) {
 		"canonical_status_code": 200,
 	})
 	seedPage(t, db, jobID, u2, f2, map[string]any{
-		"title":              "Target Page",
+		"title":             "Target Page",
 		"indexability_state": "noindex_meta",
 	})
 

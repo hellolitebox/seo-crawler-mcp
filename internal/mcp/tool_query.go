@@ -246,13 +246,6 @@ func (s *Server) handleGetLinkGraph(ctx context.Context, req gomcp.CallToolReque
 	}
 
 	lookup := s.urlLookup()
-	filter := storage.EdgeFilter{}
-	if relationType, ok := args["relationType"].(string); ok {
-		filter.RelationType = relationType
-	}
-	if sourceKind, ok := args["sourceKind"].(string); ok {
-		filter.SourceKind = sourceKind
-	}
 
 	// Collect results based on direction.
 	type graphResult struct {
@@ -262,7 +255,7 @@ func (s *Server) handleGetLinkGraph(ctx context.Context, req gomcp.CallToolReque
 
 	switch direction {
 	case "outbound":
-		edges, err := s.db.GetEdgesBySourceFiltered(jobID, urlID, limit, cursor, filter)
+		edges, err := s.db.GetEdgesBySource(jobID, urlID, limit, cursor)
 		if err != nil {
 			return gomcp.NewToolResultError(fmt.Sprintf("querying outbound edges for job %q: %v", jobID, err)), nil
 		}
@@ -277,7 +270,7 @@ func (s *Server) handleGetLinkGraph(ctx context.Context, req gomcp.CallToolReque
 		return gomcp.NewToolResultJSON(graphResult{Edges: dtos, NextCursor: nextCursor})
 
 	case "inbound":
-		edges, err := s.db.GetEdgesByTargetFiltered(jobID, urlID, limit, cursor, filter)
+		edges, err := s.db.GetEdgesByTarget(jobID, urlID, limit, cursor)
 		if err != nil {
 			return gomcp.NewToolResultError(fmt.Sprintf("querying inbound edges for job %q: %v", jobID, err)), nil
 		}
@@ -297,11 +290,11 @@ func (s *Server) handleGetLinkGraph(ctx context.Context, req gomcp.CallToolReque
 			half = 1
 		}
 
-		outEdges, err := s.db.GetEdgesBySourceFiltered(jobID, urlID, half, cursor, filter)
+		outEdges, err := s.db.GetEdgesBySource(jobID, urlID, half, cursor)
 		if err != nil {
 			return gomcp.NewToolResultError(fmt.Sprintf("querying outbound edges for job %q: %v", jobID, err)), nil
 		}
-		inEdges, err := s.db.GetEdgesByTargetFiltered(jobID, urlID, half, cursor, filter)
+		inEdges, err := s.db.GetEdgesByTarget(jobID, urlID, half, cursor)
 		if err != nil {
 			return gomcp.NewToolResultError(fmt.Sprintf("querying inbound edges for job %q: %v", jobID, err)), nil
 		}

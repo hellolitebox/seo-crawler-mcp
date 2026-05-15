@@ -152,9 +152,6 @@ func Normalize(rawURL string) (string, error) {
 	if host == "" {
 		return "", fmt.Errorf("invalid URL %q: missing host", rawURL)
 	}
-	if strings.Contains(host, ":") {
-		host = "[" + host + "]"
-	}
 
 	// Drop default port.
 	port := u.Port()

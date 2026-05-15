@@ -1,7 +1,6 @@
 package fetcher
 
 import (
-	"context"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -108,79 +107,5 @@ func TestRateLimiter_CrawlDelay(t *testing.T) {
 
 	if elapsed < 80*time.Millisecond {
 		t.Errorf("elapsed = %v, want >= ~100ms (crawl delay)", elapsed)
-	}
-}
-
-func TestRateLimiter_ConcurrentCrawlDelayWaitersAreSpaced(t *testing.T) {
-	rl := NewRateLimiter(3)
-	host := "concurrent-delay.example.com"
-	rl.SetCrawlDelay(host, 60*time.Millisecond)
-
-	rl.Acquire(host)
-	rl.Release(host)
-
-	start := time.Now()
-	times := make(chan time.Duration, 2)
-	var wg sync.WaitGroup
-	for range 2 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if err := rl.AcquireContext(context.Background(), host); err != nil {
-				t.Errorf("AcquireContext: %v", err)
-				return
-			}
-			times <- time.Since(start)
-			rl.Release(host)
-		}()
-	}
-	wg.Wait()
-	close(times)
-
-	got := make([]time.Duration, 0, 2)
-	for tm := range times {
-		got = append(got, tm)
-	}
-	if len(got) != 2 {
-		t.Fatalf("expected 2 acquire times, got %d", len(got))
-	}
-	if got[0] > got[1] {
-		got[0], got[1] = got[1], got[0]
-	}
-	if got[1]-got[0] < 45*time.Millisecond {
-		t.Fatalf("concurrent waiters were not spaced by crawl delay: %v", got)
-	}
-}
-
-func TestRateLimiter_ThrottleDoesNotEraseLongerCrawlDelay(t *testing.T) {
-	rl := NewRateLimiter(1)
-	host := "throttle-baseline.example.com"
-	rl.SetCrawlDelay(host, 100*time.Millisecond)
-	rl.ThrottleHost(host, 20*time.Millisecond)
-	time.Sleep(40 * time.Millisecond)
-
-	state := rl.getState(host)
-	state.mu.Lock()
-	delay := state.effectiveDelay(time.Now())
-	state.mu.Unlock()
-	if delay != 100*time.Millisecond {
-		t.Fatalf("effective delay = %v, want crawl delay preserved", delay)
-	}
-}
-
-func TestRateLimiter_OverlappingThrottleKeepsLongerTimer(t *testing.T) {
-	rl := NewRateLimiter(1)
-	host := "throttle-overlap.example.com"
-	rl.ThrottleHost(host, 100*time.Millisecond)
-	time.Sleep(10 * time.Millisecond)
-	rl.ThrottleHost(host, 200*time.Millisecond)
-	time.Sleep(120 * time.Millisecond)
-
-	state := rl.getState(host)
-	state.mu.Lock()
-	delay := state.effectiveDelay(time.Now())
-	state.mu.Unlock()
-	if delay != 200*time.Millisecond {
-		t.Fatalf("effective delay = %v, want longer throttle still active", delay)
 	}
 }

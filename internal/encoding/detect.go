@@ -13,8 +13,9 @@ import (
 )
 
 var (
-	metaTagRe = regexp.MustCompile(`(?is)<meta\b[^>]*>`)
-	attrRe    = regexp.MustCompile(`(?is)([a-zA-Z_:][a-zA-Z0-9_:.\-]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>]+))`)
+	metaCharsetRe    = regexp.MustCompile(`(?i)<meta[^>]+charset=["']?([^"'\s;>]+)`)
+	metaHTTPEquivRe  = regexp.MustCompile(`(?i)<meta[^>]+http-equiv=["']?Content-Type["']?[^>]+content=["']?[^"']*charset=([^"'\s;>]+)`)
+	metaHTTPEquivRe2 = regexp.MustCompile(`(?i)<meta[^>]+content=["']?[^"']*charset=([^"'\s;>]+)[^>]+http-equiv=["']?Content-Type["']?`)
 )
 
 // DetectAndConvert detects charset from Content-Type header and HTML meta tags,
@@ -59,34 +60,16 @@ func charsetFromHTML(body []byte) string {
 		snippet = snippet[:1024]
 	}
 
-	for _, tag := range metaTagRe.FindAll(snippet, -1) {
-		attrs := parseMetaAttrs(tag)
-		if charset := strings.TrimSpace(attrs["charset"]); charset != "" {
-			return charset
-		}
-		if strings.EqualFold(attrs["http-equiv"], "content-type") {
-			if charset := charsetFromHeader(attrs["content"]); charset != "" {
-				return charset
-			}
-		}
+	if m := metaCharsetRe.FindSubmatch(snippet); m != nil {
+		return string(bytes.TrimSpace(m[1]))
+	}
+	if m := metaHTTPEquivRe.FindSubmatch(snippet); m != nil {
+		return string(bytes.TrimSpace(m[1]))
+	}
+	if m := metaHTTPEquivRe2.FindSubmatch(snippet); m != nil {
+		return string(bytes.TrimSpace(m[1]))
 	}
 	return ""
-}
-
-func parseMetaAttrs(tag []byte) map[string]string {
-	attrs := map[string]string{}
-	for _, m := range attrRe.FindAllSubmatch(tag, -1) {
-		name := strings.ToLower(string(m[1]))
-		value := m[2]
-		if len(value) == 0 {
-			value = m[3]
-		}
-		if len(value) == 0 {
-			value = m[4]
-		}
-		attrs[name] = string(bytes.TrimSpace(value))
-	}
-	return attrs
 }
 
 func isUTF8(charset string) bool {

@@ -12,8 +12,11 @@ import (
 )
 
 // runPurge handles the "purge" subcommand for cleaning up old crawl jobs.
-func runPurge(args []string, defaultDBPath string) {
-	fs, olderThan, jobID, dbPath := newPurgeFlagSet(defaultDBPath)
+func runPurge(args []string) {
+	fs := flag.NewFlagSet("purge", flag.ExitOnError)
+	olderThan := fs.String("older-than", "", "Purge jobs older than duration (e.g., 30d, 24h)")
+	jobID := fs.String("job", "", "Purge specific job by ID")
+	dbPath := fs.String("db", "seo-crawler.db", "Database path")
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: seo-crawler-mcp purge [flags]\n\nFlags:\n")
 		fs.PrintDefaults()
@@ -75,18 +78,6 @@ func runPurge(args []string, defaultDBPath string) {
 
 	n, _ := result.RowsAffected()
 	fmt.Printf("purged %d job(s) older than %s\n", n, *olderThan)
-}
-
-func newPurgeFlagSet(defaultDBPath string) (*flag.FlagSet, *string, *string, *string) {
-	if defaultDBPath == "" {
-		defaultDBPath = "seo-crawler.db"
-	}
-
-	fs := flag.NewFlagSet("purge", flag.ExitOnError)
-	olderThan := fs.String("older-than", "", "Purge jobs older than duration (e.g., 30d, 24h)")
-	jobID := fs.String("job", "", "Purge specific job by ID")
-	dbPath := fs.String("db", defaultDBPath, "Database path")
-	return fs, olderThan, jobID, dbPath
 }
 
 // durationRe matches human-friendly durations like "30d", "24h", "2h30m".

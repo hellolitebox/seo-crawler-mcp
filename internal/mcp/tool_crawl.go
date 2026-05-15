@@ -156,18 +156,7 @@ func (s *Server) handleCrawlSite(ctx context.Context, req gomcp.CallToolRequest)
 
 	// If SEO_CRAWLER_HTTP_API is set, delegate to the remote HTTP server.
 	if httpAPI := os.Getenv("SEO_CRAWLER_HTTP_API"); httpAPI != "" {
-		crawlArgs := crawlSiteArgs{
-			URL:           rawURL,
-			URLs:          additionalURLs,
-			ScopeMode:     scopeMode,
-			AllowedHosts:  allowedHosts,
-			MaxPages:      maxPages,
-			MaxDepth:      maxDepth,
-			RenderMode:    renderMode,
-			RespectRobots: &respectRobots,
-			DryRun:        dryRun,
-		}
-		return s.crawlSiteViaHTTP(ctx, crawlArgs)
+		return s.crawlSiteViaHTTP(ctx, rawURL, maxPages, renderMode, additionalURLs)
 	}
 
 	if s.db == nil {
@@ -426,7 +415,7 @@ func (s *Server) runDryRun(ctx context.Context, jobID string, seedURLs []string)
 			rf, parseErr := robots.Parse(string(bodyBytes))
 			if parseErr == nil {
 				for _, smURL := range rf.Sitemaps {
-					entries, _, smErr := sitemap.FetchAndParseContextScoped(ctx, smURL, 10000, client, sameHostSitemapScope(smURL))
+					entries, _, smErr := sitemap.FetchAndParseContext(ctx, smURL, 10000, client)
 					if smErr == nil {
 						sitemapTotal += len(entries)
 						for _, e := range entries {
@@ -521,11 +510,23 @@ func (s *Server) handleCancelCrawl(ctx context.Context, req gomcp.CallToolReques
 // server a thin client, forwarding crawl requests to the cloud instance.
 func (s *Server) crawlSiteViaHTTP(
 	ctx context.Context,
-	args crawlSiteArgs,
+	rawURL string,
+	maxPages int,
+	renderMode string,
+	additionalURLs []string,
 ) (*gomcp.CallToolResult, error) {
 	httpAPI := os.Getenv("SEO_CRAWLER_HTTP_API")
 
-	bodyBytes, err := json.Marshal(args)
+	body := map[string]any{
+		"url":        rawURL,
+		"maxPages":   maxPages,
+		"renderMode": renderMode,
+	}
+	if len(additionalURLs) > 0 {
+		body["urls"] = additionalURLs
+	}
+
+	bodyBytes, err := json.Marshal(body)
 	if err != nil {
 		return gomcp.NewToolResultError(fmt.Sprintf("marshalling request body: %v", err)), nil
 	}

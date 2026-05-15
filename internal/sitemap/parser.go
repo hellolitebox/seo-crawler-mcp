@@ -69,10 +69,6 @@ func FetchAndParse(sitemapURL string, maxEntries int, client *http.Client) ([]En
 // FetchAndParseContext fetches a sitemap URL with cancellation support, auto-detects index vs urlset,
 // recursively follows index children, and respects maxEntries limit.
 func FetchAndParseContext(ctx context.Context, sitemapURL string, maxEntries int, client *http.Client) ([]Entry, int, error) {
-	return FetchAndParseContextScoped(ctx, sitemapURL, maxEntries, client, nil)
-}
-
-func FetchAndParseContextScoped(ctx context.Context, sitemapURL string, maxEntries int, client *http.Client, allowSitemapURL func(string) bool) ([]Entry, int, error) {
 	entries := make([]Entry, 0)
 	visited := make(map[string]bool)
 	queue := []string{sitemapURL}
@@ -101,13 +97,7 @@ func FetchAndParseContextScoped(ctx context.Context, sitemapURL string, maxEntri
 		// Try as index first.
 		indexURLs, err := ParseIndex(data)
 		if err == nil && len(indexURLs) > 0 {
-			for _, indexURL := range indexURLs {
-				if allowSitemapURL != nil && !allowSitemapURL(indexURL) {
-					slog.Warn("sitemap: skipping out-of-scope child sitemap", "url", indexURL, "parent", current)
-					continue
-				}
-				queue = append(queue, indexURL)
-			}
+			queue = append(queue, indexURLs...)
 			continue
 		}
 

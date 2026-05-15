@@ -391,57 +391,6 @@ func (db *DB) NextQueuedJob() (*CrawlJob, error) {
 	return &job, nil
 }
 
-// ClaimNextQueuedJob atomically promotes the oldest queued crawl job to running
-// and returns it. Queue workers use this instead of selecting first and marking
-// running later, otherwise coalesced queue signals can select the same queued job
-// more than once before the engine updates its status.
-func (db *DB) ClaimNextQueuedJob() (*CrawlJob, error) {
-	tx, err := db.Begin()
-	if err != nil {
-		return nil, fmt.Errorf("beginning queued job claim: %w", err)
-	}
-	defer tx.Rollback()
-
-	var id string
-	if err := tx.QueryRow(`
-		SELECT id FROM crawl_jobs
-		WHERE type = 'crawl' AND status = 'queued'
-		ORDER BY created_at ASC
-		LIMIT 1
-	`).Scan(&id); err != nil {
-		if err == sql.ErrNoRows {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("selecting next queued job: %w", err)
-	}
-
-	result, err := tx.Exec(`
-		UPDATE crawl_jobs
-		SET status = 'running', started_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-		WHERE id = ? AND status = 'queued'
-	`, id)
-	if err != nil {
-		return nil, fmt.Errorf("claiming queued job %q: %w", id, err)
-	}
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return nil, fmt.Errorf("checking queued job claim %q: %w", id, err)
-	}
-	if rows == 0 {
-		return nil, nil
-	}
-
-	job, err := scanJob(tx.QueryRow(`SELECT `+jobColumns+` FROM crawl_jobs WHERE id = ?`, id))
-	if err != nil {
-		return nil, fmt.Errorf("loading claimed job %q: %w", id, err)
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("committing queued job claim %q: %w", id, err)
-	}
-
-	return &job, nil
-}
-
 // CountJobsCreatedSince returns the number of jobs created at or after the
 // given time. It counts all job types.
 func (db *DB) CountJobsCreatedSince(since time.Time) (int, error) {
