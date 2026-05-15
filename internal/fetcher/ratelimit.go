@@ -10,10 +10,12 @@ const ttfbRingSize = 10
 
 // hostState holds the semaphore and crawl-delay state for a single host.
 type hostState struct {
-	sem       chan struct{}
-	mu        sync.Mutex
-	delay     time.Duration
-	lastFetch time.Time
+	sem           chan struct{}
+	mu            sync.Mutex
+	crawlDelay    time.Duration
+	throttleDelay time.Duration
+	throttleUntil time.Time
+	lastFetch     time.Time
 
 	// TTFB ring buffer for slow-host detection.
 	ttfbRing  [ttfbRingSize]int64
@@ -89,24 +91,30 @@ func (rl *RateLimiter) AcquireContext(ctx context.Context, host string) error {
 
 	// Enforce crawl delay.
 	state.mu.Lock()
-	if state.delay > 0 && !state.lastFetch.IsZero() {
-		elapsed := time.Since(state.lastFetch)
-		if elapsed < state.delay {
-			wait := state.delay - elapsed
+	for {
+		now := time.Now()
+		delay := state.effectiveDelay(now)
+		if delay <= 0 || state.lastFetch.IsZero() {
+			state.lastFetch = now
 			state.mu.Unlock()
-			select {
-			case <-ctx.Done():
-				state.sem <- struct{}{}
-				return ctx.Err()
-			case <-time.After(wait):
-			}
-			state.mu.Lock()
+			return nil
 		}
+		elapsed := now.Sub(state.lastFetch)
+		if elapsed >= delay {
+			state.lastFetch = now
+			state.mu.Unlock()
+			return nil
+		}
+		wait := delay - elapsed
+		state.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			state.sem <- struct{}{}
+			return ctx.Err()
+		case <-time.After(wait):
+		}
+		state.mu.Lock()
 	}
-	state.lastFetch = time.Now()
-	state.mu.Unlock()
-
-	return nil
 }
 
 // Release returns a slot for the host.
@@ -119,7 +127,7 @@ func (rl *RateLimiter) Release(host string) {
 func (rl *RateLimiter) SetCrawlDelay(host string, delay time.Duration) {
 	state := rl.getState(host)
 	state.mu.Lock()
-	state.delay = delay
+	state.crawlDelay = delay
 	state.mu.Unlock()
 }
 
@@ -131,17 +139,30 @@ func (rl *RateLimiter) SetCrawlDelay(host string, delay time.Duration) {
 func (rl *RateLimiter) ThrottleHost(host string, dur time.Duration) {
 	state := rl.getState(host)
 	state.mu.Lock()
-	defer state.mu.Unlock()
-
-	if dur > state.delay {
-		state.delay = dur
+	now := time.Now()
+	until := now.Add(dur)
+	if dur > state.throttleDelay || until.After(state.throttleUntil) {
+		state.throttleDelay = dur
+		state.throttleUntil = until
 	}
+	state.mu.Unlock()
 
 	time.AfterFunc(dur, func() {
 		state.mu.Lock()
-		state.delay = 0
+		if !time.Now().Before(state.throttleUntil) {
+			state.throttleDelay = 0
+			state.throttleUntil = time.Time{}
+		}
 		state.mu.Unlock()
 	})
+}
+
+func (s *hostState) effectiveDelay(now time.Time) time.Duration {
+	delay := s.crawlDelay
+	if s.throttleDelay > delay && now.Before(s.throttleUntil) {
+		delay = s.throttleDelay
+	}
+	return delay
 }
 
 // RecordTTFB records a TTFB sample for a host and returns the average TTFB in

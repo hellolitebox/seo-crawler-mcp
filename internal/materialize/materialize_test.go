@@ -104,6 +104,59 @@ func TestMaterializeCanonicalClusters(t *testing.T) {
 	}
 }
 
+func TestMaterializeRollsBackOnClusterRebuildFailure(t *testing.T) {
+	db := testDB(t)
+	jobID := "job-materialize-rollback"
+	seedJob(t, db, jobID)
+
+	canonical := "https://example.com/canonical"
+	u1 := seedURL(t, db, jobID, "https://example.com/a", "example.com")
+	u2 := seedURL(t, db, jobID, "https://example.com/b", "example.com")
+	f1 := seedFetch(t, db, jobID, 1, u1)
+	f2 := seedFetch(t, db, jobID, 2, u2)
+	for _, pair := range []struct {
+		urlID   int64
+		fetchID int64
+	}{{u1, f1}, {u2, f2}} {
+		_, err := db.Exec(`INSERT INTO pages (job_id, url_id, fetch_id, depth, canonical_url) VALUES (?, ?, ?, 1, ?)`,
+			jobID, pair.urlID, pair.fetchID, canonical)
+		if err != nil {
+			t.Fatalf("seeding page: %v", err)
+		}
+	}
+
+	if err := Materialize(db, jobID); err != nil {
+		t.Fatalf("initial Materialize: %v", err)
+	}
+
+	_, err := db.Exec(`
+		CREATE TRIGGER fail_canonical_materialize
+		BEFORE INSERT ON canonical_clusters
+		WHEN NEW.job_id = 'job-materialize-rollback'
+		BEGIN
+			SELECT RAISE(ABORT, 'forced materialize failure');
+		END
+	`)
+	if err != nil {
+		t.Fatalf("creating failure trigger: %v", err)
+	}
+
+	if err := Materialize(db, jobID); err == nil {
+		t.Fatal("expected Materialize to fail")
+	}
+
+	var clusters int
+	db.QueryRow(`SELECT COUNT(*) FROM canonical_clusters WHERE job_id = ?`, jobID).Scan(&clusters)
+	if clusters != 1 {
+		t.Fatalf("expected previous canonical cluster to survive rollback, got %d", clusters)
+	}
+	var members int
+	db.QueryRow(`SELECT COUNT(*) FROM canonical_cluster_members WHERE job_id = ?`, jobID).Scan(&members)
+	if members != 2 {
+		t.Fatalf("expected previous canonical members to survive rollback, got %d", members)
+	}
+}
+
 func TestMaterializeDuplicateClusters(t *testing.T) {
 	db := testDB(t)
 	jobID := "job-dup-cluster"

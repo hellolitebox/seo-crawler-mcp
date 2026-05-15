@@ -2,6 +2,7 @@ package lighthouse
 
 import (
 	"encoding/json"
+	"net/url"
 	"testing"
 )
 
@@ -140,5 +141,26 @@ func TestParsePSIResponse_Empty(t *testing.T) {
 	}
 	if result.Audits != nil {
 		t.Errorf("Audits should be nil for empty response, got %v", result.Audits)
+	}
+}
+
+func TestBuildPSIEndpointEscapesQueryValues(t *testing.T) {
+	endpoint := buildPSIEndpoint("https://example.com/?a=1&b=2", "key&strategy=desktop", "mobile&category=PWA")
+	parsed, err := url.Parse(endpoint)
+	if err != nil {
+		t.Fatalf("Parse endpoint: %v", err)
+	}
+	q := parsed.Query()
+	if got := q.Get("key"); got != "key&strategy=desktop" {
+		t.Fatalf("key = %q", got)
+	}
+	if got := q.Get("strategy"); got != "mobile&category=PWA" {
+		t.Fatalf("strategy = %q", got)
+	}
+	if got := q.Get("url"); got != "https://example.com/?a=1&b=2" {
+		t.Fatalf("url = %q", got)
+	}
+	if got := q["category"]; len(got) != 4 {
+		t.Fatalf("category count = %d, want 4", len(got))
 	}
 }

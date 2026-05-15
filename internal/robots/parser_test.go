@@ -145,6 +145,23 @@ func TestAnchorPattern(t *testing.T) {
 	}
 }
 
+func TestAnchoredTrailingWildcardPattern(t *testing.T) {
+	content := "User-agent: *\nDisallow: /foo*$\n"
+	rf, err := robots.Parse(content)
+	if err != nil {
+		t.Fatalf("Parse() error: %v", err)
+	}
+
+	for _, path := range []string{"/foo", "/foo123", "/foo/bar"} {
+		if rf.IsAllowed("Bot", path) {
+			t.Errorf("%s should be disallowed by /foo*$", path)
+		}
+	}
+	if !rf.IsAllowed("Bot", "/barfoo") {
+		t.Error("/barfoo should be allowed")
+	}
+}
+
 func TestCommentOnlyLines(t *testing.T) {
 	content := "# just a comment\n# another comment\n"
 	rf, err := robots.Parse(content)
@@ -166,6 +183,18 @@ func TestCaseInsensitiveUserAgent(t *testing.T) {
 
 	if rf.IsAllowed("googlebot", "/secret/page") {
 		t.Error("case-insensitive UA matching should work")
+	}
+}
+
+func TestUserAgentProductVersionMatch(t *testing.T) {
+	content := "User-agent: Googlebot\nDisallow: /secret/\nUser-agent: *\nAllow: /\n"
+	rf, err := robots.Parse(content)
+	if err != nil {
+		t.Fatalf("Parse() error: %v", err)
+	}
+
+	if rf.IsAllowed("Googlebot/2.1 (+http://example.com/bot)", "/secret/page") {
+		t.Error("product/version UA should match Googlebot group")
 	}
 }
 

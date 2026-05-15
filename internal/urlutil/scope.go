@@ -62,7 +62,8 @@ func (sc *ScopeChecker) IsInScope(rawURL string) bool {
 	}
 
 	// Only allow HTTP(S) URLs through scope check.
-	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+	scheme := strings.ToLower(parsed.Scheme)
+	if scheme != "http" && scheme != "https" {
 		return false
 	}
 	// Reject URLs with userinfo (potential scope confusion).

@@ -37,6 +37,20 @@ func TestParse_Empty(t *testing.T) {
 	}
 }
 
+func TestParse_LeadingBlankLinesBeforeHeading(t *testing.T) {
+	content := "\n\n  \n# Overview\nUseful docs at https://example.com/docs\n"
+	result := Parse(content)
+	if len(result.Sections) != 1 {
+		t.Fatalf("expected 1 section, got %d: %#v", len(result.Sections), result.Sections)
+	}
+	if result.Sections[0].Title != "Overview" {
+		t.Errorf("expected Overview section, got %q", result.Sections[0].Title)
+	}
+	if result.Sections[0].Content == "" {
+		t.Error("expected section content to be preserved")
+	}
+}
+
 func TestParse_NoSectionsJustText(t *testing.T) {
 	content := "Just some plain text with https://example.com"
 	result := Parse(content)

@@ -3,6 +3,7 @@ package fetcher
 import (
 	"bytes"
 	"compress/gzip"
+	"compress/zlib"
 	"io"
 	"testing"
 )
@@ -34,6 +35,36 @@ func TestDecompressGzip(t *testing.T) {
 		t.Fatalf("ReadAll: %v", err)
 	}
 
+	if !bytes.Equal(got, original) {
+		t.Errorf("got %q, want %q", got, original)
+	}
+}
+
+func zlibBytes(t *testing.T, data []byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zlib.NewWriter(&buf)
+	if _, err := zw.Write(data); err != nil {
+		t.Fatalf("zlib write: %v", err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("zlib close: %v", err)
+	}
+	return buf.Bytes()
+}
+
+func TestDecompressDeflateZlib(t *testing.T) {
+	original := []byte("hello deflate world")
+	compressed := zlibBytes(t, original)
+
+	r, err := decompressAndLimit(bytes.NewReader(compressed), "deflate", 1024)
+	if err != nil {
+		t.Fatalf("decompressAndLimit returned error: %v", err)
+	}
+	got, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
 	if !bytes.Equal(got, original) {
 		t.Errorf("got %q, want %q", got, original)
 	}

@@ -3,6 +3,7 @@ package parser
 import (
 	"encoding/json"
 	"sort"
+	"strings"
 )
 
 // maxValidationResults caps the number of results to prevent runaway @graph arrays.
@@ -15,7 +16,7 @@ type SchemaValidationResult struct {
 	MissingRecommended []string `json:"missingRecommended,omitempty"`
 	Valid              bool     `json:"valid"`
 	Nested             bool     `json:"nested"`
-	Source             string   `json:"source"`                // "google_rich_results" or "schema_org_best_practice"
+	Source             string   `json:"source"` // "google_rich_results" or "schema_org_best_practice"
 	GoogleDocURL       string   `json:"googleDocUrl,omitempty"`
 }
 
@@ -26,7 +27,7 @@ func isEmptyValue(val interface{}) bool {
 	}
 	switch v := val.(type) {
 	case string:
-		return v == ""
+		return strings.TrimSpace(v) == ""
 	case []interface{}:
 		return len(v) == 0
 	case map[string]interface{}:

@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // LTClient talks to a LanguageTool HTTP server.
@@ -101,8 +102,9 @@ func (c *LTClient) Check(ctx context.Context, text, language string, opts ...Che
 
 	// Truncate very long texts to avoid overwhelming the server
 	const maxChars = 20000
-	if len(text) > maxChars {
-		text = text[:maxChars]
+	if utf8.RuneCountInString(text) > maxChars {
+		runes := []rune(text)
+		text = string(runes[:maxChars])
 	}
 
 	form := url.Values{}
@@ -190,7 +192,7 @@ func (c *LTClient) Check(ctx context.Context, text, language string, opts ...Che
 			Message:      m.Message,
 			ShortMessage: m.ShortMessage,
 			Offset:       m.Offset,
-			Length:        m.Length,
+			Length:       m.Length,
 			Replacements: replacements,
 			RuleID:       m.Rule.ID,
 			RuleCategory: m.Rule.Category.Name,

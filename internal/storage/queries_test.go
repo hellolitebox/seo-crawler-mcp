@@ -258,6 +258,32 @@ func TestQueryIssues_FilterByType(t *testing.T) {
 	}
 }
 
+func TestQueryIssues_FilterBySeverity(t *testing.T) {
+	db := testDB(t)
+	jobID := seedJobWithIssues(t, db)
+
+	result, err := db.QueryIssues(jobID, QueryFilter{Severity: "error"}, "", 10)
+	if err != nil {
+		t.Fatalf("QueryIssues: %v", err)
+	}
+	if len(result.Results) != 5 {
+		t.Fatalf("expected 5 error issues, got %d", len(result.Results))
+	}
+	if result.TotalCount != 5 {
+		t.Errorf("expected TotalCount=5, got %d", result.TotalCount)
+	}
+	for _, iss := range result.Results {
+		if iss.Severity != "error" {
+			t.Errorf("expected severity error, got %q", iss.Severity)
+		}
+	}
+	for _, ignored := range result.IgnoredFilters {
+		if ignored == "Severity" {
+			t.Fatal("Severity should not be ignored for QueryIssues")
+		}
+	}
+}
+
 func TestQueryIssues_IgnoredFilters(t *testing.T) {
 	db := testDB(t)
 	jobID := seedJobWithIssues(t, db)
@@ -430,6 +456,49 @@ func TestQueryResponseCodes_FilterByFamily(t *testing.T) {
 	}
 	if result.TotalCount != 3 {
 		t.Errorf("expected 3 2xx fetches, got %d", result.TotalCount)
+	}
+}
+
+func TestCursorQueriesNormalizeZeroLimit(t *testing.T) {
+	db := testDB(t)
+	jobID := seedJobWithPages(t, db, 2)
+	issuesJobID := seedJobWithIssues(t, db)
+
+	if result, err := db.QueryPages(jobID, QueryFilter{}, "", 0); err != nil {
+		t.Fatalf("QueryPages zero limit: %v", err)
+	} else if len(result.Results) == 0 {
+		t.Fatal("QueryPages zero limit returned no results")
+	}
+
+	if result, err := db.QueryIssues(issuesJobID, QueryFilter{}, "", 0); err != nil {
+		t.Fatalf("QueryIssues zero limit: %v", err)
+	} else if len(result.Results) == 0 {
+		t.Fatal("QueryIssues zero limit returned no results")
+	}
+
+	job, err := db.CreateJob("crawl", "{}", "[]")
+	if err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+	src, _ := db.UpsertURL(job.ID, "https://example.com/src", "example.com", "crawled", true, "seed")
+	tgt, _ := db.UpsertURL(job.ID, "https://example.com/tgt", "example.com", "crawled", true, "crawl")
+	_, err = db.InsertEdge(EdgeInput{
+		JobID: job.ID, SourceURLID: src, NormalizedTargetURLID: tgt,
+		RelationType: "hyperlink", IsInternal: true, DeclaredTargetURL: "https://example.com/tgt",
+	})
+	if err != nil {
+		t.Fatalf("InsertEdge: %v", err)
+	}
+	if result, err := db.QueryEdgesView(job.ID, QueryFilter{}, "", 0); err != nil {
+		t.Fatalf("QueryEdgesView zero limit: %v", err)
+	} else if len(result.Results) == 0 {
+		t.Fatal("QueryEdgesView zero limit returned no results")
+	}
+
+	if result, err := db.QueryResponseCodes(jobID, QueryFilter{}, "", 0); err != nil {
+		t.Fatalf("QueryResponseCodes zero limit: %v", err)
+	} else if len(result.Results) == 0 {
+		t.Fatal("QueryResponseCodes zero limit returned no results")
 	}
 }
 

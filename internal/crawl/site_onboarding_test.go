@@ -209,6 +209,68 @@ func TestOnboardHost_Full(t *testing.T) {
 	}
 }
 
+func TestOnboardHostRejectsMalformedOrigin(t *testing.T) {
+	f := setupFetcher()
+	onboarder := NewHostOnboarder(f, nil, 100, testUserAgent)
+	badHosts := []string{"example.com/path", "example.com?x=1", "example.com#frag", "example.com@attacker.test"}
+	for _, host := range badHosts {
+		t.Run(host, func(t *testing.T) {
+			if _, err := onboarder.OnboardHost(context.Background(), "job-bad", host, "http"); err == nil {
+				t.Fatal("expected malformed host to be rejected")
+			}
+		})
+	}
+	if _, err := onboarder.OnboardHost(context.Background(), "job-bad", "example.com", "ftp"); err == nil {
+		t.Fatal("expected invalid scheme to be rejected")
+	}
+}
+
+func TestOnboardHostSkipsExternalSitemapIndexChildren(t *testing.T) {
+	externalRequests := 0
+	external := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		externalRequests++
+		fmt.Fprint(w, testSitemapXML)
+	}))
+	defer external.Close()
+
+	var serverURL string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/robots.txt", func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprintf(w, "User-agent: *\nSitemap: %s/sitemap_index.xml\n", serverURL)
+	})
+	mux.HandleFunc("/sitemap_index.xml", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/xml")
+		fmt.Fprintf(w, `<?xml version="1.0" encoding="UTF-8"?>
+<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <sitemap><loc>%s/sitemap.xml</loc></sitemap>
+</sitemapindex>`, external.URL)
+	})
+	mux.HandleFunc("/sitemap.xml", func(w http.ResponseWriter, _ *http.Request) {
+		content := strings.ReplaceAll(testSitemapXML, "BASEURL", serverURL)
+		fmt.Fprint(w, content)
+	})
+	mux.HandleFunc("/llms.txt", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(404)
+	})
+	ts := httptest.NewServer(mux)
+	serverURL = ts.URL
+	defer ts.Close()
+
+	f := setupFetcher()
+	onboarder := NewHostOnboarder(f, nil, 100, testUserAgent)
+	host := strings.TrimPrefix(ts.URL, "http://")
+	info, err := onboarder.OnboardHost(context.Background(), "job-sitemap-scope", host, "http")
+	if err != nil {
+		t.Fatalf("OnboardHost failed: %v", err)
+	}
+	if externalRequests != 0 {
+		t.Fatalf("expected external child sitemap not to be fetched, got %d requests", externalRequests)
+	}
+	if len(info.SitemapEntries) != 0 {
+		t.Fatalf("expected no entries from skipped external sitemap, got %d", len(info.SitemapEntries))
+	}
+}
+
 func TestOnboardHost_NoRobots(t *testing.T) {
 	mux := http.NewServeMux()
 	var serverURL string

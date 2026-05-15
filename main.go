@@ -42,7 +42,7 @@ func main() {
 
 	// Handle "purge" subcommand.
 	if flag.NArg() > 0 && flag.Arg(0) == "purge" {
-		runPurge(flag.Args()[1:])
+		runPurge(flag.Args()[1:], *dbPath)
 		return
 	}
 

@@ -10,7 +10,7 @@ import (
 // QueryFilter defines filters for paginated query methods.
 type QueryFilter struct {
 	IssueType        string `json:"issueType,omitempty"`
-	Severity         string `json:"severity,omitempty"` // "info", "warning", "error"
+	Severity         string `json:"severity,omitempty"`         // "info", "warning", "error"
 	StatusCodeFamily string `json:"statusCodeFamily,omitempty"` // "2xx", "3xx", "4xx", "5xx"
 	URLPattern       string `json:"urlPattern,omitempty"`
 	URLGroup         string `json:"urlGroup,omitempty"`
@@ -84,6 +84,13 @@ func decodeCursor(cursor string) (int64, error) {
 	return id, nil
 }
 
+func normalizeCursorLimit(limit int) int {
+	if limit <= 0 {
+		return 50
+	}
+	return limit
+}
+
 // statusCodeFamilyRange returns the lower and upper bounds for a status code family.
 func statusCodeFamilyRange(family string) (int, int, error) {
 	switch family {
@@ -145,6 +152,7 @@ func collectIgnoredFilters(f QueryFilter, applicable map[string]bool) []string {
 func (db *DB) QueryPages(
 	jobID string, filter QueryFilter, cursor string, limit int,
 ) (*PagedResult[Page], error) {
+	limit = normalizeCursorLimit(limit)
 	cursorID, err := decodeCursor(cursor)
 	if err != nil {
 		return nil, err
@@ -307,6 +315,7 @@ func (db *DB) QueryPages(
 func (db *DB) QueryIssues(
 	jobID string, filter QueryFilter, cursor string, limit int,
 ) (*PagedResult[Issue], error) {
+	limit = normalizeCursorLimit(limit)
 	cursorID, err := decodeCursor(cursor)
 	if err != nil {
 		return nil, err
@@ -314,6 +323,7 @@ func (db *DB) QueryIssues(
 
 	applicable := map[string]bool{
 		"IssueType":  true,
+		"Severity":   true,
 		"URLPattern": true,
 	}
 	ignored := collectIgnoredFilters(filter, applicable)
@@ -334,6 +344,10 @@ func (db *DB) QueryIssues(
 	if filter.IssueType != "" {
 		qb.WriteString(" AND i.issue_type = ?")
 		args = append(args, filter.IssueType)
+	}
+	if filter.Severity != "" {
+		qb.WriteString(" AND i.severity = ?")
+		args = append(args, filter.Severity)
 	}
 	if filter.URLPattern != "" {
 		qb.WriteString(" AND u.normalized_url LIKE ?")
@@ -386,6 +400,10 @@ func (db *DB) QueryIssues(
 		countQB.WriteString(" AND i.issue_type = ?")
 		countArgs = append(countArgs, filter.IssueType)
 	}
+	if filter.Severity != "" {
+		countQB.WriteString(" AND i.severity = ?")
+		countArgs = append(countArgs, filter.Severity)
+	}
 	if filter.URLPattern != "" {
 		countQB.WriteString(" AND u.normalized_url LIKE ?")
 		countArgs = append(countArgs, "%"+filter.URLPattern+"%")
@@ -403,6 +421,7 @@ func (db *DB) QueryIssues(
 func (db *DB) QueryEdgesView(
 	jobID string, filter QueryFilter, cursor string, limit int,
 ) (*PagedResult[Edge], error) {
+	limit = normalizeCursorLimit(limit)
 	cursorID, err := decodeCursor(cursor)
 	if err != nil {
 		return nil, err
@@ -511,6 +530,7 @@ func (db *DB) QueryEdgesView(
 func (db *DB) QueryResponseCodes(
 	jobID string, filter QueryFilter, cursor string, limit int,
 ) (*PagedResult[Fetch], error) {
+	limit = normalizeCursorLimit(limit)
 	cursorID, err := decodeCursor(cursor)
 	if err != nil {
 		return nil, err

@@ -41,10 +41,7 @@ func Parse(content string) *LlmsTxt {
 		if strings.HasPrefix(trimmed, "#") {
 			// Flush previous section.
 			if hasSections || len(contentLines) > 0 {
-				result.Sections = append(result.Sections, Section{
-					Title:   currentTitle,
-					Content: strings.TrimSpace(strings.Join(contentLines, "\n")),
-				})
+				appendSection(result, currentTitle, contentLines)
 			}
 			// Extract title: strip leading #s and whitespace.
 			title := strings.TrimSpace(strings.TrimLeft(trimmed, "#"))
@@ -58,10 +55,7 @@ func Parse(content string) *LlmsTxt {
 
 	// Flush last section.
 	if hasSections || len(contentLines) > 0 {
-		result.Sections = append(result.Sections, Section{
-			Title:   currentTitle,
-			Content: strings.TrimSpace(strings.Join(contentLines, "\n")),
-		})
+		appendSection(result, currentTitle, contentLines)
 	}
 
 	// Extract URLs from entire content.
@@ -75,4 +69,15 @@ func Parse(content string) *LlmsTxt {
 	}
 
 	return result
+}
+
+func appendSection(result *LlmsTxt, title string, contentLines []string) {
+	content := strings.TrimSpace(strings.Join(contentLines, "\n"))
+	if strings.TrimSpace(title) == "" && content == "" {
+		return
+	}
+	result.Sections = append(result.Sections, Section{
+		Title:   title,
+		Content: content,
+	})
 }

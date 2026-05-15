@@ -82,6 +82,36 @@ respect_robots = false
 	}
 }
 
+func TestLoadConfig_URLGroupsFromFile(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+
+	content := `
+[[url_groups]]
+name = "articles"
+pattern = "/blog"
+thin_content_threshold = 450
+`
+	if err := os.WriteFile(cfgPath, []byte(content), 0644); err != nil {
+		t.Fatalf("writing config file: %v", err)
+	}
+
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig from file: %v", err)
+	}
+	if len(cfg.URLGroups) != 1 {
+		t.Fatalf("expected 1 URL group, got %d", len(cfg.URLGroups))
+	}
+	group := cfg.URLGroups[0]
+	if group.Name != "articles" || group.Pattern != "/blog" {
+		t.Fatalf("unexpected URL group: %+v", group)
+	}
+	if group.ThinContentThreshold == nil || *group.ThinContentThreshold != 450 {
+		t.Fatalf("thin content threshold = %v, want 450", group.ThinContentThreshold)
+	}
+}
+
 func TestLoadConfig_EnvOverride(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.toml")

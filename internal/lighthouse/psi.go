@@ -103,11 +103,11 @@ func ParsePSIResponse(raw map[string]interface{}, pageURL, strategy string) *PSI
 	// Extract Core Web Vitals from audit numeric values
 	cwvMap := map[string]*float64{
 		"largest-contentful-paint": &result.CoreWebVitals.LCP,
-		"first-contentful-paint":  &result.CoreWebVitals.FCP,
-		"cumulative-layout-shift": &result.CoreWebVitals.CLS,
-		"total-blocking-time":     &result.CoreWebVitals.TBT,
-		"speed-index":             &result.CoreWebVitals.SI,
-		"server-response-time":    &result.CoreWebVitals.TTFB,
+		"first-contentful-paint":   &result.CoreWebVitals.FCP,
+		"cumulative-layout-shift":  &result.CoreWebVitals.CLS,
+		"total-blocking-time":      &result.CoreWebVitals.TBT,
+		"speed-index":              &result.CoreWebVitals.SI,
+		"server-response-time":     &result.CoreWebVitals.TTFB,
 	}
 	for auditKey, field := range cwvMap {
 		if a, ok := audits[auditKey].(map[string]interface{}); ok {
@@ -122,10 +122,7 @@ func ParsePSIResponse(raw map[string]interface{}, pageURL, strategy string) *PSI
 
 // FetchPSI calls the PageSpeed Insights API for a URL.
 func FetchPSI(ctx context.Context, pageURL, apiKey, strategy string) (*PSIResult, error) {
-	endpoint := fmt.Sprintf(
-		"https://www.googleapis.com/pagespeedonline/v5/runPagespeed?url=%s&key=%s&strategy=%s&category=PERFORMANCE&category=ACCESSIBILITY&category=BEST_PRACTICES&category=SEO",
-		url.QueryEscape(pageURL), apiKey, strategy,
-	)
+	endpoint := buildPSIEndpoint(pageURL, apiKey, strategy)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
 	if err != nil {
@@ -150,4 +147,21 @@ func FetchPSI(ctx context.Context, pageURL, apiKey, strategy string) (*PSIResult
 	}
 
 	return ParsePSIResponse(raw, pageURL, strategy), nil
+}
+
+func buildPSIEndpoint(pageURL, apiKey, strategy string) string {
+	endpoint := url.URL{
+		Scheme: "https",
+		Host:   "www.googleapis.com",
+		Path:   "/pagespeedonline/v5/runPagespeed",
+	}
+	q := endpoint.Query()
+	q.Set("url", pageURL)
+	q.Set("key", apiKey)
+	q.Set("strategy", strategy)
+	for _, category := range []string{"PERFORMANCE", "ACCESSIBILITY", "BEST_PRACTICES", "SEO"} {
+		q.Add("category", category)
+	}
+	endpoint.RawQuery = q.Encode()
+	return endpoint.String()
 }

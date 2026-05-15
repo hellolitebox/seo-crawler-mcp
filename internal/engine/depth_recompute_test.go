@@ -89,10 +89,13 @@ func TestRecomputePageDepths_UsesFinalShortestPath(t *testing.T) {
 	insertLink(workID, "https://example.com/about-us", aboutID)
 	insertLink(aboutID, "https://example.com/contact-us", contactID)
 	// Direct homepage links discovered later should win after recompute.
-	insertLink(homeID, "https://example.com/about-us", aboutID)
+	insertLink(homeID, "https://example.com/about-us#team", aboutID)
 	insertLink(homeID, "https://example.com/contact-us", contactID)
 
 	eng := &Engine{db: db}
+	if err := eng.recalculatePageEdgeCounts(job.ID); err != nil {
+		t.Fatalf("recalculatePageEdgeCounts: %v", err)
+	}
 	if err := eng.recomputePageDepths(job.ID); err != nil {
 		t.Fatalf("recomputePageDepths: %v", err)
 	}
@@ -117,4 +120,16 @@ func TestRecomputePageDepths_UsesFinalShortestPath(t *testing.T) {
 	assertDepth("https://example.com/work", 1)
 	assertDepth("https://example.com/about-us", 1)
 	assertDepth("https://example.com/contact-us", 1)
+
+	var inboundEdges, inboundPages int
+	if err := db.QueryRow(`
+		SELECT p.inbound_edge_count, p.inbound_linking_pages
+		FROM pages p
+		WHERE p.job_id = ? AND p.url_id = ?
+	`, job.ID, aboutID).Scan(&inboundEdges, &inboundPages); err != nil {
+		t.Fatalf("scan about inbound counts: %v", err)
+	}
+	if inboundEdges != 2 || inboundPages != 2 {
+		t.Fatalf("about inbound counts = edges:%d pages:%d, want edges:2 pages:2", inboundEdges, inboundPages)
+	}
 }

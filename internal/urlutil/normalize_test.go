@@ -37,6 +37,16 @@ func TestNormalize(t *testing.T) {
 			want:  "https://example.com:8080/path",
 		},
 		{
+			name:  "preserve IPv6 brackets",
+			input: "http://[::1]/",
+			want:  "http://[::1]/",
+		},
+		{
+			name:  "preserve IPv6 brackets with port",
+			input: "http://[2001:db8::1]:8080/path",
+			want:  "http://[2001:db8::1]:8080/path",
+		},
+		{
 			name:  "empty path gets slash",
 			input: "https://example.com",
 			want:  "https://example.com/",

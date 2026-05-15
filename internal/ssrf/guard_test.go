@@ -24,9 +24,11 @@ func TestIsBlockedIP_Blocked(t *testing.T) {
 		{name: "aws ec2 metadata v6", ip: "fd00:ec2::254"},
 		{name: "zero network", ip: "0.0.0.0"},
 		{name: "carrier-grade NAT", ip: "100.64.0.1"},
+		{name: "ipv4 multicast", ip: "224.0.0.1"},
 		{name: "ipv4-mapped ipv6 loopback", ip: "::ffff:127.0.0.1"},
 		{name: "ipv4-mapped ipv6 metadata", ip: "::ffff:169.254.169.254"},
 		{name: "ipv6 unspecified", ip: "::"},
+		{name: "ipv6 multicast", ip: "ff02::1"},
 		{name: "broadcast", ip: "255.255.255.255"},
 	}
 

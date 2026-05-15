@@ -96,7 +96,7 @@ func (p *Pool) Render(ctx context.Context, rawURL string) (*RenderResult, error)
 	case <-p.slots:
 		// acquired
 	}
-	defer func() { p.slots <- struct{}{} }()
+	defer p.releaseSlot()
 
 	// Apply render timeout, merging with pool context so Close() cancels in-flight renders.
 	renderCtx, renderCancel := context.WithTimeout(p.poolCtx, p.renderTimeout)
@@ -198,7 +198,7 @@ func (p *Pool) RenderWithOptions(ctx context.Context, rawURL string, opts Render
 		return nil, fmt.Errorf("renderer pool is closed")
 	case <-p.slots:
 	}
-	defer func() { p.slots <- struct{}{} }()
+	defer p.releaseSlot()
 
 	renderCtx, renderCancel := context.WithTimeout(p.poolCtx, p.renderTimeout)
 	defer renderCancel()
@@ -395,4 +395,11 @@ func (p *Pool) Close() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.closed = true
+}
+
+func (p *Pool) releaseSlot() {
+	select {
+	case p.slots <- struct{}{}:
+	case <-p.poolCtx.Done():
+	}
 }

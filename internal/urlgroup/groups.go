@@ -14,18 +14,29 @@ const minAutoGroupSize = 10
 
 // DetectGroups auto-detects URL pattern groups from crawled pages.
 func DetectGroups(db *storage.DB, jobID string, userGroups []config.URLGroupConfig) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("beginning url group transaction: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
 	// Clear existing groups for this job
-	if _, err := db.Exec(`DELETE FROM url_pattern_groups WHERE job_id = ?`, jobID); err != nil {
+	if _, err := tx.Exec(`DELETE FROM url_pattern_groups WHERE job_id = ?`, jobID); err != nil {
 		return fmt.Errorf("clearing url pattern groups: %w", err)
 	}
 
 	// Reset all page url_group values
-	if _, err := db.Exec(`UPDATE pages SET url_group = NULL WHERE job_id = ?`, jobID); err != nil {
+	if _, err := tx.Exec(`UPDATE pages SET url_group = NULL WHERE job_id = ?`, jobID); err != nil {
 		return fmt.Errorf("clearing page url_group: %w", err)
 	}
 
 	// Get all crawled page URLs
-	rows, err := db.Query(`
+	rows, err := tx.Query(`
 		SELECT p.url_id, u.normalized_url
 		FROM pages p
 		JOIN urls u ON u.id = p.url_id AND u.job_id = p.job_id
@@ -34,7 +45,6 @@ func DetectGroups(db *storage.DB, jobID string, userGroups []config.URLGroupConf
 	if err != nil {
 		return fmt.Errorf("querying pages for grouping: %w", err)
 	}
-	defer rows.Close()
 
 	type pageEntry struct {
 		urlID  int64
@@ -44,12 +54,17 @@ func DetectGroups(db *storage.DB, jobID string, userGroups []config.URLGroupConf
 	for rows.Next() {
 		var pe pageEntry
 		if err := rows.Scan(&pe.urlID, &pe.rawURL); err != nil {
+			rows.Close()
 			return fmt.Errorf("scanning page for grouping: %w", err)
 		}
 		pages = append(pages, pe)
 	}
 	if err := rows.Err(); err != nil {
+		rows.Close()
 		return err
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("closing page grouping rows: %w", err)
 	}
 
 	// Build pattern counts from first two path segments
@@ -68,7 +83,7 @@ func DetectGroups(db *storage.DB, jobID string, userGroups []config.URLGroupConf
 		userPatterns[ug.Pattern] = ug.Name
 
 		// Insert user group
-		_, err := db.Exec(`INSERT INTO url_pattern_groups (job_id, pattern, name, source) VALUES (?, ?, ?, 'user')`,
+		_, err := tx.Exec(`INSERT INTO url_pattern_groups (job_id, pattern, name, source) VALUES (?, ?, ?, 'user')`,
 			jobID, ug.Pattern, ug.Name)
 		if err != nil {
 			return fmt.Errorf("inserting user group %q: %w", ug.Name, err)
@@ -77,7 +92,7 @@ func DetectGroups(db *storage.DB, jobID string, userGroups []config.URLGroupConf
 		// Assign pages matching this pattern
 		for _, pe := range pages {
 			if matchesPattern(pe.rawURL, ug.Pattern) {
-				if _, err := db.Exec(`UPDATE pages SET url_group = ? WHERE job_id = ? AND url_id = ?`,
+				if _, err := tx.Exec(`UPDATE pages SET url_group = ? WHERE job_id = ? AND url_id = ?`,
 					ug.Name, jobID, pe.urlID); err != nil {
 					return fmt.Errorf("assigning url_group %q: %w", ug.Name, err)
 				}
@@ -94,7 +109,7 @@ func DetectGroups(db *storage.DB, jobID string, userGroups []config.URLGroupConf
 		// Check if a user group already covers this pattern
 		overridden := false
 		for userPattern := range userPatterns {
-			if userPattern == pattern || strings.HasPrefix(pattern, userPattern) {
+			if patternCoversPattern(userPattern, pattern) {
 				overridden = true
 				break
 			}
@@ -105,7 +120,7 @@ func DetectGroups(db *storage.DB, jobID string, userGroups []config.URLGroupConf
 
 		name := patternToName(pattern)
 
-		_, err := db.Exec(`INSERT INTO url_pattern_groups (job_id, pattern, name, source) VALUES (?, ?, ?, 'auto')`,
+		_, err := tx.Exec(`INSERT INTO url_pattern_groups (job_id, pattern, name, source) VALUES (?, ?, ?, 'auto')`,
 			jobID, pattern, name)
 		if err != nil {
 			return fmt.Errorf("inserting auto group %q: %w", name, err)
@@ -114,17 +129,21 @@ func DetectGroups(db *storage.DB, jobID string, userGroups []config.URLGroupConf
 		for _, pe := range entries {
 			// Don't override user-assigned groups
 			var existing *string
-			db.QueryRow(`SELECT url_group FROM pages WHERE job_id = ? AND url_id = ?`, jobID, pe.urlID).Scan(&existing)
+			tx.QueryRow(`SELECT url_group FROM pages WHERE job_id = ? AND url_id = ?`, jobID, pe.urlID).Scan(&existing)
 			if existing != nil {
 				continue
 			}
-			if _, err := db.Exec(`UPDATE pages SET url_group = ? WHERE job_id = ? AND url_id = ?`,
+			if _, err := tx.Exec(`UPDATE pages SET url_group = ? WHERE job_id = ? AND url_id = ?`,
 				name, jobID, pe.urlID); err != nil {
 				return fmt.Errorf("assigning auto url_group %q: %w", name, err)
 			}
 		}
 	}
 
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing url groups: %w", err)
+	}
+	committed = true
 	return nil
 }
 
@@ -174,5 +193,19 @@ func matchesPattern(rawURL, pattern string) bool {
 	}
 	// Ensure it's a prefix match at segment boundary
 	rest := path[len(pattern):]
+	return rest == "" || rest[0] == '/'
+}
+
+func patternCoversPattern(userPattern, autoPattern string) bool {
+	if userPattern == autoPattern {
+		return true
+	}
+	if userPattern == "/" {
+		return strings.HasPrefix(autoPattern, "/")
+	}
+	if !strings.HasPrefix(autoPattern, userPattern) {
+		return false
+	}
+	rest := autoPattern[len(userPattern):]
 	return rest == "" || rest[0] == '/'
 }

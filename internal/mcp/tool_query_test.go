@@ -402,6 +402,65 @@ func TestGetLinkGraph_Outbound(t *testing.T) {
 	}
 }
 
+func TestGetLinkGraph_FiltersEdges(t *testing.T) {
+	db := setupTestDB(t)
+	jobID := seedTestData(t, db)
+	cfg := config.DefaultConfig()
+	s := NewServer(ServerConfig{DB: db, Config: &cfg})
+
+	url1, err := db.GetURLByNormalized(jobID, "https://example.com/")
+	if err != nil {
+		t.Fatalf("getting source URL: %v", err)
+	}
+	url2, err := db.GetURLByNormalized(jobID, "https://example.com/about")
+	if err != nil {
+		t.Fatalf("getting target URL: %v", err)
+	}
+	_, err = db.InsertEdge(storage.EdgeInput{
+		JobID:                 jobID,
+		SourceURLID:           url1.ID,
+		NormalizedTargetURLID: url2.ID,
+		SourceKind:            "browser",
+		RelationType:          "canonical",
+		DiscoveryMode:         "rendered",
+		IsInternal:            true,
+		DeclaredTargetURL:     "https://example.com/about",
+	})
+	if err != nil {
+		t.Fatalf("inserting filtered edge: %v", err)
+	}
+
+	req := gomcp.CallToolRequest{}
+	req.Params.Arguments = map[string]any{
+		"jobId":        jobID,
+		"urlId":        float64(url1.ID),
+		"direction":    "outbound",
+		"relationType": "canonical",
+		"sourceKind":   "browser",
+	}
+
+	result, err := s.handleGetLinkGraph(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("expected success, got error: %v", result.Content)
+	}
+	var resp struct {
+		Edges []json.RawMessage `json:"edges"`
+	}
+	for _, content := range result.Content {
+		if tc, ok := content.(gomcp.TextContent); ok {
+			if err := json.Unmarshal([]byte(tc.Text), &resp); err != nil {
+				t.Fatalf("parsing response: %v", err)
+			}
+		}
+	}
+	if len(resp.Edges) != 1 {
+		t.Fatalf("expected 1 filtered edge, got %d", len(resp.Edges))
+	}
+}
+
 func TestGetLinkGraph_Inbound(t *testing.T) {
 	db := setupTestDB(t)
 	jobID := seedTestData(t, db)

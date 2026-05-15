@@ -109,6 +109,7 @@ func TestScopeChecker_SchemeFiltering(t *testing.T) {
 		{"file scheme rejected", "file:///etc/passwd", false},
 		{"http allowed", "http://example.com/page", true},
 		{"https allowed", "https://example.com/page", true},
+		{"uppercase https allowed", "HTTPS://example.com/page", true},
 	}
 
 	for _, tt := range tests {
@@ -148,11 +149,11 @@ func TestScopeChecker_UserinfoRejection(t *testing.T) {
 
 func TestScopeChecker_PortHandling(t *testing.T) {
 	tests := []struct {
-		name      string
-		mode      string
-		seedHost  string
-		url       string
-		want      bool
+		name     string
+		mode     string
+		seedHost string
+		url      string
+		want     bool
 	}{
 		{"registrable domain with port", "registrable_domain", "www.example.com", "https://example.com:8443/page", true},
 		{"exact host with port", "exact_host", "www.example.com", "https://www.example.com:443/page", true},
