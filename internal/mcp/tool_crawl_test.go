@@ -52,7 +52,8 @@ func TestCrawlSite_CreatesJob(t *testing.T) {
 
 	req := gomcp.CallToolRequest{}
 	req.Params.Arguments = map[string]any{
-		"url": "https://example.com",
+		"url":  "example.com",
+		"urls": []any{"www.example.com/about"},
 	}
 
 	result, err := s.handleCrawlSite(context.Background(), req)
@@ -92,6 +93,14 @@ func TestCrawlSite_CreatesJob(t *testing.T) {
 	if job.Type != "crawl" {
 		t.Errorf("expected job type %q, got %q", "crawl", job.Type)
 	}
+	var seeds []string
+	if err := json.Unmarshal([]byte(job.SeedURLs), &seeds); err != nil {
+		t.Fatalf("parsing seed URLs: %v", err)
+	}
+	wantSeeds := []string{"https://example.com", "https://www.example.com/about"}
+	if fmt.Sprint(seeds) != fmt.Sprint(wantSeeds) {
+		t.Fatalf("seed URLs = %v, want %v", seeds, wantSeeds)
+	}
 }
 
 func TestCrawlSite_RequiresURL(t *testing.T) {
@@ -117,7 +126,7 @@ func TestCrawlSite_InvalidURL(t *testing.T) {
 
 	req := gomcp.CallToolRequest{}
 	req.Params.Arguments = map[string]any{
-		"url": "not-a-url",
+		"url": "ftp://example.com",
 	}
 
 	result, err := s.handleCrawlSite(context.Background(), req)

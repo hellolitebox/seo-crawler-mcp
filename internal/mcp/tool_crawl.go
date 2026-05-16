@@ -84,9 +84,9 @@ func (s *Server) handleCrawlSite(ctx context.Context, req gomcp.CallToolRequest)
 		return gomcp.NewToolResultError("parameter \"url\" is required"), nil
 	}
 
-	parsed, err := url.ParseRequestURI(rawURL)
-	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
-		return gomcp.NewToolResultError(fmt.Sprintf("invalid URL %q: must be http or https", rawURL)), nil
+	normalizedURL, _, err := normalizeToolURL(rawURL)
+	if err != nil {
+		return gomcp.NewToolResultError(err.Error()), nil
 	}
 
 	// Parse optional scope mode and validate
@@ -140,7 +140,11 @@ func (s *Server) handleCrawlSite(ctx context.Context, req gomcp.CallToolRequest)
 	if rawURLs, ok := args["urls"].([]any); ok {
 		for _, u := range rawURLs {
 			if us, ok := u.(string); ok {
-				additionalURLs = append(additionalURLs, us)
+				normalized, _, err := normalizeToolURL(us)
+				if err != nil {
+					return gomcp.NewToolResultError(err.Error()), nil
+				}
+				additionalURLs = append(additionalURLs, normalized)
 			}
 		}
 	}
@@ -156,7 +160,7 @@ func (s *Server) handleCrawlSite(ctx context.Context, req gomcp.CallToolRequest)
 
 	// If SEO_CRAWLER_HTTP_API is set, delegate to the remote HTTP server.
 	if httpAPI := os.Getenv("SEO_CRAWLER_HTTP_API"); httpAPI != "" {
-		return s.crawlSiteViaHTTP(ctx, rawURL, maxPages, renderMode, additionalURLs)
+		return s.crawlSiteViaHTTP(ctx, normalizedURL, maxPages, renderMode, additionalURLs)
 	}
 
 	if s.db == nil {
@@ -206,7 +210,7 @@ func (s *Server) handleCrawlSite(ctx context.Context, req gomcp.CallToolRequest)
 	}
 
 	// Build seed URLs list
-	seedURLs := []string{rawURL}
+	seedURLs := []string{normalizedURL}
 	seedURLs = append(seedURLs, additionalURLs...)
 	seedJSON, err := json.Marshal(seedURLs)
 	if err != nil {
@@ -222,7 +226,7 @@ func (s *Server) handleCrawlSite(ctx context.Context, req gomcp.CallToolRequest)
 	s.mcpServer.SendNotificationToAllClients(gomcp.MethodNotificationResourcesListChanged, nil)
 
 	// Log the crawl start event
-	s.logInfo(ctx, fmt.Sprintf("Created crawl job %s for %s (maxPages=%d, scope=%s)", job.ID, rawURL, maxPages, scopeMode))
+	s.logInfo(ctx, fmt.Sprintf("Created crawl job %s for %s (maxPages=%d, scope=%s)", job.ID, normalizedURL, maxPages, scopeMode))
 
 	if dryRun {
 		// Discovery-only: fetch seeds, parse links, check robots/sitemaps.

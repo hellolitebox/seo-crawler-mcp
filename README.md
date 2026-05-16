@@ -28,13 +28,36 @@ Single Go binary, SQLite-backed, runs as a single Fly.io machine.
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET`  | `/health` | `{"ok": true}` — used by the Fly health check |
-| `POST` | `/api/crawl` | Start a crawl. Body: `{ url, maxPages?, renderMode? }` → `{ jobId }`. Rate-limited per IP. |
+| `POST` | `/api/crawl` | Start a crawl. Body: `{ url, maxPages?, renderMode? }` → `{ jobId, status }`. Domains without `http://` or `https://` default to HTTPS. Rate-limited per IP. |
 | `GET`  | `/api/jobs?limit=N&offset=N` | Paginated list of crawl jobs (most recent first). |
 | `GET`  | `/api/jobs/{id}` | Job status snapshot. |
 | `DELETE` | `/api/jobs/{id}` | Cancel a running job, or purge a completed/failed one (cascades to all related rows). |
-| `GET`  | `/api/jobs/{id}/report` | Full report JSON. |
+| `GET`  | `/api/jobs/{id}/report?pages_limit=&pages_offset=&issues_limit=&issues_offset=` | Report JSON with paginated page/issue payloads plus global extras consumed by the UI. |
+| `GET`  | `/api/jobs/{id}/pages?limit=&offset=&issue_type=&severity=&url_pattern=` | Paginated page rows for large reports. |
+| `GET`  | `/api/jobs/{id}/page?url=...` | Lazy per-page bundle: page detail, issues, links, images, response codes, security, sitemap, and agent/markdown data. |
+| `GET`  | `/api/jobs/{id}/issues?limit=&offset=&issue_type=&severity=` | Paginated issue rows for large reports. |
 | `GET`  | `/api/jobs/{id}/activity?limit=N` | Recent fetch + phase events (one-shot). |
 | `GET`  | `/api/jobs/{id}/stream` | **Server-Sent Events** — pushes `status`, `activity` and `done` events while the crawl runs. |
+
+## MCP surface
+
+The same binary still exposes the original stdio MCP server. Tool URL inputs
+match the HTTP API: callers may pass `example.com`, `www.example.com/path`,
+or explicit `http://` / `https://` URLs. Scheme-less domains default to HTTPS;
+unsupported schemes such as `ftp:`, `mailto:`, and `javascript:` are rejected.
+
+| Tool | Purpose |
+|------|---------|
+| `crawl_site` | Start a crawl. Supports `url`, additional `urls`, `scopeMode`, `allowedHosts`, `maxPages`, `maxDepth`, `renderMode`, `respectRobots`, and `dryRun`. When `SEO_CRAWLER_HTTP_API` is set, delegates to the live HTTP API. |
+| `crawl_status` | Return status/counters for a crawl job. |
+| `cancel_crawl` | Cancel a running crawl job. |
+| `get_crawl_summary` | Return high-level summary/counters for a completed crawl. |
+| `get_crawl_results` | Query paginated `pages`, `issues`, `external_links`, or `response_codes`. |
+| `get_link_graph` | Query inbound/outbound/both link edges for a URL ID. |
+| `analyze_url` | Analyze one URL without a full crawl. |
+| `check_redirects` | Fetch a URL and return the redirect chain. |
+| `check_robots_txt` | Fetch and parse the host's `robots.txt`. |
+| `parse_sitemap` | Fetch and parse a sitemap XML. |
 
 ### Render modes
 

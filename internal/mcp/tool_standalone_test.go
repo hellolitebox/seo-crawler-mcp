@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -133,6 +134,40 @@ func TestAnalyzeURL_MissingURL(t *testing.T) {
 	}
 	if !result.IsError {
 		t.Error("expected error for missing URL")
+	}
+}
+
+func TestStandaloneToolsAcceptDomainsWithoutScheme(t *testing.T) {
+	s := NewServer(ServerConfig{})
+
+	tests := []struct {
+		name    string
+		handler func(context.Context, gomcp.CallToolRequest) (*gomcp.CallToolResult, error)
+		wantErr string
+	}{
+		{name: "analyze_url", handler: s.handleAnalyzeURL, wantErr: "fetcher unavailable"},
+		{name: "check_redirects", handler: s.handleCheckRedirects, wantErr: "fetcher unavailable"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := gomcp.CallToolRequest{}
+			req.Params.Arguments = map[string]any{"url": "pipapou.com"}
+			result, err := tt.handler(context.Background(), req)
+			if err != nil {
+				t.Fatalf("handler returned error: %v", err)
+			}
+			if !result.IsError {
+				t.Fatal("expected tool error because test server has no fetcher")
+			}
+			text := fmt.Sprint(result.Content)
+			if !strings.Contains(text, tt.wantErr) {
+				t.Fatalf("error = %s, want to contain %q", text, tt.wantErr)
+			}
+			if strings.Contains(text, "invalid URL") {
+				t.Fatalf("domain without scheme was rejected as invalid: %s", text)
+			}
+		})
 	}
 }
 

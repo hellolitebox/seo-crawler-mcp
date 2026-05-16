@@ -10,8 +10,8 @@ var (
 		gomcp.WithDescription("Start a new site crawl. Returns a job ID for tracking progress."),
 		gomcp.WithReadOnlyHintAnnotation(false),
 		gomcp.WithOpenWorldHintAnnotation(true),
-		gomcp.WithString("url", gomcp.Required(), gomcp.Description("Seed URL to begin crawling")),
-		gomcp.WithArray("urls", gomcp.Description("Additional seed URLs"), gomcp.WithStringItems()),
+		gomcp.WithString("url", gomcp.Required(), gomcp.Description("Seed domain or http(s) URL to begin crawling; domains without a scheme default to https")),
+		gomcp.WithArray("urls", gomcp.Description("Additional seed domains or http(s) URLs; domains without a scheme default to https"), gomcp.WithStringItems()),
 		gomcp.WithString("scopeMode", gomcp.Description("Crawl scope boundary"), gomcp.Enum("registrable_domain", "exact_host", "allowlist")),
 		gomcp.WithArray("allowedHosts", gomcp.Description("Hosts to allow when scopeMode is allowlist"), gomcp.WithStringItems()),
 		gomcp.WithNumber("maxPages", gomcp.Description("Maximum pages to crawl (default 10000)")),
@@ -78,7 +78,7 @@ var (
 		gomcp.WithDescription("Analyze a single URL for SEO issues without a full crawl."),
 		gomcp.WithReadOnlyHintAnnotation(false),
 		gomcp.WithOpenWorldHintAnnotation(true),
-		gomcp.WithString("url", gomcp.Required(), gomcp.Description("URL to analyze")),
+		gomcp.WithString("url", gomcp.Required(), gomcp.Description("Domain or http(s) URL to analyze; domains without a scheme default to https")),
 		gomcp.WithString("renderMode", gomcp.Description("Rendering strategy"), gomcp.Enum("static", "browser")),
 	)
 
@@ -86,7 +86,7 @@ var (
 		gomcp.WithDescription("Follow and report the redirect chain for a URL."),
 		gomcp.WithReadOnlyHintAnnotation(true),
 		gomcp.WithOpenWorldHintAnnotation(true),
-		gomcp.WithString("url", gomcp.Required(), gomcp.Description("URL to check redirects for")),
+		gomcp.WithString("url", gomcp.Required(), gomcp.Description("Domain or http(s) URL to check redirects for; domains without a scheme default to https")),
 		gomcp.WithNumber("maxHops", gomcp.Description("Maximum redirect hops to follow (default 10)")),
 	)
 
@@ -94,7 +94,7 @@ var (
 		gomcp.WithDescription("Fetch and parse robots.txt for a given host."),
 		gomcp.WithReadOnlyHintAnnotation(true),
 		gomcp.WithOpenWorldHintAnnotation(true),
-		gomcp.WithString("url", gomcp.Required(), gomcp.Description("URL whose host's robots.txt to check")),
+		gomcp.WithString("url", gomcp.Required(), gomcp.Description("Domain or http(s) URL whose host's robots.txt to check; domains without a scheme default to https")),
 		gomcp.WithString("userAgent", gomcp.Description("User-agent to test rules against")),
 		gomcp.WithArray("testPaths", gomcp.Description("Paths to test against robots.txt rules"), gomcp.WithStringItems()),
 	)
@@ -103,7 +103,7 @@ var (
 		gomcp.WithDescription("Parse a sitemap XML and return its entries."),
 		gomcp.WithReadOnlyHintAnnotation(true),
 		gomcp.WithOpenWorldHintAnnotation(true),
-		gomcp.WithString("url", gomcp.Required(), gomcp.Description("Sitemap URL to parse")),
+		gomcp.WithString("url", gomcp.Required(), gomcp.Description("Sitemap domain/path or http(s) URL to parse; URLs without a scheme default to https")),
 		gomcp.WithNumber("maxEntries", gomcp.Description("Maximum entries to return (default 10000)")),
 	)
 )

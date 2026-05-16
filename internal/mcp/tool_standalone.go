@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
@@ -55,9 +54,9 @@ func (s *Server) handleAnalyzeURL(ctx context.Context, req gomcp.CallToolRequest
 		return gomcp.NewToolResultError("parameter \"url\" is required"), nil
 	}
 
-	parsed, err := url.Parse(rawURL)
-	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
-		return gomcp.NewToolResultError(fmt.Sprintf("invalid URL %q: must be http or https", rawURL)), nil
+	normalizedURL, _, err := normalizeToolURL(rawURL)
+	if err != nil {
+		return gomcp.NewToolResultError(err.Error()), nil
 	}
 
 	var analyzeJobID string
@@ -89,7 +88,7 @@ func (s *Server) handleAnalyzeURL(ctx context.Context, req gomcp.CallToolRequest
 		if s.config != nil && s.config.AnalyzeJobTTL > 0 {
 			ttl = s.config.AnalyzeJobTTL
 		}
-		job, createErr := s.db.CreateJobWithTTL("analyze", fmt.Sprintf(`{"url":%q}`, rawURL), "[]", ttl)
+		job, createErr := s.db.CreateJobWithTTL("analyze", fmt.Sprintf(`{"url":%q}`, normalizedURL), "[]", ttl)
 		if createErr != nil {
 			return gomcp.NewToolResultError(fmt.Sprintf("creating analyze job: %v", createErr)), nil
 		}
@@ -103,24 +102,24 @@ func (s *Server) handleAnalyzeURL(ctx context.Context, req gomcp.CallToolRequest
 	}
 
 	// Fetch the URL.
-	fetchResult, err := s.fetcher.Fetch(rawURL)
+	fetchResult, err := s.fetcher.Fetch(normalizedURL)
 	if err != nil {
-		msg := fmt.Sprintf("fetching %q: %v", rawURL, err)
+		msg := fmt.Sprintf("fetching %q: %v", normalizedURL, err)
 		finishAnalyzeJob("failed", &msg)
-		return gomcp.NewToolResultError(fmt.Sprintf("fetching %q: %v", rawURL, err)), nil
+		return gomcp.NewToolResultError(fmt.Sprintf("fetching %q: %v", normalizedURL, err)), nil
 	}
 	if fetchResult.Error != nil {
-		msg := fmt.Sprintf("fetching %q: %v", rawURL, fetchResult.Error)
+		msg := fmt.Sprintf("fetching %q: %v", normalizedURL, fetchResult.Error)
 		finishAnalyzeJob("failed", &msg)
-		return gomcp.NewToolResultError(fmt.Sprintf("fetching %q: %v", rawURL, fetchResult.Error)), nil
+		return gomcp.NewToolResultError(fmt.Sprintf("fetching %q: %v", normalizedURL, fetchResult.Error)), nil
 	}
 
 	// Parse HTML.
 	parseResult, err := parser.ParseHTML(fetchResult.Body, fetchResult.FinalURL, fetchResult.ResponseHeaders)
 	if err != nil {
-		msg := fmt.Sprintf("parsing HTML from %q: %v", rawURL, err)
+		msg := fmt.Sprintf("parsing HTML from %q: %v", normalizedURL, err)
 		finishAnalyzeJob("failed", &msg)
-		return gomcp.NewToolResultError(fmt.Sprintf("parsing HTML from %q: %v", rawURL, err)), nil
+		return gomcp.NewToolResultError(fmt.Sprintf("parsing HTML from %q: %v", normalizedURL, err)), nil
 	}
 
 	// Detect issues.
@@ -227,21 +226,21 @@ func (s *Server) handleCheckRedirects(ctx context.Context, req gomcp.CallToolReq
 		return gomcp.NewToolResultError("parameter \"url\" is required"), nil
 	}
 
-	parsed, err := url.Parse(rawURL)
-	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
-		return gomcp.NewToolResultError(fmt.Sprintf("invalid URL %q: must be http or https", rawURL)), nil
+	normalizedURL, _, err := normalizeToolURL(rawURL)
+	if err != nil {
+		return gomcp.NewToolResultError(err.Error()), nil
 	}
 
 	if s.fetcher == nil {
 		return gomcp.NewToolResultError("server not configured: fetcher unavailable"), nil
 	}
 
-	fetchResult, err := s.fetcher.Fetch(rawURL)
+	fetchResult, err := s.fetcher.Fetch(normalizedURL)
 	if err != nil {
-		return gomcp.NewToolResultError(fmt.Sprintf("fetching %q: %v", rawURL, err)), nil
+		return gomcp.NewToolResultError(fmt.Sprintf("fetching %q: %v", normalizedURL, err)), nil
 	}
 	if fetchResult.Error != nil {
-		return gomcp.NewToolResultError(fmt.Sprintf("fetching %q: %v", rawURL, fetchResult.Error)), nil
+		return gomcp.NewToolResultError(fmt.Sprintf("fetching %q: %v", normalizedURL, fetchResult.Error)), nil
 	}
 
 	hops := make([]redirectHopResult, 0, len(fetchResult.RedirectHops))
@@ -255,7 +254,7 @@ func (s *Server) handleCheckRedirects(ctx context.Context, req gomcp.CallToolReq
 	}
 
 	result := redirectResult{
-		OriginalURL:     rawURL,
+		OriginalURL:     normalizedURL,
 		FinalURL:        fetchResult.FinalURL,
 		FinalStatusCode: fetchResult.StatusCode,
 		TotalHops:       len(hops),
@@ -292,9 +291,9 @@ func (s *Server) handleCheckRobotsTxt(ctx context.Context, req gomcp.CallToolReq
 		return gomcp.NewToolResultError("parameter \"url\" is required"), nil
 	}
 
-	parsed, err := url.Parse(rawURL)
-	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
-		return gomcp.NewToolResultError(fmt.Sprintf("invalid URL %q: must be http or https", rawURL)), nil
+	_, parsed, err := normalizeToolURL(rawURL)
+	if err != nil {
+		return gomcp.NewToolResultError(err.Error()), nil
 	}
 
 	userAgent := "*"
@@ -400,9 +399,9 @@ func (s *Server) handleParseSitemap(ctx context.Context, req gomcp.CallToolReque
 		return gomcp.NewToolResultError("parameter \"url\" is required"), nil
 	}
 
-	parsed, err := url.Parse(rawURL)
-	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
-		return gomcp.NewToolResultError(fmt.Sprintf("invalid URL %q: must be http or https", rawURL)), nil
+	normalizedURL, _, err := normalizeToolURL(rawURL)
+	if err != nil {
+		return gomcp.NewToolResultError(err.Error()), nil
 	}
 
 	maxEntries := 10000
@@ -417,13 +416,13 @@ func (s *Server) handleParseSitemap(ctx context.Context, req gomcp.CallToolReque
 		client = &http.Client{}
 	}
 
-	entries, sitemapCount, err := sitemap.FetchAndParse(rawURL, maxEntries, client)
+	entries, sitemapCount, err := sitemap.FetchAndParse(normalizedURL, maxEntries, client)
 	if err != nil {
-		return gomcp.NewToolResultError(fmt.Sprintf("parsing sitemap %q: %v", rawURL, err)), nil
+		return gomcp.NewToolResultError(fmt.Sprintf("parsing sitemap %q: %v", normalizedURL, err)), nil
 	}
 
 	result := sitemapResult{
-		URL:          rawURL,
+		URL:          normalizedURL,
 		TotalEntries: len(entries),
 		SitemapCount: sitemapCount,
 		Entries:      entries,
