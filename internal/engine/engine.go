@@ -1430,7 +1430,7 @@ func (e *Engine) sitemapGapEscalation(ctx context.Context, jobID string) int {
 
 		// Update the page record if browser rendering found more content (lazy loading)
 		if page.ExtractedWordCount > 0 {
-			e.db.Exec(`
+			if _, err := e.db.Exec(`
 				UPDATE pages SET
 					word_count = MAX(COALESCE(word_count, 0), ?),
 					main_content_word_count = MAX(COALESCE(main_content_word_count, 0), ?),
@@ -1455,7 +1455,11 @@ func (e *Engine) sitemapGapEscalation(ctx context.Context, jobID string) int {
 				page.ExtractedWordCount, marshalStringSlice(page.Headings.H6),
 				len(page.Images), marshalImages(page.Images),
 				jobID, kp.urlID,
-			)
+			); err != nil {
+				slog.Warn("engine: sitemap gap: update page failed", "url", kp.url, "err", err)
+			} else if err := e.removeInvalidatedBrowserIssues(jobID, kp.urlID, page); err != nil {
+				slog.Warn("engine: sitemap gap: cleanup stale page issues failed", "url", kp.url, "err", err)
+			}
 		}
 
 		// Build edges from rendered DOM

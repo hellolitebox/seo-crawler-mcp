@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"log"
+	"strings"
 
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/storage"
 )
@@ -19,20 +20,21 @@ const reportExtrasLimit = 50000
 // failure can't fail the whole report.
 func loadReportExtras(ctx context.Context, db *storage.DB, jobID string) map[string]any {
 	out := map[string]any{
-		"external_links":    []any{},
-		"response_codes":    []any{},
-		"robots_directives": []any{},
-		"sitemap_entries":   []any{},
-		"urls":              []any{},
-		"internal_edges":    []any{},
-		"assets":            []any{},
-		"asset_references":  []any{},
-		"redirect_hops":     []any{},
-		"llms_findings":     []any{},
-		"crawl_events":      []any{},
-		"psi_audits":        []any{},
-		"axe_audits":        []any{},
-		"security":          []any{},
+		"external_links":       []any{},
+		"response_codes":       []any{},
+		"robots_directives":    []any{},
+		"sitemap_entries":      []any{},
+		"urls":                 []any{},
+		"internal_edges":       []any{},
+		"assets":               []any{},
+		"asset_references":     []any{},
+		"redirect_hops":        []any{},
+		"llms_findings":        []any{},
+		"crawl_events":         []any{},
+		"psi_audits":           []any{},
+		"axe_audits":           []any{},
+		"security":             []any{},
+		"markdown_negotiation": []any{},
 	}
 
 	if v, err := loadSitemapEntries(ctx, db, jobID); err != nil {
@@ -81,12 +83,18 @@ func loadReportExtras(ctx context.Context, db *storage.DB, jobID string) map[str
 	} else {
 		out["response_codes"] = v
 	}
-	if events, psi, axe, err := loadEventsAndAudits(ctx, db, jobID); err != nil {
+	if events, psi, axe, markdownNegotiation, err := loadEventsAndAudits(ctx, db, jobID); err != nil {
 		log.Printf("report_extras: crawl_events: %v", err)
 	} else {
 		out["crawl_events"] = events
 		out["psi_audits"] = psi
 		out["axe_audits"] = axe
+		out["markdown_negotiation"] = markdownNegotiation
+	}
+	if v, err := loadSecurityHeaders(ctx, db, jobID); err != nil {
+		log.Printf("report_extras: security: %v", err)
+	} else {
+		out["security"] = v
 	}
 
 	return out
@@ -167,7 +175,7 @@ func loadRobotsDirectives(ctx context.Context, db *storage.DB, jobID string) ([]
 	out := []map[string]any{}
 	for rows.Next() {
 		var (
-			id                                  int64
+			id                            int64
 			jid, host, ua, rt, pp, srcURL string
 		)
 		if err := rows.Scan(&id, &jid, &host, &ua, &rt, &pp, &srcURL); err != nil {
@@ -198,22 +206,22 @@ func loadURLs(ctx context.Context, db *storage.DB, jobID string) ([]map[string]a
 	out := []map[string]any{}
 	for rows.Next() {
 		var (
-			id                              int64
+			id                            int64
 			jid, nu, host, status, dv, ca string
-			isInternal                      int64
+			isInternal                    int64
 		)
 		if err := rows.Scan(&id, &jid, &nu, &host, &status, &isInternal, &dv, &ca); err != nil {
 			return nil, err
 		}
 		out = append(out, map[string]any{
-			"id":              id,
-			"job_id":          jid,
-			"normalized_url":  nu,
-			"host":            host,
-			"status":          status,
-			"is_internal":     isInternal,
-			"discovered_via":  dv,
-			"created_at":      ca,
+			"id":             id,
+			"job_id":         jid,
+			"normalized_url": nu,
+			"host":           host,
+			"status":         status,
+			"is_internal":    isInternal,
+			"discovered_via": dv,
+			"created_at":     ca,
 		})
 	}
 	return out, rows.Err()
@@ -233,10 +241,10 @@ func loadAssets(ctx context.Context, db *storage.DB, jobID string) ([]map[string
 	out := []map[string]any{}
 	for rows.Next() {
 		var (
-			id, urlID                       int64
-			jid, urlStr                     string
-			contentType                     sql.NullString
-			statusCode, contentLength       sql.NullInt64
+			id, urlID                 int64
+			jid, urlStr               string
+			contentType               sql.NullString
+			statusCode, contentLength sql.NullInt64
 		)
 		if err := rows.Scan(&id, &jid, &urlID, &contentType, &statusCode, &contentLength, &urlStr); err != nil {
 			return nil, err
@@ -270,7 +278,7 @@ func loadAssetReferences(ctx context.Context, db *storage.DB, jobID string) ([]m
 	out := []map[string]any{}
 	for rows.Next() {
 		var (
-			id, assetURLID, srcURLID    int64
+			id, assetURLID, srcURLID        int64
 			jid, refType, assetURL, pageURL string
 		)
 		if err := rows.Scan(&id, &jid, &assetURLID, &srcURLID, &refType, &assetURL, &pageURL); err != nil {
@@ -310,12 +318,12 @@ func loadEdges(ctx context.Context, db *storage.DB, jobID string) ([]map[string]
 	external := []map[string]any{}
 	for rows.Next() {
 		var (
-			id, srcURLID                       int64
+			id, srcURLID                      int64
 			jid, sk, rt, dm, declared, srcURL string
-			normTargetID, finalTargetID        sql.NullInt64
-			relFlags, anchor                   sql.NullString
-			isInternal                         int64
-			targetStatus                       sql.NullInt64
+			normTargetID, finalTargetID       sql.NullInt64
+			relFlags, anchor                  sql.NullString
+			isInternal                        int64
+			targetStatus                      sql.NullInt64
 		)
 		if err := rows.Scan(&id, &jid, &srcURLID, &normTargetID, &sk, &rt, &relFlags, &dm,
 			&anchor, &isInternal, &declared, &finalTargetID, &targetStatus, &srcURL); err != nil {
@@ -400,9 +408,9 @@ func loadLlmsFindings(ctx context.Context, db *storage.DB, jobID string) ([]map[
 	out := []map[string]any{}
 	for rows.Next() {
 		var (
-			id                                  int64
-			jid, host                           string
-			present                             int64
+			id                                int64
+			jid, host                         string
+			present                           int64
 			rawContent, sectionsJSON, refURLs sql.NullString
 		)
 		if err := rows.Scan(&id, &jid, &host, &present, &rawContent, &sectionsJSON, &refURLs); err != nil {
@@ -449,11 +457,11 @@ func loadResponseCodes(ctx context.Context, db *storage.DB, jobID string) ([]map
 	out := []map[string]any{}
 	for rows.Next() {
 		var (
-			id, fetchSeq, redirectHops              int64
-			requestedURL, httpMethod, fetchKind     string
-			renderMode, fetchedAt                   string
-			statusCode, ttfb, bodySize              sql.NullInt64
-			contentType, contentEncoding, headers   sql.NullString
+			id, fetchSeq, redirectHops            int64
+			requestedURL, httpMethod, fetchKind   string
+			renderMode, fetchedAt                 string
+			statusCode, ttfb, bodySize            sql.NullInt64
+			contentType, contentEncoding, headers sql.NullString
 		)
 		if err := rows.Scan(&id, &fetchSeq, &requestedURL, &statusCode, &redirectHops,
 			&ttfb, &bodySize, &contentType, &contentEncoding, &headers,
@@ -480,28 +488,121 @@ func loadResponseCodes(ctx context.Context, db *storage.DB, jobID string) ([]map
 	return out, rows.Err()
 }
 
+var securityHeaderNames = []string{
+	"strict-transport-security",
+	"content-security-policy",
+	"x-content-type-options",
+	"x-frame-options",
+	"referrer-policy",
+	"x-xss-protection",
+	"permissions-policy",
+}
+
+func loadSecurityHeaders(ctx context.Context, db *storage.DB, jobID string) ([]map[string]any, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT u.normalized_url, f.status_code, f.response_headers_json
+		FROM fetches f JOIN urls u ON u.id = f.requested_url_id
+		WHERE f.job_id = ? AND f.fetch_kind = 'page'
+		ORDER BY f.id ASC LIMIT ?`, jobID, reportExtrasLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []map[string]any{}
+	for rows.Next() {
+		var (
+			urlValue    string
+			statusCode  sql.NullInt64
+			headersJSON sql.NullString
+		)
+		if err := rows.Scan(&urlValue, &statusCode, &headersJSON); err != nil {
+			return nil, err
+		}
+		headers := buildSecurityHeaderSnapshot(headersJSON)
+		out = append(out, map[string]any{
+			"url":        urlValue,
+			"statusCode": nullInt64(statusCode),
+			"headers":    headers,
+		})
+	}
+	return out, rows.Err()
+}
+
+func buildSecurityHeaderSnapshot(headersJSON sql.NullString) map[string]map[string]any {
+	snapshot := map[string]map[string]any{}
+	for _, name := range securityHeaderNames {
+		snapshot[name] = map[string]any{
+			"present": false,
+			"value":   "",
+		}
+	}
+	if !headersJSON.Valid || strings.TrimSpace(headersJSON.String) == "" {
+		return snapshot
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal([]byte(headersJSON.String), &raw); err != nil {
+		return snapshot
+	}
+
+	normalized := map[string]string{}
+	for key, value := range raw {
+		normalized[strings.ToLower(key)] = headerValueString(value)
+	}
+	for _, name := range securityHeaderNames {
+		if value, ok := normalized[name]; ok {
+			snapshot[name] = map[string]any{
+				"present": strings.TrimSpace(value) != "",
+				"value":   value,
+			}
+		}
+	}
+	return snapshot
+}
+
+func headerValueString(value any) string {
+	switch v := value.(type) {
+	case string:
+		return v
+	case []any:
+		parts := make([]string, 0, len(v))
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				parts = append(parts, s)
+			}
+		}
+		return strings.Join(parts, ", ")
+	case []string:
+		return strings.Join(v, ", ")
+	default:
+		return ""
+	}
+}
+
 // loadEventsAndAudits reads crawl_events and splits psi/axe events into their
 // own arrays (matching the legacy report shape).
-func loadEventsAndAudits(ctx context.Context, db *storage.DB, jobID string) ([]map[string]any, []map[string]any, []map[string]any, error) {
+func loadEventsAndAudits(ctx context.Context, db *storage.DB, jobID string) ([]map[string]any, []map[string]any, []map[string]any, []map[string]any, error) {
 	rows, err := db.QueryContext(ctx, `
 		SELECT id, job_id, timestamp, event_type, details_json, url
 		FROM crawl_events WHERE job_id = ? ORDER BY id ASC LIMIT ?`, jobID, reportExtrasLimit)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	defer rows.Close()
 
 	events := []map[string]any{}
 	psi := []map[string]any{}
 	axe := []map[string]any{}
+	markdownNegotiation := []map[string]any{}
 	for rows.Next() {
 		var (
-			id                          int64
-			jid, ts, eventType        string
-			detailsJSON, urlValue     sql.NullString
+			id                    int64
+			jid, ts, eventType    string
+			detailsJSON, urlValue sql.NullString
 		)
 		if err := rows.Scan(&id, &jid, &ts, &eventType, &detailsJSON, &urlValue); err != nil {
-			return nil, nil, nil, err
+			return nil, nil, nil, nil, err
 		}
 		details := decodeJSONField(detailsJSON)
 		urlPtr := nullString(urlValue)
@@ -521,6 +622,13 @@ func loadEventsAndAudits(ctx context.Context, db *storage.DB, jobID string) ([]m
 				}
 				axe = append(axe, m)
 			}
+		case "markdown_negotiation":
+			if m, ok := details.(map[string]any); ok {
+				m["id"] = id
+				m["job_id"] = jid
+				m["timestamp"] = ts
+				markdownNegotiation = append(markdownNegotiation, m)
+			}
 		default:
 			events = append(events, map[string]any{
 				"id":         id,
@@ -532,5 +640,5 @@ func loadEventsAndAudits(ctx context.Context, db *storage.DB, jobID string) ([]m
 			})
 		}
 	}
-	return events, psi, axe, rows.Err()
+	return events, psi, axe, markdownNegotiation, rows.Err()
 }

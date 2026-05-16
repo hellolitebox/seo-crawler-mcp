@@ -70,24 +70,25 @@ func (s *Server) handleJobPageBundle(w http.ResponseWriter, r *http.Request, job
 	sitemapEntries := loadPageSitemapEntries(ctx, s.db, jobID, urlRow.NormalizedURL)
 	llms := loadPageLlmsFindings(ctx, s.db, jobID, urlRow.Host)
 	responseCodes := loadPageResponseCodes(ctx, s.db, jobID, urlRow.ID)
+	security := loadPageSecurityHeaders(ctx, s.db, jobID, urlRow.ID)
 	mdNeg := loadPageMarkdownNegotiation(ctx, s.db, jobID, urlRow.NormalizedURL)
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"url":               urlRow.NormalizedURL,
-		"page":              pagePayload,
-		"issues":            issues,
-		"inbound_edges":     inboundEdges,
-		"outbound_edges":    outboundEdges,
-		"outbound_external": outboundExternal,
-		"asset_references":  assetRefs,
-		"assets":            assets,
-		"redirect_hops":     redirectHops,
-		"psi_audits":        psi,
-		"axe_audits":        axe,
-		"sitemap_entries":   sitemapEntries,
-		"llms_findings":     llms,
-		"response_codes":    responseCodes,
-		"security":          []any{},
+		"url":                  urlRow.NormalizedURL,
+		"page":                 pagePayload,
+		"issues":               issues,
+		"inbound_edges":        inboundEdges,
+		"outbound_edges":       outboundEdges,
+		"outbound_external":    outboundExternal,
+		"asset_references":     assetRefs,
+		"assets":               assets,
+		"redirect_hops":        redirectHops,
+		"psi_audits":           psi,
+		"axe_audits":           axe,
+		"sitemap_entries":      sitemapEntries,
+		"llms_findings":        llms,
+		"response_codes":       responseCodes,
+		"security":             security,
 		"markdown_negotiation": mdNeg,
 	})
 }
@@ -229,7 +230,7 @@ func loadPageAssets(ctx context.Context, db *storage.DB, jobID string, pageURLID
 	assetURLIDs := map[int64]struct{}{}
 	for rows.Next() {
 		var (
-			id, assetURLID, srcURLID         int64
+			id, assetURLID, srcURLID        int64
 			jid, refType, assetURL, pageURL string
 		)
 		if err := rows.Scan(&id, &jid, &assetURLID, &srcURLID, &refType, &assetURL, &pageURL); err != nil {
@@ -440,6 +441,37 @@ func loadPageLlmsFindings(ctx context.Context, db *storage.DB, jobID, host strin
 			"raw_content":     nullString(rawContent),
 			"sections":        decodeJSONField(sectionsJSON),
 			"referenced_urls": decodeJSONField(refURLs),
+		})
+	}
+	return out
+}
+
+func loadPageSecurityHeaders(ctx context.Context, db *storage.DB, jobID string, urlID int64) []map[string]any {
+	rows, err := db.QueryContext(ctx, `
+		SELECT u.normalized_url, f.status_code, f.response_headers_json
+		FROM fetches f JOIN urls u ON u.id = f.requested_url_id
+		WHERE f.job_id = ? AND f.requested_url_id = ? AND f.fetch_kind = 'page'
+		ORDER BY f.id ASC`,
+		jobID, urlID)
+	if err != nil {
+		return []map[string]any{}
+	}
+	defer rows.Close()
+
+	out := []map[string]any{}
+	for rows.Next() {
+		var (
+			urlValue    string
+			statusCode  sql.NullInt64
+			headersJSON sql.NullString
+		)
+		if err := rows.Scan(&urlValue, &statusCode, &headersJSON); err != nil {
+			continue
+		}
+		out = append(out, map[string]any{
+			"url":        urlValue,
+			"statusCode": nullInt64(statusCode),
+			"headers":    buildSecurityHeaderSnapshot(headersJSON),
 		})
 	}
 	return out
