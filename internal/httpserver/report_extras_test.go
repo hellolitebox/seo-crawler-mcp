@@ -46,8 +46,25 @@ func TestLoadReportExtrasExposesSecurityAndMarkdownNegotiation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("inserting markdown event: %v", err)
 	}
+	_, err = db.Exec(`
+		INSERT INTO crawl_events (job_id, event_type, details_json)
+		VALUES (?, 'metric', ?)
+	`, jobID, `{"name":"crawl_pipeline","durationMs":42,"pagesCrawled":3}`)
+	if err != nil {
+		t.Fatalf("inserting metric event: %v", err)
+	}
 
 	extras := loadReportExtras(context.Background(), db, jobID)
+	for _, key := range []string{
+		"external_links", "response_codes", "robots_directives", "sitemap_entries", "urls",
+		"internal_edges", "assets", "asset_references", "redirect_hops", "llms_findings",
+		"crawl_events", "metrics", "psi_audits", "axe_audits", "security",
+		"markdown_negotiation", "url_clusters", "url_variant_issues",
+	} {
+		if _, ok := extras[key]; !ok {
+			t.Fatalf("report extras missing contract key %q", key)
+		}
+	}
 
 	security, ok := extras["security"].([]map[string]any)
 	if !ok {
@@ -70,6 +87,18 @@ func TestLoadReportExtrasExposesSecurityAndMarkdownNegotiation(t *testing.T) {
 	}
 	if len(markdown) != 1 || markdown[0]["totalChecked"].(float64) != 1 {
 		t.Fatalf("unexpected markdown negotiation payload: %#v", markdown)
+	}
+	metrics, ok := extras["metrics"].([]map[string]any)
+	if !ok {
+		t.Fatalf("metrics has type %T", extras["metrics"])
+	}
+	if len(metrics) != 1 || metrics[0]["name"] != "crawl_pipeline" || metrics[0]["durationMs"].(float64) != 42 {
+		t.Fatalf("unexpected metrics payload: %#v", metrics)
+	}
+	for _, event := range extras["crawl_events"].([]map[string]any) {
+		if event["event_type"] == "metric" {
+			t.Fatalf("metric event leaked into crawl_events: %#v", event)
+		}
 	}
 }
 

@@ -25,8 +25,11 @@ type tomlConfig struct {
 	PerHostConcurrency int `toml:"per_host_concurrency"`
 	GlobalConcurrency  int `toml:"global_concurrency"`
 
-	MaxPages int `toml:"max_pages"`
-	MaxDepth int `toml:"max_depth"`
+	MaxPages          int    `toml:"max_pages"`
+	MaxDepth          int    `toml:"max_depth"`
+	MaxDiscoveredURLs int    `toml:"max_discovered_urls"`
+	MaxOnboardedHosts int    `toml:"max_onboarded_hosts"`
+	MaxCrawlDuration  string `toml:"max_crawl_duration"`
 
 	RenderMode           string   `toml:"render_mode"`
 	RenderWaitMs         int      `toml:"render_wait_ms"`
@@ -132,6 +135,19 @@ func LoadFromFile(path string) (*Config, error) {
 	}
 	if tc.MaxDepth != 0 {
 		cfg.MaxDepth = tc.MaxDepth
+	}
+	if tc.MaxDiscoveredURLs != 0 {
+		cfg.MaxDiscoveredURLs = tc.MaxDiscoveredURLs
+	}
+	if tc.MaxOnboardedHosts != 0 {
+		cfg.MaxOnboardedHosts = tc.MaxOnboardedHosts
+	}
+	if tc.MaxCrawlDuration != "" {
+		d, err := time.ParseDuration(tc.MaxCrawlDuration)
+		if err != nil {
+			return nil, fmt.Errorf("parsing max_crawl_duration %q: %w", tc.MaxCrawlDuration, err)
+		}
+		cfg.MaxCrawlDuration = d
 	}
 	if tc.RenderMode != "" {
 		cfg.RenderMode = RenderMode(tc.RenderMode)
@@ -258,6 +274,21 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("SEO_CRAWLER_MAX_DEPTH"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			cfg.MaxDepth = n
+		}
+	}
+	if v := os.Getenv("SEO_CRAWLER_MAX_DISCOVERED_URLS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.MaxDiscoveredURLs = n
+		}
+	}
+	if v := os.Getenv("SEO_CRAWLER_MAX_ONBOARDED_HOSTS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.MaxOnboardedHosts = n
+		}
+	}
+	if v := os.Getenv("SEO_CRAWLER_MAX_CRAWL_DURATION"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.MaxCrawlDuration = d
 		}
 	}
 	if v := os.Getenv("SEO_CRAWLER_REQUEST_TIMEOUT"); v != "" {

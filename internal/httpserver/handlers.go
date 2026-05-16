@@ -81,15 +81,18 @@ func (s *Server) handleCrawl(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 
 	var body struct {
-		URL           string   `json:"url"`
-		URLs          []string `json:"urls"`
-		ScopeMode     string   `json:"scopeMode"`
-		AllowedHosts  []string `json:"allowedHosts"`
-		MaxPages      int      `json:"maxPages"`
-		MaxDepth      int      `json:"maxDepth"`
-		RenderMode    string   `json:"renderMode"`
-		RespectRobots *bool    `json:"respectRobots"`
-		DryRun        bool     `json:"dryRun"`
+		URL               string   `json:"url"`
+		URLs              []string `json:"urls"`
+		ScopeMode         string   `json:"scopeMode"`
+		AllowedHosts      []string `json:"allowedHosts"`
+		MaxPages          int      `json:"maxPages"`
+		MaxDepth          int      `json:"maxDepth"`
+		MaxDiscoveredURLs int      `json:"maxDiscoveredUrls"`
+		MaxOnboardedHosts int      `json:"maxOnboardedHosts"`
+		MaxCrawlDuration  string   `json:"maxCrawlDuration"`
+		RenderMode        string   `json:"renderMode"`
+		RespectRobots     *bool    `json:"respectRobots"`
+		DryRun            bool     `json:"dryRun"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
@@ -159,6 +162,31 @@ func (s *Server) handleCrawl(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.MaxDepth > 0 {
 		maxDepth = body.MaxDepth
+	}
+	maxDiscoveredURLs := 100000
+	if s.config != nil && s.config.MaxDiscoveredURLs > 0 {
+		maxDiscoveredURLs = s.config.MaxDiscoveredURLs
+	}
+	if body.MaxDiscoveredURLs > 0 {
+		maxDiscoveredURLs = body.MaxDiscoveredURLs
+	}
+	maxOnboardedHosts := 50
+	if s.config != nil && s.config.MaxOnboardedHosts > 0 {
+		maxOnboardedHosts = s.config.MaxOnboardedHosts
+	}
+	if body.MaxOnboardedHosts > 0 {
+		maxOnboardedHosts = body.MaxOnboardedHosts
+	}
+	maxCrawlDuration := "30m0s"
+	if s.config != nil && s.config.MaxCrawlDuration > 0 {
+		maxCrawlDuration = s.config.MaxCrawlDuration.String()
+	}
+	if body.MaxCrawlDuration != "" {
+		if _, err := time.ParseDuration(body.MaxCrawlDuration); err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid maxCrawlDuration %q", body.MaxCrawlDuration))
+			return
+		}
+		maxCrawlDuration = body.MaxCrawlDuration
 	}
 
 	scopeMode := "registrable_domain"
@@ -241,13 +269,16 @@ func (s *Server) handleCrawl(w http.ResponseWriter, r *http.Request) {
 	maxConcurrent := s.maxConcurrentCrawls()
 
 	crawlConfig := map[string]any{
-		"scopeMode":     scopeMode,
-		"allowedHosts":  allowedHosts,
-		"maxPages":      maxPages,
-		"maxDepth":      maxDepth,
-		"renderMode":    renderMode,
-		"respectRobots": respectRobots,
-		"dryRun":        body.DryRun,
+		"scopeMode":         scopeMode,
+		"allowedHosts":      allowedHosts,
+		"maxPages":          maxPages,
+		"maxDepth":          maxDepth,
+		"maxDiscoveredUrls": maxDiscoveredURLs,
+		"maxOnboardedHosts": maxOnboardedHosts,
+		"maxCrawlDuration":  maxCrawlDuration,
+		"renderMode":        renderMode,
+		"respectRobots":     respectRobots,
+		"dryRun":            body.DryRun,
 	}
 	configJSON, err := json.Marshal(crawlConfig)
 	if err != nil {

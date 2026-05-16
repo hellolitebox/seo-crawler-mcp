@@ -54,6 +54,15 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.MaxDepth != 50 {
 		t.Errorf("MaxDepth = %d, want 50", cfg.MaxDepth)
 	}
+	if cfg.MaxDiscoveredURLs != 100000 {
+		t.Errorf("MaxDiscoveredURLs = %d, want 100000", cfg.MaxDiscoveredURLs)
+	}
+	if cfg.MaxOnboardedHosts != 50 {
+		t.Errorf("MaxOnboardedHosts = %d, want 50", cfg.MaxOnboardedHosts)
+	}
+	if cfg.MaxCrawlDuration != 30*time.Minute {
+		t.Errorf("MaxCrawlDuration = %v, want 30m", cfg.MaxCrawlDuration)
+	}
 
 	// Rendering
 	if cfg.RenderMode != RenderModeHybrid {

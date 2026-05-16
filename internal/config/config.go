@@ -60,8 +60,11 @@ type Config struct {
 	GlobalConcurrency  int `json:"globalConcurrency"`
 
 	// Crawl limits
-	MaxPages int `json:"maxPages"`
-	MaxDepth int `json:"maxDepth"`
+	MaxPages          int           `json:"maxPages"`
+	MaxDepth          int           `json:"maxDepth"`
+	MaxDiscoveredURLs int           `json:"maxDiscoveredUrls"`
+	MaxOnboardedHosts int           `json:"maxOnboardedHosts"`
+	MaxCrawlDuration  time.Duration `json:"maxCrawlDuration"`
 
 	// Rendering
 	RenderMode           RenderMode    `json:"renderMode"`
@@ -101,10 +104,10 @@ type Config struct {
 	MaxSitemapEntries int `json:"maxSitemapEntries"`
 
 	// Resources
-	MaxQueueMemoryMB int           `json:"maxQueueMemoryMB"`
-	DBPath           string        `json:"dbPath"`
+	MaxQueueMemoryMB int    `json:"maxQueueMemoryMB"`
+	DBPath           string `json:"dbPath"`
 	// MaxJobAge is the maximum age of completed jobs before purge. 0 means disabled.
-	MaxJobAge        time.Duration `json:"maxJobAge"`
+	MaxJobAge time.Duration `json:"maxJobAge"`
 
 	// PageSpeed Insights API key (empty = skip PSI audits)
 	PSIAPIKey string `json:"psiApiKey"`
@@ -155,8 +158,11 @@ func DefaultConfig() Config {
 		PerHostConcurrency: 2,
 		GlobalConcurrency:  8,
 
-		MaxPages: 10000,
-		MaxDepth: 50,
+		MaxPages:          10000,
+		MaxDepth:          50,
+		MaxDiscoveredURLs: 100000,
+		MaxOnboardedHosts: 50,
+		MaxCrawlDuration:  30 * time.Minute,
 
 		RenderMode:           RenderModeHybrid,
 		RenderWaitMs:         2000,
@@ -201,6 +207,5 @@ func DefaultConfig() Config {
 		MaxJobAge:        0,
 
 		URLGroups: []URLGroupConfig{},
-
 	}
 }

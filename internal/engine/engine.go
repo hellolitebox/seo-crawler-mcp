@@ -71,10 +71,14 @@ type Engine struct {
 }
 
 type hostOnboardingState struct {
-	mu        sync.Mutex
-	seen      map[string]bool
-	onboarder *crawl.HostOnboarder
-	userAgent string
+	mu                sync.Mutex
+	seen              map[string]bool
+	queuedDiscovered  int
+	maxDiscoveredURLs int
+	maxHosts          int
+	budgetEvents      map[string]bool
+	onboarder         *crawl.HostOnboarder
+	userAgent         string
 }
 
 // New creates a new crawl engine.
@@ -261,6 +265,41 @@ func (e *Engine) emitPhase(jobID, phase, message string) {
 	slog.Info("engine: phase", "phase", phase, "message", message, "job_id", jobID)
 }
 
+func (e *Engine) emitMetric(jobID, name string, fields map[string]any) {
+	if e.db == nil {
+		return
+	}
+	payload := map[string]any{"name": name}
+	for k, v := range fields {
+		payload[k] = v
+	}
+	detailsJSON, err := json.Marshal(payload)
+	if err != nil {
+		slog.Error("engine: metric marshal failed", "err", err, "job_id", jobID, "metric", name)
+		return
+	}
+	details := string(detailsJSON)
+	if _, err := e.db.InsertEvent(jobID, "metric", &details, nil); err != nil {
+		slog.Error("engine: metric insert failed", "err", err, "job_id", jobID, "metric", name)
+	}
+}
+
+func (e *Engine) startMetricTimer(jobID, name string, fields map[string]any) func(map[string]any) {
+	started := time.Now()
+	return func(extra map[string]any) {
+		payload := map[string]any{
+			"durationMs": time.Since(started).Milliseconds(),
+		}
+		for k, v := range fields {
+			payload[k] = v
+		}
+		for k, v := range extra {
+			payload[k] = v
+		}
+		e.emitMetric(jobID, name, payload)
+	}
+}
+
 // RunCrawl executes a full crawl job. Blocks until complete or cancelled.
 //
 // Pipeline phases: startJob -> seedFrontier -> onboardSeedHosts ->
@@ -278,18 +317,40 @@ func (e *Engine) RunCrawl(ctx context.Context, jobID string) error {
 	if err != nil {
 		return err
 	}
+	completionStatus := "completed"
+	if maxDuration := e.effectiveMaxCrawlDuration(job); maxDuration > 0 {
+		var timeoutCancel context.CancelFunc
+		ctx, timeoutCancel = context.WithTimeout(ctx, maxDuration)
+		defer timeoutCancel()
+	}
+	stopTotal := e.startMetricTimer(jobID, "crawl_total", nil)
+	defer func() {
+		stopTotal(map[string]any{"status": completionStatus})
+	}()
 
 	// Clear cross-job state in shared services before this job populates them.
 	// (e.robotsRules is reset inside onboardSeedHosts; the rate limiter doesn't
 	// reset itself.)
 	e.rateLimiter.Reset()
 
+	stopSeed := e.startMetricTimer(jobID, "seed_frontier", nil)
 	q, seeds, err := e.seedFrontier(jobID, job)
+	stopSeed(nil)
 	if err != nil {
 		return err
 	}
 
-	e.onboardSeedHosts(ctx, jobID, seeds, q)
+	effectiveMaxDiscoveredURLs := e.effectiveMaxDiscoveredURLs(job)
+	effectiveMaxOnboardedHosts := e.effectiveMaxOnboardedHosts(job)
+	e.emitMetric(jobID, "crawl_budget", map[string]any{
+		"maxPages":          e.effectiveMaxPages(job),
+		"maxDepth":          e.effectiveMaxDepth(job),
+		"maxDiscoveredUrls": effectiveMaxDiscoveredURLs,
+		"maxOnboardedHosts": effectiveMaxOnboardedHosts,
+	})
+	stopOnboard := e.startMetricTimer(jobID, "host_onboarding", nil)
+	e.onboardSeedHosts(ctx, jobID, seeds, q, effectiveMaxDiscoveredURLs, effectiveMaxOnboardedHosts)
+	stopOnboard(map[string]any{"queueSize": q.Len()})
 
 	counters := &crawlCounters{}
 	counters.urlsDiscovered.Store(int64(q.Len()))
@@ -302,10 +363,22 @@ func (e *Engine) RunCrawl(ctx context.Context, jobID string) error {
 	effectiveMaxPages := e.effectiveMaxPages(job)
 	effectiveMaxDepth := e.effectiveMaxDepth(job)
 	effectiveRenderMode := e.effectiveRenderMode(job)
-	completionErr := e.runCrawlPipeline(ctx, cancel, jobID, q, counters, effectiveMaxPages, effectiveMaxDepth)
+	stopPipeline := e.startMetricTimer(jobID, "crawl_pipeline", nil)
+	completionErr := e.runCrawlPipeline(ctx, cancel, jobID, q, counters, effectiveMaxPages, effectiveMaxDepth, effectiveMaxDiscoveredURLs)
+	stopPipeline(map[string]any{
+		"pagesCrawled":   counters.pagesCrawled.Load(),
+		"urlsDiscovered": counters.urlsDiscovered.Load(),
+	})
 
 	if completionErr == nil {
-		e.runPostCrawlPhases(ctx, jobID, counters, cancel, effectiveRenderMode, effectiveMaxPages, effectiveMaxDepth)
+		stopPost := e.startMetricTimer(jobID, "post_crawl", nil)
+		e.runPostCrawlPhases(ctx, jobID, counters, cancel, effectiveRenderMode, effectiveMaxPages, effectiveMaxDepth, effectiveMaxDiscoveredURLs)
+		stopPost(nil)
+	}
+	if completionErr != nil {
+		completionStatus = "failed"
+	} else if ctx.Err() != nil || context.Cause(ctx) != nil {
+		completionStatus = "cancelled"
 	}
 
 	return e.finalizeJob(ctx, jobID, completionErr, counters)
@@ -452,6 +525,41 @@ func (e *Engine) effectiveMaxDepth(job *storage.CrawlJob) int {
 	return maxDepth
 }
 
+func (e *Engine) effectiveMaxDiscoveredURLs(job *storage.CrawlJob) int {
+	maxURLs := e.config.MaxDiscoveredURLs
+	var jobCfg struct {
+		MaxDiscoveredURLs int `json:"maxDiscoveredUrls"`
+	}
+	if err := json.Unmarshal([]byte(job.ConfigJSON), &jobCfg); err == nil && jobCfg.MaxDiscoveredURLs > 0 {
+		maxURLs = jobCfg.MaxDiscoveredURLs
+	}
+	return maxURLs
+}
+
+func (e *Engine) effectiveMaxOnboardedHosts(job *storage.CrawlJob) int {
+	maxHosts := e.config.MaxOnboardedHosts
+	var jobCfg struct {
+		MaxOnboardedHosts int `json:"maxOnboardedHosts"`
+	}
+	if err := json.Unmarshal([]byte(job.ConfigJSON), &jobCfg); err == nil && jobCfg.MaxOnboardedHosts > 0 {
+		maxHosts = jobCfg.MaxOnboardedHosts
+	}
+	return maxHosts
+}
+
+func (e *Engine) effectiveMaxCrawlDuration(job *storage.CrawlJob) time.Duration {
+	maxDuration := e.config.MaxCrawlDuration
+	var jobCfg struct {
+		MaxCrawlDuration string `json:"maxCrawlDuration"`
+	}
+	if err := json.Unmarshal([]byte(job.ConfigJSON), &jobCfg); err == nil && jobCfg.MaxCrawlDuration != "" {
+		if d, parseErr := time.ParseDuration(jobCfg.MaxCrawlDuration); parseErr == nil {
+			maxDuration = d
+		}
+	}
+	return maxDuration
+}
+
 func (e *Engine) effectiveRenderMode(job *storage.CrawlJob) config.RenderMode {
 	renderMode := e.config.RenderMode
 	var jobCfg struct {
@@ -467,7 +575,7 @@ func (e *Engine) effectiveRenderMode(job *storage.CrawlJob) config.RenderMode {
 // distinct seed host, populates e.robotsRules and per-host crawl-delay
 // in the rate limiter, and pushes any sitemap-discovered URLs onto the
 // frontier (subject to scope and robots checks).
-func (e *Engine) onboardSeedHosts(ctx context.Context, jobID string, seeds []string, q *frontier.Queue) {
+func (e *Engine) onboardSeedHosts(ctx context.Context, jobID string, seeds []string, q *frontier.Queue, maxDiscoveredURLs int, maxOnboardedHosts int) {
 	e.robotsRules = map[string]*robots.RobotsFile{}
 
 	userAgent := e.config.UserAgent
@@ -484,9 +592,13 @@ func (e *Engine) onboardSeedHosts(ctx context.Context, jobID string, seeds []str
 	}
 	onboarder := crawl.NewHostOnboarderWithPolicy(e.fetcher, e.db, sitemapMax, userAgent, robotsPolicy)
 	e.hostOnboarding = &hostOnboardingState{
-		seen:      map[string]bool{},
-		onboarder: onboarder,
-		userAgent: userAgent,
+		seen:              map[string]bool{},
+		queuedDiscovered:  q.Len(),
+		maxDiscoveredURLs: maxDiscoveredURLs,
+		maxHosts:          maxOnboardedHosts,
+		budgetEvents:      map[string]bool{},
+		onboarder:         onboarder,
+		userAgent:         userAgent,
 	}
 
 	for _, seedURL := range seeds {
@@ -498,17 +610,25 @@ func (e *Engine) onboardSeedHosts(ctx context.Context, jobID string, seeds []str
 	}
 }
 
-func (e *Engine) ensureHostOnboarded(ctx context.Context, jobID, hostWithPort, scheme string, q *frontier.Queue, sitemapDepth int) {
+func (e *Engine) ensureHostOnboarded(ctx context.Context, jobID, hostWithPort, scheme string, q *frontier.Queue, sitemapDepth int) bool {
 	state := e.hostOnboarding
 	if state == nil || state.onboarder == nil || hostWithPort == "" || scheme == "" {
-		return
+		return true
 	}
 
 	key := strings.ToLower(scheme + "://" + hostWithPort)
 	state.mu.Lock()
 	if state.seen[key] {
 		state.mu.Unlock()
-		return
+		return true
+	}
+	if state.maxHosts > 0 && len(state.seen) >= state.maxHosts {
+		state.mu.Unlock()
+		e.recordBudgetHit(jobID, "max_onboarded_hosts", map[string]any{
+			"host":  hostWithPort,
+			"limit": state.maxHosts,
+		})
+		return false
 	}
 	state.seen[key] = true
 	state.mu.Unlock()
@@ -516,7 +636,7 @@ func (e *Engine) ensureHostOnboarded(ctx context.Context, jobID, hostWithPort, s
 	info, onboardErr := state.onboarder.OnboardHost(ctx, jobID, hostWithPort, scheme)
 	if onboardErr != nil {
 		slog.Warn("engine: onboarding host failed", "host", hostWithPort, "err", onboardErr)
-		return
+		return true
 	}
 
 	hostOnly := hostnameFromHost(hostWithPort)
@@ -538,6 +658,7 @@ func (e *Engine) ensureHostOnboarded(ctx context.Context, jobID, hostWithPort, s
 	eventDetails := fmt.Sprintf(`{"host":%q,"sitemapEntries":%d,"crawlDelay":%q}`,
 		hostWithPort, len(info.SitemapEntries), info.CrawlDelay.String())
 	e.db.InsertEvent(jobID, "host_onboarded", &eventDetails, nil)
+	return true
 }
 
 func (e *Engine) enqueueSitemapEntry(ctx context.Context, jobID string, entry sitemap.Entry, q *frontier.Queue, depth int, userAgent string) {
@@ -555,9 +676,14 @@ func (e *Engine) enqueueSitemapEntry(ctx context.Context, jobID string, entry si
 	if e.scopeChecker != nil && !e.scopeChecker.IsInScope(normalized) {
 		return
 	}
+	if !e.reserveDiscoveredURL(jobID, "sitemap") {
+		return
+	}
 
 	if parsedURL.Host != "" {
-		e.ensureHostOnboarded(ctx, jobID, parsedURL.Host, parsedURL.Scheme, q, depth)
+		if !e.ensureHostOnboarded(ctx, jobID, parsedURL.Host, parsedURL.Scheme, q, depth) {
+			return
+		}
 	}
 
 	targetHost := parsedURL.Hostname()
@@ -584,6 +710,41 @@ func (e *Engine) enqueueSitemapEntry(ctx context.Context, jobID string, entry si
 	}
 }
 
+func (e *Engine) reserveDiscoveredURL(jobID string, source string) bool {
+	state := e.hostOnboarding
+	if state == nil || state.maxDiscoveredURLs <= 0 {
+		return true
+	}
+	state.mu.Lock()
+	if state.queuedDiscovered >= state.maxDiscoveredURLs {
+		limit := state.maxDiscoveredURLs
+		state.mu.Unlock()
+		e.recordBudgetHit(jobID, "max_discovered_urls", map[string]any{
+			"source": source,
+			"limit":  limit,
+		})
+		return false
+	}
+	state.queuedDiscovered++
+	state.mu.Unlock()
+	return true
+}
+
+func (e *Engine) recordBudgetHit(jobID, reason string, fields map[string]any) {
+	state := e.hostOnboarding
+	if state != nil {
+		state.mu.Lock()
+		if state.budgetEvents[reason] {
+			state.mu.Unlock()
+			return
+		}
+		state.budgetEvents[reason] = true
+		state.mu.Unlock()
+	}
+	fields["reason"] = reason
+	e.emitMetric(jobID, "crawl_budget_hit", fields)
+}
+
 func hostnameFromHost(hostWithPort string) string {
 	if host, _, err := net.SplitHostPort(hostWithPort); err == nil {
 		return host
@@ -606,6 +767,7 @@ func (e *Engine) runCrawlPipeline(
 	counters *crawlCounters,
 	maxPages int,
 	maxDepth int,
+	maxDiscoveredURLs int,
 ) error {
 	// Crawl-trap detection: tracks unique query strings per path so the
 	// trap heuristic counts variants (not raw discoveries) and emits at
@@ -721,7 +883,7 @@ func (e *Engine) runCrawlPipeline(
 			defer recoverWorker(cancel, "parser")
 			defer parserWg.Done()
 			for fr := range fetchResults {
-				pr := e.processParseResult(ctx, jobID, fr, q, &counters.pagesCrawled, &counters.urlsDiscovered, queryVariants, maxPages, maxDepth)
+				pr := e.processParseResult(ctx, jobID, fr, q, &counters.pagesCrawled, &counters.urlsDiscovered, queryVariants, maxPages, maxDepth, maxDiscoveredURLs)
 				counters.issuesFound.Add(int64(len(pr.issues)))
 				select {
 				case persistQueue <- persistItem{
@@ -751,7 +913,11 @@ func (e *Engine) runCrawlPipeline(
 
 				parsedItem, parseErr := url.Parse(item.NormalizedURL)
 				if parseErr == nil {
-					e.ensureHostOnboarded(ctx, jobID, parsedItem.Host, parsedItem.Scheme, q, item.Depth+1)
+					if !e.ensureHostOnboarded(ctx, jobID, parsedItem.Host, parsedItem.Scheme, q, item.Depth+1) {
+						e.db.UpdateURLStatus(item.URLID, "skipped_budget")
+						inFlight.Add(-1)
+						continue
+					}
 				}
 
 				if e.config.RespectRobots {
@@ -880,7 +1046,7 @@ loop:
 //
 // `cancel` is the pipeline's CancelCauseFunc; passed so panic recovers in
 // goroutines spawned here can unwind the whole crawl.
-func (e *Engine) runPostCrawlPhases(ctx context.Context, jobID string, counters *crawlCounters, cancel context.CancelCauseFunc, renderMode config.RenderMode, maxPages int, maxDepth int) {
+func (e *Engine) runPostCrawlPhases(ctx context.Context, jobID string, counters *crawlCounters, cancel context.CancelCauseFunc, renderMode config.RenderMode, maxPages int, maxDepth int, maxDiscoveredURLs int) {
 	// Sitemap gap browser escalation (hybrid/browser mode).
 	if renderMode != config.RenderModeStatic {
 		e.emitPhase(jobID, "sitemap_gap", "checking sitemap URLs missing from crawl (JS render)")
@@ -889,7 +1055,7 @@ func (e *Engine) runPostCrawlPhases(ctx context.Context, jobID string, counters 
 		}
 		if q := e.queueBrowserDiscoveredLinkURLs(jobID, maxDepth); q.Len() > 0 {
 			e.emitPhase(jobID, "browser_discovered_crawl", fmt.Sprintf("crawling %d browser-discovered internal URLs", q.Len()))
-			if err := e.runCrawlPipeline(ctx, cancel, jobID, q, counters, maxPages, maxDepth); err != nil {
+			if err := e.runCrawlPipeline(ctx, cancel, jobID, q, counters, maxPages, maxDepth, maxDiscoveredURLs); err != nil {
 				cancel(err)
 				return
 			}
@@ -1179,6 +1345,7 @@ func (e *Engine) processParseResult(
 	queryVariants *queryVariantsTracker,
 	maxPages int,
 	maxDepth int,
+	maxDiscoveredURLs int,
 ) parseResult {
 	pr := parseResult{
 		fetchResult: fr,
@@ -1432,12 +1599,17 @@ func (e *Engine) processParseResult(
 		})
 	}
 
-	// Expand frontier with discovered in-scope links
+	// Expand frontier with discovered in-scope links. Internal links that trip
+	// crawl budget guards are also omitted from persisted edge rows so a trap
+	// page cannot flood the URL table before the fetcher has a chance to stop.
+	keptEdges := make([]crawl.DiscoveredEdge, 0, len(pr.edges))
 	for _, edge := range pr.edges {
 		if edge.RelationType != "link" {
+			keptEdges = append(keptEdges, edge)
 			continue
 		}
 		if !edge.IsInternal {
+			keptEdges = append(keptEdges, edge)
 			continue
 		}
 
@@ -1491,12 +1663,33 @@ func (e *Engine) processParseResult(
 		}
 
 		targetHost := parsed.Hostname()
+		reservedDiscovery := false
+		if maxDiscoveredURLs > 0 {
+			for {
+				current := urlsDiscovered.Load()
+				if current >= int64(maxDiscoveredURLs) {
+					e.recordBudgetHit(jobID, "max_discovered_urls", map[string]any{
+						"source": "link",
+						"limit":  maxDiscoveredURLs,
+					})
+					break
+				}
+				if urlsDiscovered.CompareAndSwap(current, current+1) {
+					reservedDiscovery = true
+					break
+				}
+			}
+		} else {
+			urlsDiscovered.Add(1)
+			reservedDiscovery = true
+		}
+		if !reservedDiscovery {
+			continue
+		}
 		urlID, upsertErr := e.db.UpsertURL(jobID, normalized, targetHost, "queued", true, "link")
 		if upsertErr != nil {
 			continue
 		}
-
-		urlsDiscovered.Add(1)
 
 		q.Push(frontier.Item{
 			URLID:         urlID,
@@ -1504,7 +1697,9 @@ func (e *Engine) processParseResult(
 			Host:          targetHost,
 			Depth:         newDepth,
 		})
+		keptEdges = append(keptEdges, edge)
 	}
+	pr.edges = keptEdges
 
 	return pr
 }

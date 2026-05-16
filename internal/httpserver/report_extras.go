@@ -32,6 +32,7 @@ func loadReportExtras(ctx context.Context, db *storage.DB, jobID string) map[str
 		"redirect_hops":        []any{},
 		"llms_findings":        []any{},
 		"crawl_events":         []any{},
+		"metrics":              []any{},
 		"psi_audits":           []any{},
 		"axe_audits":           []any{},
 		"security":             []any{},
@@ -86,10 +87,11 @@ func loadReportExtras(ctx context.Context, db *storage.DB, jobID string) map[str
 	} else {
 		out["response_codes"] = v
 	}
-	if events, psi, axe, markdownNegotiation, err := loadEventsAndAudits(ctx, db, jobID); err != nil {
+	if events, metrics, psi, axe, markdownNegotiation, err := loadEventsAndAudits(ctx, db, jobID); err != nil {
 		log.Printf("report_extras: crawl_events: %v", err)
 	} else {
 		out["crawl_events"] = events
+		out["metrics"] = metrics
 		out["psi_audits"] = psi
 		out["axe_audits"] = axe
 		out["markdown_negotiation"] = markdownNegotiation
@@ -796,16 +798,17 @@ func headerValueString(value any) string {
 
 // loadEventsAndAudits reads crawl_events and splits psi/axe events into their
 // own arrays (matching the legacy report shape).
-func loadEventsAndAudits(ctx context.Context, db *storage.DB, jobID string) ([]map[string]any, []map[string]any, []map[string]any, []map[string]any, error) {
+func loadEventsAndAudits(ctx context.Context, db *storage.DB, jobID string) ([]map[string]any, []map[string]any, []map[string]any, []map[string]any, []map[string]any, error) {
 	rows, err := db.QueryContext(ctx, `
 		SELECT id, job_id, timestamp, event_type, details_json, url
 		FROM crawl_events WHERE job_id = ? ORDER BY id ASC LIMIT ?`, jobID, reportExtrasLimit)
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, err
 	}
 	defer rows.Close()
 
 	events := []map[string]any{}
+	metrics := []map[string]any{}
 	psi := []map[string]any{}
 	axe := []map[string]any{}
 	markdownNegotiation := []map[string]any{}
@@ -816,7 +819,7 @@ func loadEventsAndAudits(ctx context.Context, db *storage.DB, jobID string) ([]m
 			detailsJSON, urlValue sql.NullString
 		)
 		if err := rows.Scan(&id, &jid, &ts, &eventType, &detailsJSON, &urlValue); err != nil {
-			return nil, nil, nil, nil, err
+			return nil, nil, nil, nil, nil, err
 		}
 		details := decodeJSONField(detailsJSON)
 		urlPtr := nullString(urlValue)
@@ -843,6 +846,16 @@ func loadEventsAndAudits(ctx context.Context, db *storage.DB, jobID string) ([]m
 				m["timestamp"] = ts
 				markdownNegotiation = append(markdownNegotiation, m)
 			}
+		case "metric":
+			if m, ok := details.(map[string]any); ok {
+				m["id"] = id
+				m["job_id"] = jid
+				m["timestamp"] = ts
+				if urlPtr != nil {
+					m["url"] = *urlPtr
+				}
+				metrics = append(metrics, m)
+			}
 		default:
 			events = append(events, map[string]any{
 				"id":         id,
@@ -854,5 +867,5 @@ func loadEventsAndAudits(ctx context.Context, db *storage.DB, jobID string) ([]m
 			})
 		}
 	}
-	return events, psi, axe, markdownNegotiation, rows.Err()
+	return events, metrics, psi, axe, markdownNegotiation, rows.Err()
 }

@@ -19,15 +19,18 @@ import (
 
 // crawlSiteArgs holds parsed arguments for crawl_site.
 type crawlSiteArgs struct {
-	URL           string   `json:"url"`
-	URLs          []string `json:"urls,omitempty"`
-	ScopeMode     string   `json:"scopeMode,omitempty"`
-	AllowedHosts  []string `json:"allowedHosts,omitempty"`
-	MaxPages      int      `json:"maxPages,omitempty"`
-	MaxDepth      int      `json:"maxDepth,omitempty"`
-	RenderMode    string   `json:"renderMode,omitempty"`
-	RespectRobots *bool    `json:"respectRobots,omitempty"`
-	DryRun        bool     `json:"dryRun,omitempty"`
+	URL               string   `json:"url"`
+	URLs              []string `json:"urls,omitempty"`
+	ScopeMode         string   `json:"scopeMode,omitempty"`
+	AllowedHosts      []string `json:"allowedHosts,omitempty"`
+	MaxPages          int      `json:"maxPages,omitempty"`
+	MaxDepth          int      `json:"maxDepth,omitempty"`
+	MaxDiscoveredURLs int      `json:"maxDiscoveredUrls,omitempty"`
+	MaxOnboardedHosts int      `json:"maxOnboardedHosts,omitempty"`
+	MaxCrawlDuration  string   `json:"maxCrawlDuration,omitempty"`
+	RenderMode        string   `json:"renderMode,omitempty"`
+	RespectRobots     *bool    `json:"respectRobots,omitempty"`
+	DryRun            bool     `json:"dryRun,omitempty"`
 }
 
 // crawlSiteResult is returned from crawl_site.
@@ -114,6 +117,21 @@ func (s *Server) handleCrawlSite(ctx context.Context, req gomcp.CallToolRequest)
 	if md, ok := args["maxDepth"].(float64); ok && md > 0 {
 		maxDepth = int(md)
 	}
+	maxDiscoveredURLs := 100000
+	if md, ok := args["maxDiscoveredUrls"].(float64); ok && md > 0 {
+		maxDiscoveredURLs = int(md)
+	}
+	maxOnboardedHosts := 50
+	if mh, ok := args["maxOnboardedHosts"].(float64); ok && mh > 0 {
+		maxOnboardedHosts = int(mh)
+	}
+	maxCrawlDuration := "30m0s"
+	if d, ok := args["maxCrawlDuration"].(string); ok && d != "" {
+		if _, err := time.ParseDuration(d); err != nil {
+			return gomcp.NewToolResultError(fmt.Sprintf("invalid maxCrawlDuration %q", d)), nil
+		}
+		maxCrawlDuration = d
+	}
 
 	renderMode := "static"
 	if rm, ok := args["renderMode"].(string); ok && rm != "" {
@@ -161,15 +179,18 @@ func (s *Server) handleCrawlSite(ctx context.Context, req gomcp.CallToolRequest)
 	// If SEO_CRAWLER_HTTP_API is set, delegate to the remote HTTP server.
 	if httpAPI := os.Getenv("SEO_CRAWLER_HTTP_API"); httpAPI != "" {
 		return s.crawlSiteViaHTTP(ctx, crawlSiteArgs{
-			URL:           normalizedURL,
-			URLs:          additionalURLs,
-			ScopeMode:     scopeMode,
-			AllowedHosts:  allowedHosts,
-			MaxPages:      maxPages,
-			MaxDepth:      maxDepth,
-			RenderMode:    renderMode,
-			RespectRobots: &respectRobots,
-			DryRun:        dryRun,
+			URL:               normalizedURL,
+			URLs:              additionalURLs,
+			ScopeMode:         scopeMode,
+			AllowedHosts:      allowedHosts,
+			MaxPages:          maxPages,
+			MaxDepth:          maxDepth,
+			MaxDiscoveredURLs: maxDiscoveredURLs,
+			MaxOnboardedHosts: maxOnboardedHosts,
+			MaxCrawlDuration:  maxCrawlDuration,
+			RenderMode:        renderMode,
+			RespectRobots:     &respectRobots,
+			DryRun:            dryRun,
 		})
 	}
 
@@ -206,13 +227,16 @@ func (s *Server) handleCrawlSite(ctx context.Context, req gomcp.CallToolRequest)
 
 	// Build config JSON
 	crawlConfig := map[string]any{
-		"scopeMode":     scopeMode,
-		"allowedHosts":  allowedHosts,
-		"maxPages":      maxPages,
-		"maxDepth":      maxDepth,
-		"renderMode":    renderMode,
-		"respectRobots": respectRobots,
-		"dryRun":        dryRun,
+		"scopeMode":         scopeMode,
+		"allowedHosts":      allowedHosts,
+		"maxPages":          maxPages,
+		"maxDepth":          maxDepth,
+		"maxDiscoveredUrls": maxDiscoveredURLs,
+		"maxOnboardedHosts": maxOnboardedHosts,
+		"maxCrawlDuration":  maxCrawlDuration,
+		"renderMode":        renderMode,
+		"respectRobots":     respectRobots,
+		"dryRun":            dryRun,
 	}
 	configJSON, err := json.Marshal(crawlConfig)
 	if err != nil {
@@ -529,14 +553,17 @@ func (s *Server) crawlSiteViaHTTP(
 	httpAPI := os.Getenv("SEO_CRAWLER_HTTP_API")
 
 	body := map[string]any{
-		"url":           args.URL,
-		"scopeMode":     args.ScopeMode,
-		"allowedHosts":  args.AllowedHosts,
-		"maxPages":      args.MaxPages,
-		"maxDepth":      args.MaxDepth,
-		"renderMode":    args.RenderMode,
-		"respectRobots": true,
-		"dryRun":        args.DryRun,
+		"url":               args.URL,
+		"scopeMode":         args.ScopeMode,
+		"allowedHosts":      args.AllowedHosts,
+		"maxPages":          args.MaxPages,
+		"maxDepth":          args.MaxDepth,
+		"maxDiscoveredUrls": args.MaxDiscoveredURLs,
+		"maxOnboardedHosts": args.MaxOnboardedHosts,
+		"maxCrawlDuration":  args.MaxCrawlDuration,
+		"renderMode":        args.RenderMode,
+		"respectRobots":     true,
+		"dryRun":            args.DryRun,
 	}
 	if args.RespectRobots != nil {
 		body["respectRobots"] = *args.RespectRobots
