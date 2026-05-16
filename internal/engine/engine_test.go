@@ -14,6 +14,7 @@ import (
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/config"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/crawl"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/fetcher"
+	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/issues"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/parser"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/ssrf"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/storage"
@@ -661,10 +662,35 @@ func TestPersistItemStoresPageUnderNormalizedFinalURL(t *testing.T) {
 				isInternal:    true,
 				sourceURLID:   requestedID,
 			}},
+			issues: []issues.DetectedIssue{{
+				IssueType:   "missing_canonical",
+				Severity:    "warning",
+				Scope:       "page_local",
+				DetailsJSON: "{\"url\":\"https://www.example.com/page\"}",
+			}},
 		},
 	}
 	if err := eng.persistItem(context.Background(), job.ID, item); err != nil {
 		t.Fatalf("persistItem: %v", err)
+	}
+
+	finalURL, err := db.GetURLByNormalized(job.ID, "https://www.example.com/page")
+	if err != nil {
+		t.Fatalf("getting final URL: %v", err)
+	}
+	duplicate := item
+	duplicate.fetchSeq = 2
+	duplicate.parseResult.fetchResult.urlID = finalURL.ID
+	duplicate.parseResult.fetchResult.url = "https://www.example.com/page"
+	duplicate.parseResult.fetchResult.host = "www.example.com"
+	duplicate.parseResult.fetchResult.fetchSeq = 2
+	duplicateResult := *item.parseResult.fetchResult.result
+	duplicateResult.RequestedURL = "https://www.example.com/page"
+	duplicateResult.FinalURL = "https://www.example.com/page"
+	duplicateResult.RedirectHops = nil
+	duplicate.parseResult.fetchResult.result = &duplicateResult
+	if err := eng.persistItem(context.Background(), job.ID, duplicate); err != nil {
+		t.Fatalf("persistItem duplicate final URL: %v", err)
 	}
 
 	var pageURL string
@@ -676,6 +702,14 @@ func TestPersistItemStoresPageUnderNormalizedFinalURL(t *testing.T) {
 	}
 	if pageURL != "https://www.example.com/page" {
 		t.Fatalf("page URL = %q, want normalized final URL", pageURL)
+	}
+
+	var pageCount int
+	if err := db.QueryRow("SELECT COUNT(*) FROM pages WHERE job_id = ?", job.ID).Scan(&pageCount); err != nil {
+		t.Fatalf("counting page rows: %v", err)
+	}
+	if pageCount != 1 {
+		t.Fatalf("page rows = %d, want 1", pageCount)
 	}
 
 	var requestedPageCount int
@@ -700,6 +734,14 @@ func TestPersistItemStoresPageUnderNormalizedFinalURL(t *testing.T) {
 		t.Fatalf("edge source URL = %q, want normalized final URL", edgeSourceURL)
 	}
 
+	var edgeCount int
+	if err := db.QueryRow("SELECT COUNT(*) FROM edges WHERE job_id = ?", job.ID).Scan(&edgeCount); err != nil {
+		t.Fatalf("counting edges: %v", err)
+	}
+	if edgeCount != 1 {
+		t.Fatalf("edge rows = %d, want 1", edgeCount)
+	}
+
 	var assetSourceURL string
 	if err := db.QueryRow(
 		"SELECT u.normalized_url FROM asset_references ar JOIN urls u ON u.id = ar.source_page_url_id WHERE ar.job_id = ?",
@@ -709,6 +751,22 @@ func TestPersistItemStoresPageUnderNormalizedFinalURL(t *testing.T) {
 	}
 	if assetSourceURL != "https://www.example.com/page" {
 		t.Fatalf("asset source URL = %q, want normalized final URL", assetSourceURL)
+	}
+
+	var assetRefCount int
+	if err := db.QueryRow("SELECT COUNT(*) FROM asset_references WHERE job_id = ?", job.ID).Scan(&assetRefCount); err != nil {
+		t.Fatalf("counting asset refs: %v", err)
+	}
+	if assetRefCount != 1 {
+		t.Fatalf("asset reference rows = %d, want 1", assetRefCount)
+	}
+
+	var issueCount int
+	if err := db.QueryRow("SELECT COUNT(*) FROM issues WHERE job_id = ?", job.ID).Scan(&issueCount); err != nil {
+		t.Fatalf("counting issues: %v", err)
+	}
+	if issueCount != 1 {
+		t.Fatalf("issue rows = %d, want 1", issueCount)
 	}
 }
 

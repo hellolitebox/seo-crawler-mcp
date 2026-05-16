@@ -1878,9 +1878,27 @@ func (e *Engine) persistItem(ctx context.Context, jobID string, item persistItem
 	}
 
 	// --- HTML: insert page record ---
+	pageInserted := true
 	if isHTML && item.page != nil {
-		if pageErr := txInsertPage(ctx, tx, jobID, pageURLID, fetchID, fr.depth, item.page); pageErr != nil {
+		var pageErr error
+		pageInserted, pageErr = txInsertPage(ctx, tx, jobID, pageURLID, fetchID, fr.depth, item.page)
+		if pageErr != nil {
 			return fmt.Errorf("inserting page: %w", pageErr)
+		}
+		if !pageInserted {
+			for _, issue := range item.issues {
+				if !isDuplicatePageFetchIssue(issue.IssueType) {
+					continue
+				}
+				details := issue.DetailsJSON
+				if _, issueErr := tx.ExecContext(ctx,
+					`INSERT INTO issues (job_id, url_id, issue_type, severity, scope, details_json) VALUES (?, ?, ?, ?, ?, ?)`,
+					jobID, &pageURLID, issue.IssueType, issue.Severity, issue.Scope, &details,
+				); issueErr != nil {
+					return fmt.Errorf("inserting duplicate-page fetch issue: %w", issueErr)
+				}
+			}
+			return tx.Commit()
 		}
 	}
 
@@ -1975,6 +1993,15 @@ func (e *Engine) persistItem(ctx context.Context, jobID string, item persistItem
 	return tx.Commit()
 }
 
+func isDuplicatePageFetchIssue(issueType string) bool {
+	switch issueType {
+	case "redirect_chain", "redirect_loop", "redirect_hops_exceeded", "rate_limited":
+		return true
+	default:
+		return false
+	}
+}
+
 // txUpsertURL upserts a URL within a transaction and returns its ID.
 func txUpsertURL(tx *sql.Tx, jobID, normalizedURL, host, status string, isInternal bool, discoveredVia string) (int64, error) {
 	isInternalInt := 0
@@ -2002,7 +2029,7 @@ func txUpsertURL(tx *sql.Tx, jobID, normalizedURL, host, status string, isIntern
 }
 
 // txInsertPage creates a page record within a transaction.
-func txInsertPage(ctx context.Context, tx *sql.Tx, jobID string, urlID, fetchID int64, depth int, page *parser.ParseResult) error {
+func txInsertPage(ctx context.Context, tx *sql.Tx, jobID string, urlID, fetchID int64, depth int, page *parser.ParseResult) (bool, error) {
 	title := strPtr(page.Title)
 	titleLen := intPtr(page.TitleLength)
 	metaDesc := strPtr(page.MetaDescription)
@@ -2065,7 +2092,7 @@ func txInsertPage(ctx context.Context, tx *sql.Tx, jobID string, urlID, fetchID 
 		jsSuspect = 1
 	}
 
-	_, err := tx.ExecContext(ctx,
+	result, err := tx.ExecContext(ctx,
 		`INSERT OR IGNORE INTO pages (job_id, url_id, fetch_id, depth,
 			title, title_length, meta_description, meta_description_length,
 			meta_robots, x_robots_tag, indexability_state,
@@ -2100,7 +2127,14 @@ func txInsertPage(ctx context.Context, tx *sql.Tx, jobID string, urlID, fetchID 
 		imagesJSON, wordCount, mainWC,
 		contentHash, textPreview, jsSuspect,
 	)
-	return err
+	if err != nil {
+		return false, err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return rows > 0, nil
 }
 
 // runLighthouseAudits runs PageSpeed Insights API for all crawled pages
