@@ -2316,22 +2316,11 @@ func txInsertPage(ctx context.Context, tx *sql.Tx, jobID string, urlID, fetchID 
 // using a worker pool of 4 goroutines for parallel execution.
 // Results are stored as crawl events with type "psi_audit".
 func (e *Engine) runLighthouseAudits(ctx context.Context, jobID string) {
-	rows, err := e.db.Query(
-		`SELECT u.normalized_url FROM pages p JOIN urls u ON u.id = p.url_id WHERE p.job_id = ? LIMIT 50`,
-		jobID,
-	)
+	urls, err := e.psiAuditPageURLs(jobID, 50)
 	if err != nil {
 		slog.Error("engine: PSI audit query failed", "err", err, "job_id", jobID)
 		return
 	}
-	var urls []string
-	for rows.Next() {
-		var u string
-		if scanErr := rows.Scan(&u); scanErr == nil {
-			urls = append(urls, u)
-		}
-	}
-	rows.Close()
 
 	if len(urls) == 0 {
 		return
@@ -2422,6 +2411,35 @@ func (e *Engine) runLighthouseAudits(ctx context.Context, jobID string) {
 	wg.Wait()
 
 	slog.Info("engine: PSI audits complete", "audited", audited, "failed", failed, "job_id", jobID)
+}
+
+func (e *Engine) psiAuditPageURLs(jobID string, limit int) ([]string, error) {
+	rows, err := e.db.Query(
+		`SELECT u.normalized_url
+		 FROM pages p
+		 JOIN urls u ON u.id = p.url_id
+		 JOIN fetches f ON f.id = p.fetch_id
+		 WHERE p.job_id = ? AND f.status_code >= 200 AND f.status_code < 300
+		 ORDER BY p.id
+		 LIMIT ?`,
+		jobID, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var urls []string
+	for rows.Next() {
+		var u string
+		if scanErr := rows.Scan(&u); scanErr == nil {
+			urls = append(urls, u)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return urls, nil
 }
 
 // runAxeAudits runs axe-core accessibility audits on all crawled pages

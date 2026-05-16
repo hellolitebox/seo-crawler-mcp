@@ -923,3 +923,48 @@ func TestQueueBrowserDiscoveredLinkURLs(t *testing.T) {
 		t.Fatalf("target status = %q, want queued", rec.Status)
 	}
 }
+
+func TestPSIAuditPageURLsOnlyIncludes2xxPages(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "psi-audit-pages.db")
+	db, err := storage.Open(dbPath)
+	if err != nil {
+		t.Fatalf("opening database: %v", err)
+	}
+	defer db.Close()
+
+	job, err := db.CreateJob("crawl", `{}`, `["https://example.com/"]`)
+	if err != nil {
+		t.Fatalf("creating job: %v", err)
+	}
+
+	seedPage := func(rawURL string, status int, seq int) {
+		t.Helper()
+		urlID, err := db.UpsertURL(job.ID, rawURL, "example.com", "fetched", true, "link")
+		if err != nil {
+			t.Fatalf("upserting URL %s: %v", rawURL, err)
+		}
+		fetchID, err := db.InsertFetch(storage.FetchInput{
+			JobID: job.ID, FetchSeq: seq, RequestedURLID: urlID, StatusCode: status, ContentType: "text/html", RenderMode: "static",
+		})
+		if err != nil {
+			t.Fatalf("inserting fetch for %s: %v", rawURL, err)
+		}
+		if _, err := db.InsertPage(storage.PageInput{JobID: job.ID, URLID: urlID, FetchID: fetchID, Depth: 1, IndexabilityState: "indexable"}); err != nil {
+			t.Fatalf("inserting page for %s: %v", rawURL, err)
+		}
+	}
+
+	seedPage("https://example.com/", 200, 1)
+	seedPage("https://example.com/login", 404, 2)
+	seedPage("https://example.com/redirect", 301, 3)
+	seedPage("https://example.com/server-error", 500, 4)
+
+	eng := &Engine{db: db}
+	urls, err := eng.psiAuditPageURLs(job.ID, 50)
+	if err != nil {
+		t.Fatalf("psiAuditPageURLs: %v", err)
+	}
+	if len(urls) != 1 || urls[0] != "https://example.com/" {
+		t.Fatalf("psi audit URLs = %v, want only the 2xx page", urls)
+	}
+}
