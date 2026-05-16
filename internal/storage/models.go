@@ -170,12 +170,13 @@ type LlmsFinding struct {
 
 // Asset represents an external resource (CSS, JS, image, font).
 type Asset struct {
-	ID            int64          `json:"id"`
-	JobID         string         `json:"jobId"`
-	URLID         int64          `json:"urlId"`
-	ContentType   sql.NullString `json:"contentType,omitempty"`
-	StatusCode    sql.NullInt64  `json:"statusCode,omitempty"`
-	ContentLength sql.NullInt64  `json:"contentLength,omitempty"`
+	ID              int64          `json:"id"`
+	JobID           string         `json:"jobId"`
+	URLID           int64          `json:"urlId"`
+	ContentType     sql.NullString `json:"contentType,omitempty"`
+	ContentEncoding sql.NullString `json:"contentEncoding,omitempty"`
+	StatusCode      sql.NullInt64  `json:"statusCode,omitempty"`
+	ContentLength   sql.NullInt64  `json:"contentLength,omitempty"`
 }
 
 // AssetReference links a page to an asset it references.

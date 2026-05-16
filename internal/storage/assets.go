@@ -6,22 +6,23 @@ import (
 
 // AssetInput holds parameters for InsertAsset.
 type AssetInput struct {
-	JobID         string
-	URLID         int64
-	ContentType   *string
-	StatusCode    *int
-	ContentLength *int64
+	JobID           string
+	URLID           int64
+	ContentType     *string
+	ContentEncoding *string
+	StatusCode      *int
+	ContentLength   *int64
 }
 
 // assetColumns is the canonical SELECT list for assets.
-const assetColumns = `id, job_id, url_id, content_type, status_code, content_length`
+const assetColumns = `id, job_id, url_id, content_type, content_encoding, status_code, content_length`
 
 // scanAsset scans a row into an Asset.
 func scanAsset(sc interface{ Scan(...any) error }) (Asset, error) {
 	var a Asset
 	err := sc.Scan(
 		&a.ID, &a.JobID, &a.URLID,
-		&a.ContentType, &a.StatusCode, &a.ContentLength,
+		&a.ContentType, &a.ContentEncoding, &a.StatusCode, &a.ContentLength,
 	)
 	return a, err
 }
@@ -29,9 +30,9 @@ func scanAsset(sc interface{ Scan(...any) error }) (Asset, error) {
 // InsertAsset creates a new asset record and returns its ID.
 func (db *DB) InsertAsset(input AssetInput) (int64, error) {
 	result, err := db.Exec(
-		`INSERT INTO assets (job_id, url_id, content_type, status_code, content_length)
-		 VALUES (?, ?, ?, ?, ?)`,
-		input.JobID, input.URLID, input.ContentType, input.StatusCode, input.ContentLength,
+		`INSERT INTO assets (job_id, url_id, content_type, content_encoding, status_code, content_length)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		input.JobID, input.URLID, input.ContentType, input.ContentEncoding, input.StatusCode, input.ContentLength,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("inserting asset for URL %d in job %q: %w", input.URLID, input.JobID, err)
@@ -50,9 +51,9 @@ func (db *DB) InsertAsset(input AssetInput) (int64, error) {
 func (db *DB) UpsertAssetMetadata(input AssetInput) (int64, error) {
 	result, err := db.Exec(
 		`UPDATE assets
-		 SET content_type = ?, status_code = ?, content_length = ?
+		 SET content_type = ?, content_encoding = ?, status_code = ?, content_length = ?
 		 WHERE job_id = ? AND url_id = ?`,
-		input.ContentType, input.StatusCode, input.ContentLength, input.JobID, input.URLID,
+		input.ContentType, input.ContentEncoding, input.StatusCode, input.ContentLength, input.JobID, input.URLID,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("updating asset for URL %d in job %q: %w", input.URLID, input.JobID, err)

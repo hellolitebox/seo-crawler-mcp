@@ -423,7 +423,8 @@ func emptyStringNil(value string) any {
 
 func loadAssets(ctx context.Context, db *storage.DB, jobID string) ([]map[string]any, error) {
 	rows, err := db.QueryContext(ctx, `
-		SELECT a.id, a.job_id, a.url_id, a.content_type, a.status_code, a.content_length,
+		SELECT a.id, a.job_id, a.url_id, a.content_type, a.content_encoding,
+		       a.status_code, a.content_length,
 		       u.normalized_url
 		FROM assets a JOIN urls u ON u.id = a.url_id
 		WHERE a.job_id = ? LIMIT ?`, jobID, reportExtrasLimit)
@@ -435,22 +436,23 @@ func loadAssets(ctx context.Context, db *storage.DB, jobID string) ([]map[string
 	out := []map[string]any{}
 	for rows.Next() {
 		var (
-			id, urlID                 int64
-			jid, urlStr               string
-			contentType               sql.NullString
-			statusCode, contentLength sql.NullInt64
+			id, urlID                    int64
+			jid, urlStr                  string
+			contentType, contentEncoding sql.NullString
+			statusCode, contentLength    sql.NullInt64
 		)
-		if err := rows.Scan(&id, &jid, &urlID, &contentType, &statusCode, &contentLength, &urlStr); err != nil {
+		if err := rows.Scan(&id, &jid, &urlID, &contentType, &contentEncoding, &statusCode, &contentLength, &urlStr); err != nil {
 			return nil, err
 		}
 		out = append(out, map[string]any{
-			"id":             id,
-			"job_id":         jid,
-			"url_id":         urlID,
-			"content_type":   nullString(contentType),
-			"status_code":    nullInt64(statusCode),
-			"content_length": nullInt64(contentLength),
-			"url":            urlStr,
+			"id":               id,
+			"job_id":           jid,
+			"url_id":           urlID,
+			"content_type":     nullString(contentType),
+			"content_encoding": nullString(contentEncoding),
+			"status_code":      nullInt64(statusCode),
+			"content_length":   nullInt64(contentLength),
+			"url":              urlStr,
 		})
 	}
 	return out, rows.Err()

@@ -97,7 +97,7 @@ func TestLoadReportExtrasKeepsCrossSectionDataAvailable(t *testing.T) {
 	if _, err := db.Exec("INSERT INTO redirect_hops (job_id, fetch_id, hop_index, status_code, from_url, to_url) VALUES (?, ?, 0, 301, 'http://www.pipapou.com/', 'https://www.pipapou.com/')", jobID, httpAuditFetchID); err != nil {
 		t.Fatalf("inserting redirect hop: %v", err)
 	}
-	if _, err := db.Exec("INSERT INTO assets (job_id, url_id, content_type, status_code, content_length) VALUES (?, ?, 'application/javascript', 200, 20000)", jobID, scriptURLID); err != nil {
+	if _, err := db.Exec("INSERT INTO assets (job_id, url_id, content_type, content_encoding, status_code, content_length) VALUES (?, ?, 'application/javascript', 'br', 200, 20000)", jobID, scriptURLID); err != nil {
 		t.Fatalf("inserting script asset: %v", err)
 	}
 	if _, err := db.Exec("INSERT INTO asset_references (job_id, asset_url_id, source_page_url_id, reference_type) VALUES (?, ?, ?, 'img_src')", jobID, imageURLID, pageURLID); err != nil {
@@ -107,7 +107,9 @@ func TestLoadReportExtrasKeepsCrossSectionDataAvailable(t *testing.T) {
 	extras := loadReportExtras(context.Background(), db, jobID)
 
 	assertMapWithValue(t, extras["asset_references"].([]map[string]any), "asset_url", "https://www.pipapou.com/_next/image?url=%2Fhero.webp&w=3840&q=75")
-	assertMapWithValue(t, extras["assets"].([]map[string]any), "url", "https://www.pipapou.com/app.js")
+	assets := extras["assets"].([]map[string]any)
+	assertMapWithValue(t, assets, "url", "https://www.pipapou.com/app.js")
+	assertMapWithValue(t, assets, "content_encoding", "br")
 	assertMapWithValue(t, extras["redirect_hops"].([]map[string]any), "from_url", "http://www.pipapou.com/")
 	assertMapWithValue(t, extras["response_codes"].([]map[string]any), "fetchKind", "http_https_audit")
 

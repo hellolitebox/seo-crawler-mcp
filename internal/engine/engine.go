@@ -1912,10 +1912,12 @@ func (e *Engine) headCheckAssets(ctx context.Context, jobID string) {
 				}
 				headResult, headErr := e.fetcher.HeadContext(ctx, t.url)
 				var contentType *string
+				var contentEncoding *string
 				var statusCode *int
 				var contentLength *int64
 				if headErr == nil && headResult != nil {
 					contentType = strPtr(headResult.ContentType)
+					contentEncoding = strPtr(headResult.ContentEncoding)
 					statusCode = intPtr(headResult.StatusCode)
 					// Extract Content-Length from response headers
 					if clStr := headResult.ResponseHeaders.Get("Content-Length"); clStr != "" {
@@ -1925,11 +1927,12 @@ func (e *Engine) headCheckAssets(ctx context.Context, jobID string) {
 					}
 				}
 				if _, insertErr := e.db.UpsertAssetMetadata(storage.AssetInput{
-					JobID:         jobID,
-					URLID:         t.urlID,
-					ContentType:   contentType,
-					StatusCode:    statusCode,
-					ContentLength: contentLength,
+					JobID:           jobID,
+					URLID:           t.urlID,
+					ContentType:     contentType,
+					ContentEncoding: contentEncoding,
+					StatusCode:      statusCode,
+					ContentLength:   contentLength,
 				}); insertErr != nil {
 					// May fail on duplicate; that's fine
 				}
@@ -2044,8 +2047,8 @@ func (e *Engine) persistItem(ctx context.Context, jobID string, item persistItem
 	// --- Non-HTML: record as asset ---
 	if !isHTML && fr.result != nil && fr.err == nil {
 		if _, assetErr := tx.ExecContext(ctx,
-			`INSERT INTO assets (job_id, url_id, content_type, status_code, content_length) VALUES (?, ?, ?, ?, ?)`,
-			jobID, fr.urlID, fr.result.ContentType, fr.result.StatusCode, fr.result.BodySize,
+			`INSERT INTO assets (job_id, url_id, content_type, content_encoding, status_code, content_length) VALUES (?, ?, ?, ?, ?, ?)`,
+			jobID, fr.urlID, fr.result.ContentType, fr.result.ContentEncoding, fr.result.StatusCode, fr.result.BodySize,
 		); assetErr != nil {
 			return fmt.Errorf("inserting asset: %w", assetErr)
 		}

@@ -16,14 +16,16 @@ func TestInsertAndGetAssets(t *testing.T) {
 	}
 
 	ct := "text/css"
+	ce := "br"
 	sc := 200
 	cl := int64(12345)
 	id, err := db.InsertAsset(AssetInput{
-		JobID:         job.ID,
-		URLID:         urlID,
-		ContentType:   &ct,
-		StatusCode:    &sc,
-		ContentLength: &cl,
+		JobID:           job.ID,
+		URLID:           urlID,
+		ContentType:     &ct,
+		ContentEncoding: &ce,
+		StatusCode:      &sc,
+		ContentLength:   &cl,
 	})
 	if err != nil {
 		t.Fatalf("InsertAsset: %v", err)
@@ -41,6 +43,9 @@ func TestInsertAndGetAssets(t *testing.T) {
 	}
 	if !assets[0].ContentType.Valid || assets[0].ContentType.String != "text/css" {
 		t.Errorf("expected content_type %q, got %v", "text/css", assets[0].ContentType)
+	}
+	if !assets[0].ContentEncoding.Valid || assets[0].ContentEncoding.String != "br" {
+		t.Errorf("expected content_encoding %q, got %v", "br", assets[0].ContentEncoding)
 	}
 }
 
@@ -62,14 +67,16 @@ func TestUpsertAssetMetadataUpdatesPlaceholder(t *testing.T) {
 	}
 
 	ct := "image/jpeg"
+	ce := "gzip"
 	sc := 200
 	cl := int64(260588)
 	if _, err := db.UpsertAssetMetadata(AssetInput{
-		JobID:         job.ID,
-		URLID:         urlID,
-		ContentType:   &ct,
-		StatusCode:    &sc,
-		ContentLength: &cl,
+		JobID:           job.ID,
+		URLID:           urlID,
+		ContentType:     &ct,
+		ContentEncoding: &ce,
+		StatusCode:      &sc,
+		ContentLength:   &cl,
 	}); err != nil {
 		t.Fatalf("UpsertAssetMetadata: %v", err)
 	}
@@ -83,6 +90,9 @@ func TestUpsertAssetMetadataUpdatesPlaceholder(t *testing.T) {
 	}
 	if !assets[0].ContentType.Valid || assets[0].ContentType.String != ct {
 		t.Fatalf("expected content_type %q, got %v", ct, assets[0].ContentType)
+	}
+	if !assets[0].ContentEncoding.Valid || assets[0].ContentEncoding.String != ce {
+		t.Fatalf("expected content_encoding %q, got %v", ce, assets[0].ContentEncoding)
 	}
 	if !assets[0].StatusCode.Valid || assets[0].StatusCode.Int64 != int64(sc) {
 		t.Fatalf("expected status_code %d, got %v", sc, assets[0].StatusCode)
