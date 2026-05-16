@@ -1155,6 +1155,9 @@ func (e *Engine) processParseResult(
 	if !isHTML {
 		return pr
 	}
+	if !isAnalyzablePageStatus(fr.result.StatusCode) {
+		return pr
+	}
 
 	// Parse HTML
 	page, parseErr := parser.ParseHTML(fr.result.Body, fr.result.FinalURL, fr.result.ResponseHeaders)
@@ -1452,6 +1455,10 @@ func (e *Engine) processParseResult(
 	}
 
 	return pr
+}
+
+func isAnalyzablePageStatus(statusCode int) bool {
+	return statusCode >= 200 && statusCode < 300
 }
 
 // sitemapGapEscalation detects sitemap URLs with no inbound static HTML links,

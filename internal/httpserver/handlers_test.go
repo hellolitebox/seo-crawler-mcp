@@ -327,6 +327,103 @@ func TestJobStatus_Found(t *testing.T) {
 	}
 }
 
+func TestPagesAPIDefaultsTo2xxContentPages(t *testing.T) {
+	srv, h := newTestServer(t)
+	job, err := srv.db.CreateJob("crawl", "{}", "[\"https://example.com/\"]")
+	if err != nil {
+		t.Fatalf("creating job: %v", err)
+	}
+
+	seedPage := func(rawURL string, statusCode int, seq int) {
+		t.Helper()
+		urlID, err := srv.db.UpsertURL(job.ID, rawURL, "example.com", "fetched", true, "link")
+		if err != nil {
+			t.Fatalf("upserting URL %s: %v", rawURL, err)
+		}
+		fetchID, err := srv.db.InsertFetch(storage.FetchInput{
+			JobID:          job.ID,
+			FetchSeq:       seq,
+			RequestedURLID: urlID,
+			StatusCode:     statusCode,
+			ContentType:    "text/html",
+			HTTPMethod:     "GET",
+			FetchKind:      "full",
+			RenderMode:     "static",
+		})
+		if err != nil {
+			t.Fatalf("inserting fetch for %s: %v", rawURL, err)
+		}
+		title := fmt.Sprintf("HTTP %d", statusCode)
+		if _, err := srv.db.InsertPage(storage.PageInput{
+			JobID:             job.ID,
+			URLID:             urlID,
+			FetchID:           fetchID,
+			Depth:             0,
+			Title:             &title,
+			IndexabilityState: "indexable",
+		}); err != nil {
+			t.Fatalf("inserting page for %s: %v", rawURL, err)
+		}
+	}
+	seedPage("https://example.com/", http.StatusOK, 1)
+	seedPage("https://example.com/missing", http.StatusNotFound, 2)
+
+	type pageDTO struct {
+		URL        string
+		StatusCode int
+	}
+	type pageResp struct {
+		Results    []pageDTO
+		TotalCount int
+	}
+
+	assertOnlyOK := func(path string) {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("GET %s status = %d, body=%s", path, rr.Code, rr.Body.String())
+		}
+		var resp struct {
+			Pages      pageResp
+			Results    []pageDTO
+			TotalCount int
+		}
+		if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+			t.Fatalf("decoding %s: %v", path, err)
+		}
+		pages := resp.Results
+		totalCount := resp.TotalCount
+		if len(pages) == 0 && len(resp.Pages.Results) > 0 {
+			pages = resp.Pages.Results
+			totalCount = resp.Pages.TotalCount
+		}
+		if totalCount != 1 || len(pages) != 1 {
+			t.Fatalf("GET %s returned total=%d len=%d, want one 2xx page", path, totalCount, len(pages))
+		}
+		if pages[0].StatusCode != http.StatusOK || pages[0].URL != "https://example.com/" {
+			t.Fatalf("GET %s page = %+v, want only the 200 page", path, pages[0])
+		}
+	}
+	assertOnlyOK("/api/jobs/" + job.ID + "/report")
+	assertOnlyOK("/api/jobs/" + job.ID + "/pages")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/jobs/"+job.ID+"/pages?status_code_family=4xx", nil)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("GET 4xx pages status = %d, body=%s", rr.Code, rr.Body.String())
+	}
+	var fourXX pageResp
+	if err := json.NewDecoder(rr.Body).Decode(&fourXX); err != nil {
+		t.Fatalf("decoding 4xx pages: %v", err)
+	}
+	if fourXX.TotalCount != 1 || len(fourXX.Results) != 1 || fourXX.Results[0].StatusCode != http.StatusNotFound {
+		t.Fatalf("4xx pages response = %+v, want the explicit 404 page", fourXX)
+	}
+}
+
 func TestJobDelete_TombstonesWithoutPurgingByDefault(t *testing.T) {
 	t.Setenv("SEO_CRAWLER_PURGE_ON_DELETE", "")
 	srv, h := newTestServer(t)

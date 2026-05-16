@@ -221,6 +221,118 @@ func TestRunCrawlIntegration(t *testing.T) {
 	}
 }
 
+func TestRunCrawlSkipsPageAnalysisForNon2xxHTML(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/":
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			fmt.Fprint(w, "<!DOCTYPE html><html><head><title>Home</title><meta name=\"description\" content=\"A normal crawlable page with enough content for the integration test.\"></head><body><h1>Home</h1><p>This page links to a missing URL so the crawler records the 404 fetch without treating the 404 template as page metadata.</p><a href=\"/missing\">Missing page</a></body></html>")
+		case "/missing":
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprint(w, "<!DOCTYPE html><html><head><title>Storefront 404</title></head><body><h1>Not found</h1><p>This is the shared error template, not content for the requested URL.</p></body></html>")
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer ts.Close()
+
+	dbPath := filepath.Join(t.TempDir(), "non-2xx-pages.db")
+	db, err := storage.Open(dbPath)
+	if err != nil {
+		t.Fatalf("opening database: %v", err)
+	}
+	defer db.Close()
+
+	cfg := config.DefaultConfig()
+	cfg.GlobalConcurrency = 2
+	cfg.MaxPages = 100
+	cfg.MaxDepth = 10
+	cfg.RequestTimeout = 5 * time.Second
+	cfg.AllowPrivateNetworks = true
+	cfg.SSRFProtection = false
+	cfg.ThinContentThreshold = 10
+	cfg.MaxQueryVariantsPerPath = 50
+
+	f := fetcher.New(fetcher.Options{
+		UserAgent:           "test-crawler/1.0",
+		Timeout:             5 * time.Second,
+		MaxResponseBody:     5 * 1024 * 1024,
+		MaxDecompressedBody: 20 * 1024 * 1024,
+		MaxRedirectHops:     10,
+		Retries:             0,
+		AllowInsecureTLS:    false,
+		SSRFGuard:           nil,
+	})
+	rl := fetcher.NewRateLimiter(cfg.PerHostConcurrency)
+
+	tsURL, _ := url.Parse(ts.URL)
+	sc, err := urlutil.NewScopeChecker("exact_host", tsURL.Hostname(), nil)
+	if err != nil {
+		t.Fatalf("creating scope checker: %v", err)
+	}
+
+	seedURLs, _ := json.Marshal([]string{ts.URL + "/"})
+	job, err := db.CreateJob("crawl", "{}", string(seedURLs))
+	if err != nil {
+		t.Fatalf("creating job: %v", err)
+	}
+
+	eng := New(EngineConfig{
+		DB:           db,
+		Fetcher:      f,
+		RateLimiter:  rl,
+		ScopeChecker: sc,
+		SSRFGuard:    ssrf.NewGuard(true),
+		Config:       &cfg,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if err := eng.RunCrawl(ctx, job.ID); err != nil {
+		t.Fatalf("RunCrawl: %v", err)
+	}
+
+	job, err = db.GetJob(job.ID)
+	if err != nil {
+		t.Fatalf("getting job: %v", err)
+	}
+	if job.PagesCrawled != 1 {
+		t.Fatalf("pages_crawled = %d, want only the 2xx page", job.PagesCrawled)
+	}
+
+	missingNorm, _ := urlutil.Normalize(ts.URL + "/missing")
+	missingURL, err := db.GetURLByNormalized(job.ID, missingNorm)
+	if err != nil {
+		t.Fatalf("missing URL was not discovered: %v", err)
+	}
+
+	var fetchStatus int
+	if err := db.QueryRow("SELECT status_code FROM fetches WHERE job_id = ? AND requested_url_id = ?", job.ID, missingURL.ID).Scan(&fetchStatus); err != nil {
+		t.Fatalf("missing URL fetch not recorded: %v", err)
+	}
+	if fetchStatus != http.StatusNotFound {
+		t.Fatalf("missing URL status = %d, want 404", fetchStatus)
+	}
+
+	var pageCount int
+	if err := db.QueryRow("SELECT COUNT(*) FROM pages WHERE job_id = ? AND url_id = ?", job.ID, missingURL.ID).Scan(&pageCount); err != nil {
+		t.Fatalf("counting missing URL pages: %v", err)
+	}
+	if pageCount != 0 {
+		t.Fatalf("404 URL page rows = %d, want 0", pageCount)
+	}
+
+	var issueCount int
+	if err := db.QueryRow("SELECT COUNT(*) FROM issues WHERE job_id = ? AND url_id = ?", job.ID, missingURL.ID).Scan(&issueCount); err != nil {
+		t.Fatalf("counting missing URL issues: %v", err)
+	}
+	if issueCount != 0 {
+		t.Fatalf("404 URL page-local issues = %d, want 0", issueCount)
+	}
+}
+
 func TestAuditHTTPToHTTPSRedirectsChecksEveryDiscoveredHost(t *testing.T) {
 	redirectServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "https://127.0.0.1:1/", http.StatusMovedPermanently)

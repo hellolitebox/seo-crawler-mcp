@@ -434,8 +434,10 @@ func (s *Server) handleJobReport(w http.ResponseWriter, r *http.Request, jobID s
 
 	lookup := s.urlLookup()
 
-	// Pages — paginated
-	pagesResult, err := s.db.QueryPagesOffset(jobID, storage.QueryFilter{}, pagesLimit, pagesOffset)
+	// Pages are an SEO content inventory. Error/redirect responses are still
+	// reported through fetches, response codes, links, and issues, but their HTML
+	// body is usually a shared error template rather than content for that URL.
+	pagesResult, err := s.db.QueryPagesOffset(jobID, storage.QueryFilter{StatusCodeFamily: "2xx"}, pagesLimit, pagesOffset)
 	var pageDTOs []dto.PageDTO
 	var pagesTotalCount int
 	if err == nil {
@@ -509,10 +511,15 @@ func (s *Server) handleJobPages(w http.ResponseWriter, r *http.Request, jobID st
 	limit := parsePaginationParam(r, "limit", 100, 200)
 	offset := parseOffsetParam(r, "offset")
 
+	statusCodeFamily := r.URL.Query().Get("status_code_family")
+	if statusCodeFamily == "" {
+		statusCodeFamily = "2xx"
+	}
+
 	filter := storage.QueryFilter{
 		URLPattern:       r.URL.Query().Get("url_pattern"),
 		URLGroup:         r.URL.Query().Get("url_group"),
-		StatusCodeFamily: r.URL.Query().Get("status_code_family"),
+		StatusCodeFamily: statusCodeFamily,
 	}
 
 	result, err := s.db.QueryPagesOffset(jobID, filter, limit, offset)
