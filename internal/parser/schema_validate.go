@@ -15,7 +15,7 @@ type SchemaValidationResult struct {
 	MissingRecommended []string `json:"missingRecommended,omitempty"`
 	Valid              bool     `json:"valid"`
 	Nested             bool     `json:"nested"`
-	Source             string   `json:"source"`                // "google_rich_results" or "schema_org_best_practice"
+	Source             string   `json:"source"` // "google_rich_results" or "schema_org_best_practice"
 	GoogleDocURL       string   `json:"googleDocUrl,omitempty"`
 }
 
@@ -57,6 +57,9 @@ func ValidateJSONLD(raw string) []SchemaValidationResult {
 				break
 			}
 			results = append(results, validateRawItem(item, 0)...)
+			if len(results) > maxValidationResults {
+				results = results[:maxValidationResults]
+			}
 		}
 		return results
 	}
@@ -109,9 +112,15 @@ func validateRawJSON(raw string, depth int) []SchemaValidationResult {
 	if err := json.Unmarshal([]byte(raw), &arr); err == nil {
 		var results []SchemaValidationResult
 		for _, item := range arr {
+			if len(results) >= maxValidationResults {
+				break
+			}
 			var obj map[string]interface{}
 			if err := json.Unmarshal(item, &obj); err == nil {
 				results = append(results, validateObject(obj, depth)...)
+				if len(results) > maxValidationResults {
+					results = results[:maxValidationResults]
+				}
 			}
 		}
 		return results
@@ -142,6 +151,9 @@ func validateObject(obj map[string]interface{}, depth int) []SchemaValidationRes
 				}
 				if nested, ok := item.(map[string]interface{}); ok {
 					results = append(results, validateObject(nested, depth+1)...)
+					if len(results) > maxValidationResults {
+						results = results[:maxValidationResults]
+					}
 				}
 			}
 		}
@@ -183,6 +195,9 @@ func validateObject(obj map[string]interface{}, depth int) []SchemaValidationRes
 			Source:             rule.Source,
 			GoogleDocURL:       rule.GoogleDocURL,
 		})
+		if len(results) >= maxValidationResults {
+			return results[:maxValidationResults]
+		}
 	}
 
 	// Recurse into nested objects that have @type.
@@ -197,6 +212,9 @@ func validateObject(obj map[string]interface{}, depth int) []SchemaValidationRes
 		case map[string]interface{}:
 			if _, hasType := v["@type"]; hasType {
 				results = append(results, validateObject(v, depth+1)...)
+				if len(results) > maxValidationResults {
+					results = results[:maxValidationResults]
+				}
 			}
 		case []interface{}:
 			for _, item := range v {
@@ -206,6 +224,9 @@ func validateObject(obj map[string]interface{}, depth int) []SchemaValidationRes
 				if nested, ok := item.(map[string]interface{}); ok {
 					if _, hasType := nested["@type"]; hasType {
 						results = append(results, validateObject(nested, depth+1)...)
+						if len(results) > maxValidationResults {
+							results = results[:maxValidationResults]
+						}
 					}
 				}
 			}

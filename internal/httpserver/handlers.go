@@ -167,6 +167,13 @@ func (s *Server) handleCrawl(w http.ResponseWriter, r *http.Request) {
 	}
 
 	runNow := activeCount < maxConcurrent
+	if runNow {
+		if err := s.db.UpdateJobStarted(job.ID); err != nil {
+			s.crawlMu.Unlock()
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("starting job: %v", err))
+			return
+		}
+	}
 	s.crawlMu.Unlock()
 
 	if !runNow {
@@ -188,7 +195,7 @@ func (s *Server) handleCrawl(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusAccepted, map[string]string{
 		"jobId":  job.ID,
-		"status": "queued",
+		"status": "running",
 	})
 }
 

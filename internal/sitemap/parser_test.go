@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/sitemap"
@@ -133,6 +134,36 @@ func TestFetchAndParse_IndexWithChild(t *testing.T) {
 	}
 	if entries[0].SourceURL != srv.URL+"/child.xml" {
 		t.Errorf("entry[0].SourceURL = %q, want %q", entries[0].SourceURL, srv.URL+"/child.xml")
+	}
+}
+
+func TestFetchAndParse_StopsUnboundedIndexTraversal(t *testing.T) {
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	var b strings.Builder
+	b.WriteString(`<?xml version="1.0" encoding="UTF-8"?><sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">`)
+	for i := 0; i < 1001; i++ {
+		b.WriteString(`<sitemap><loc>`)
+		b.WriteString(srv.URL)
+		b.WriteString(`/child-`)
+		b.WriteString(string(rune('a' + i%26)))
+		b.WriteString(`.xml</loc></sitemap>`)
+	}
+	b.WriteString(`</sitemapindex>`)
+
+	mux.HandleFunc("/sitemap.xml", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/xml")
+		w.Write([]byte(b.String()))
+	})
+
+	_, _, err := sitemap.FetchAndParse(srv.URL+"/sitemap.xml", 1, srv.Client())
+	if err == nil {
+		t.Fatalf("FetchAndParse() error = nil, want traversal cap error")
+	}
+	if !strings.Contains(err.Error(), "sitemap traversal exceeded") {
+		t.Fatalf("FetchAndParse() error = %v", err)
 	}
 }
 

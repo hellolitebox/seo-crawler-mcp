@@ -41,6 +41,18 @@ func TestMetaCharsetDetection(t *testing.T) {
 	}
 }
 
+func TestMetaCharsetDetectionAllowsWhitespaceAroundEquals(t *testing.T) {
+	iso := append([]byte(`<html><head><meta charset = "iso-8859-1"></head><body>`), 0xe9)
+	iso = append(iso, []byte(`</body></html>`)...)
+	result, err := DetectAndConvert(iso, "text/html")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !containsUTF8(result, "é") {
+		t.Errorf("expected converted UTF-8 é, got %q", string(result))
+	}
+}
+
 func TestHeaderWinsOverMeta(t *testing.T) {
 	// Meta says UTF-8, header says latin1. Header should win.
 	iso := append([]byte(`<html><head><meta charset="utf-8"></head><body>`), 0xe9)

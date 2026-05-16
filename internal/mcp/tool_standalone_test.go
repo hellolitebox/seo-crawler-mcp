@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
+	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/config"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/fetcher"
 	gomcp "github.com/mark3labs/mcp-go/mcp"
 )
@@ -78,6 +80,44 @@ func TestAnalyzeURL(t *testing.T) {
 	}
 	if len(resp.Links) < 2 {
 		t.Errorf("expected at least 2 links, got %d", len(resp.Links))
+	}
+}
+
+func TestAnalyzeURLMarksTrackingJobCompleted(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprint(w, `<!doctype html><html><head><title>Tracked</title><meta name="description" content="Tracked page description."><link rel="canonical" href="/"></head><body><h1>Tracked</h1><p>Enough text for the standalone analyzer to parse.</p></body></html>`)
+	}))
+	defer srv.Close()
+
+	db := setupTestDB(t)
+	s := NewServer(ServerConfig{
+		DB:      db,
+		Fetcher: newTestFetcher(),
+		Config: &config.Config{
+			MaxConcurrentAnalyze: 1,
+			AnalyzeJobTTL:        time.Hour,
+		},
+	})
+	req := gomcp.CallToolRequest{}
+	req.Params.Arguments = map[string]any{"url": srv.URL + "/"}
+
+	for i := 0; i < 2; i++ {
+		result, err := s.handleAnalyzeURL(context.Background(), req)
+		if err != nil {
+			t.Fatalf("handleAnalyzeURL returned error: %v", err)
+		}
+		if result.IsError {
+			t.Fatalf("analyze call %d unexpectedly hit active-job limit: %v", i+1, result.Content)
+		}
+	}
+
+	active, err := db.CountActiveJobs("analyze")
+	if err != nil {
+		t.Fatalf("CountActiveJobs: %v", err)
+	}
+	if active != 0 {
+		t.Fatalf("active analyze jobs = %d, want 0", active)
 	}
 }
 

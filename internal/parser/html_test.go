@@ -171,10 +171,10 @@ func TestParseSPAStub(t *testing.T) {
 
 func TestCanonicalType(t *testing.T) {
 	tests := []struct {
-		name      string
-		html      string
-		pageURL   string
-		wantType  string
+		name     string
+		html     string
+		pageURL  string
+		wantType string
 	}{
 		{
 			name:     "self",
@@ -209,6 +209,57 @@ func TestCanonicalType(t *testing.T) {
 	}
 }
 
+func TestMetadataSelectorsHandleCaseAndRelTokens(t *testing.T) {
+	html := []byte(`<!doctype html>
+<html>
+<head>
+  <META NAME="Description" content="Mixed case description">
+  <META NAME="Robots" content="noindex">
+  <link rel="canonical alternate" href="https://example.com/canonical">
+  <link rel="NEXT" href="/page/2">
+  <link rel="alternate stylesheet" hreflang="es" href="/es">
+  <meta PROPERTY="OG:URL" content="https://example.com/canonical">
+  <meta NAME="Twitter:Card" content="summary_large_image">
+</head>
+<body>
+  <meta NAME="Robots" content="noindex">
+  <link rel="ALTERNATE" hreflang="fr" href="/fr">
+</body>
+</html>`)
+
+	r, err := ParseHTML(html, "https://example.com/current", http.Header{})
+	if err != nil {
+		t.Fatalf("ParseHTML error: %v", err)
+	}
+	if r.MetaDescription != "Mixed case description" {
+		t.Fatalf("MetaDescription = %q", r.MetaDescription)
+	}
+	if r.IndexabilityState != "noindex_meta" {
+		t.Fatalf("IndexabilityState = %q, want noindex_meta", r.IndexabilityState)
+	}
+	if r.CanonicalRaw != "https://example.com/canonical" {
+		t.Fatalf("CanonicalRaw = %q", r.CanonicalRaw)
+	}
+	if r.RelNext == nil || r.RelNext.Resolved != "https://example.com/page/2" {
+		t.Fatalf("RelNext = %#v", r.RelNext)
+	}
+	if len(r.Hreflangs) != 2 {
+		t.Fatalf("Hreflangs = %d, want 2", len(r.Hreflangs))
+	}
+	if r.OpenGraph.URL != "https://example.com/canonical" {
+		t.Fatalf("OpenGraph.URL = %q", r.OpenGraph.URL)
+	}
+	if r.TwitterCard.Card != "summary_large_image" {
+		t.Fatalf("TwitterCard.Card = %q", r.TwitterCard.Card)
+	}
+	if !r.MetaRobotsOutsideHead {
+		t.Fatalf("MetaRobotsOutsideHead = false, want true")
+	}
+	if !r.HreflangOutsideHead {
+		t.Fatalf("HreflangOutsideHead = false, want true")
+	}
+}
+
 func TestJSONLDExtraction(t *testing.T) {
 	html := `<html><head>
 		<script type="application/ld+json">{"@type": "Organization", "name": "Test"}</script>
@@ -231,6 +282,27 @@ func TestJSONLDExtraction(t *testing.T) {
 	}
 	if r.JSONLDTypes[1] != "WebSite" {
 		t.Errorf("type[1] = %q", r.JSONLDTypes[1])
+	}
+}
+
+func TestParseHTMLJSONLDGraphAndTypeArray(t *testing.T) {
+	html := `<html><head>
+		<script type="application/ld+json">{"@graph":[{"@type":["WebPage","FAQPage"]},{"@type":"BreadcrumbList"}]}</script>
+	</head><body></body></html>`
+
+	r, err := ParseHTML([]byte(html), "https://example.com", http.Header{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := []string{"WebPage", "FAQPage", "BreadcrumbList"}
+	if len(r.JSONLDTypes) != len(want) {
+		t.Fatalf("JSONLDTypes = %v, want %v", r.JSONLDTypes, want)
+	}
+	for i := range want {
+		if r.JSONLDTypes[i] != want[i] {
+			t.Fatalf("JSONLDTypes = %v, want %v", r.JSONLDTypes, want)
+		}
 	}
 }
 
@@ -587,9 +659,9 @@ func TestParseHTML_ImageSizeAttributes(t *testing.T) {
 	}
 
 	tests := []struct {
-		idx       int
-		wantW     bool
-		wantH     bool
+		idx   int
+		wantW bool
+		wantH bool
 	}{
 		{0, true, true},   // both
 		{1, true, false},  // width only

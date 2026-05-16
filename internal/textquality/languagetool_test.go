@@ -2,6 +2,9 @@ package textquality
 
 import (
 	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 )
 
@@ -43,5 +46,32 @@ func TestLTClient_Check_EmptyText(t *testing.T) {
 	}
 	if len(result.Matches) != 0 {
 		t.Errorf("Expected no matches for empty text, got %d", len(result.Matches))
+	}
+}
+
+func TestLTClient_CheckUsesDefaultClientWhenNil(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v2/check" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"language":{"detectedLanguage":{"name":"English","code":"en"}},"matches":[]}`)
+	}))
+	defer server.Close()
+
+	client := &LTClient{BaseURL: server.URL}
+	if _, err := client.Check(context.Background(), "plain text", "en-US"); err != nil {
+		t.Fatalf("Check failed with nil HTTPClient: %v", err)
+	}
+}
+
+func TestSubstringByRuneOffset(t *testing.T) {
+	got, ok := substringByRuneOffset("ab caf\u00e9", 3, 4)
+	if !ok {
+		t.Fatal("substringByRuneOffset returned !ok")
+	}
+	if got != "caf\u00e9" {
+		t.Fatalf("substring = %q, want cafe with accent", got)
 	}
 }

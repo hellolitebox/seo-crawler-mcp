@@ -89,6 +89,9 @@ func (h *HostOnboarder) OnboardHost(ctx context.Context, jobID, host, scheme str
 		return info, err
 	}
 	h.discoverLlmsTxt(ctx, jobID, host, scheme, info)
+	if err := ctx.Err(); err != nil {
+		return info, err
+	}
 
 	return info, nil
 }
@@ -252,6 +255,9 @@ func (h *HostOnboarder) discoverLlmsTxt(ctx context.Context, jobID, host, scheme
 	llmsURL := fmt.Sprintf("%s://%s/llms.txt", scheme, host)
 	result, err := h.fetcher.FetchContext(ctx, llmsURL)
 
+	if ctx.Err() != nil {
+		return
+	}
 	if err != nil || result.StatusCode != 200 {
 		info.LlmsTxtFound = false
 		info.Events = append(info.Events, fmt.Sprintf("llms.txt not found for %q", host))

@@ -18,7 +18,7 @@ import (
 
 // analyzeResult is the JSON response from analyze_url.
 type analyzeResult struct {
-	URL    string                  `json:"url"`
+	URL    string                 `json:"url"`
 	Page   *analyzePageData       `json:"page"`
 	Links  []analyzeLinkData      `json:"links"`
 	Issues []issues.DetectedIssue `json:"issues"`
@@ -60,6 +60,14 @@ func (s *Server) handleAnalyzeURL(ctx context.Context, req gomcp.CallToolRequest
 		return gomcp.NewToolResultError(fmt.Sprintf("invalid URL %q: must be http or https", rawURL)), nil
 	}
 
+	var analyzeJobID string
+	finishAnalyzeJob := func(status string, errMsg *string) {
+		if s.db == nil || analyzeJobID == "" {
+			return
+		}
+		_ = s.db.UpdateJobFinished(analyzeJobID, status, errMsg)
+	}
+
 	// Guard: purge expired and check concurrent analyze jobs.
 	if s.db != nil {
 		_, _ = s.db.PurgeExpiredAnalyzeJobs()
@@ -81,25 +89,37 @@ func (s *Server) handleAnalyzeURL(ctx context.Context, req gomcp.CallToolRequest
 		if s.config != nil && s.config.AnalyzeJobTTL > 0 {
 			ttl = s.config.AnalyzeJobTTL
 		}
-		_, _ = s.db.CreateJobWithTTL("analyze", fmt.Sprintf(`{"url":%q}`, rawURL), "[]", ttl)
+		job, createErr := s.db.CreateJobWithTTL("analyze", fmt.Sprintf(`{"url":%q}`, rawURL), "[]", ttl)
+		if createErr != nil {
+			return gomcp.NewToolResultError(fmt.Sprintf("creating analyze job: %v", createErr)), nil
+		}
+		analyzeJobID = job.ID
 	}
 
 	if s.fetcher == nil {
+		msg := "server not configured: fetcher unavailable"
+		finishAnalyzeJob("failed", &msg)
 		return gomcp.NewToolResultError("server not configured: fetcher unavailable"), nil
 	}
 
 	// Fetch the URL.
 	fetchResult, err := s.fetcher.Fetch(rawURL)
 	if err != nil {
+		msg := fmt.Sprintf("fetching %q: %v", rawURL, err)
+		finishAnalyzeJob("failed", &msg)
 		return gomcp.NewToolResultError(fmt.Sprintf("fetching %q: %v", rawURL, err)), nil
 	}
 	if fetchResult.Error != nil {
+		msg := fmt.Sprintf("fetching %q: %v", rawURL, fetchResult.Error)
+		finishAnalyzeJob("failed", &msg)
 		return gomcp.NewToolResultError(fmt.Sprintf("fetching %q: %v", rawURL, fetchResult.Error)), nil
 	}
 
 	// Parse HTML.
 	parseResult, err := parser.ParseHTML(fetchResult.Body, fetchResult.FinalURL, fetchResult.ResponseHeaders)
 	if err != nil {
+		msg := fmt.Sprintf("parsing HTML from %q: %v", rawURL, err)
+		finishAnalyzeJob("failed", &msg)
 		return gomcp.NewToolResultError(fmt.Sprintf("parsing HTML from %q: %v", rawURL, err)), nil
 	}
 
@@ -175,6 +195,7 @@ func (s *Server) handleAnalyzeURL(ctx context.Context, req gomcp.CallToolRequest
 		Issues: detected,
 	}
 
+	finishAnalyzeJob("completed", nil)
 	return gomcp.NewToolResultJSON(result)
 }
 
@@ -253,13 +274,13 @@ type robotsTestResult struct {
 
 // robotsResult is the JSON response from check_robots_txt.
 type robotsResult struct {
-	Host        string              `json:"host"`
-	RobotsURL   string              `json:"robotsUrl"`
-	RuleCount   int                 `json:"ruleCount"`
-	Sitemaps    []string            `json:"sitemaps"`
-	CrawlDelay  int                 `json:"crawlDelay"`
-	TestResults []robotsTestResult  `json:"testResults,omitempty"`
-	Directives  []robots.Directive  `json:"directives"`
+	Host        string             `json:"host"`
+	RobotsURL   string             `json:"robotsUrl"`
+	RuleCount   int                `json:"ruleCount"`
+	Sitemaps    []string           `json:"sitemaps"`
+	CrawlDelay  int                `json:"crawlDelay"`
+	TestResults []robotsTestResult `json:"testResults,omitempty"`
+	Directives  []robots.Directive `json:"directives"`
 }
 
 func (s *Server) handleCheckRobotsTxt(ctx context.Context, req gomcp.CallToolRequest) (*gomcp.CallToolResult, error) {
@@ -364,10 +385,10 @@ func (s *Server) handleCheckRobotsTxt(ctx context.Context, req gomcp.CallToolReq
 
 // sitemapResult is the JSON response from parse_sitemap.
 type sitemapResult struct {
-	URL           string           `json:"url"`
-	TotalEntries  int              `json:"totalEntries"`
-	SitemapCount  int              `json:"sitemapCount"`
-	Entries       []sitemap.Entry  `json:"entries"`
+	URL          string          `json:"url"`
+	TotalEntries int             `json:"totalEntries"`
+	SitemapCount int             `json:"sitemapCount"`
+	Entries      []sitemap.Entry `json:"entries"`
 }
 
 func (s *Server) handleParseSitemap(ctx context.Context, req gomcp.CallToolRequest) (*gomcp.CallToolResult, error) {

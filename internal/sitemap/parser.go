@@ -16,6 +16,10 @@ import (
 // maxBodySize caps sitemap reads at 20MB to prevent OOM.
 const maxBodySize = 20 * 1024 * 1024
 
+// maxSitemapFetches caps recursive sitemap-index traversal. maxEntries limits
+// returned URLs, but index-only trees can otherwise force unbounded network fetches.
+const maxSitemapFetches = 1000
+
 // Entry represents a single URL entry from a sitemap.
 type Entry struct {
 	Loc        string  `xml:"loc" json:"loc"`
@@ -78,6 +82,9 @@ func FetchAndParseContext(ctx context.Context, sitemapURL string, maxEntries int
 		if err := ctx.Err(); err != nil {
 			return entries, sitemapCount, err
 		}
+		if sitemapCount >= maxSitemapFetches {
+			return entries, sitemapCount, fmt.Errorf("sitemap traversal exceeded %d fetched sitemaps", maxSitemapFetches)
+		}
 		current := queue[0]
 		queue = queue[1:]
 
@@ -97,6 +104,9 @@ func FetchAndParseContext(ctx context.Context, sitemapURL string, maxEntries int
 		// Try as index first.
 		indexURLs, err := ParseIndex(data)
 		if err == nil && len(indexURLs) > 0 {
+			if len(visited)+len(queue)+len(indexURLs) > maxSitemapFetches {
+				return entries, sitemapCount, fmt.Errorf("sitemap traversal exceeded %d queued sitemaps", maxSitemapFetches)
+			}
 			queue = append(queue, indexURLs...)
 			continue
 		}

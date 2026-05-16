@@ -258,6 +258,32 @@ func TestQueryIssues_FilterByType(t *testing.T) {
 	}
 }
 
+func TestQueryIssues_FilterBySeverity(t *testing.T) {
+	db := testDB(t)
+	jobID := seedJobWithIssues(t, db)
+
+	result, err := db.QueryIssues(jobID, QueryFilter{Severity: "warning"}, "", 10)
+	if err != nil {
+		t.Fatalf("QueryIssues: %v", err)
+	}
+	if len(result.Results) != 2 {
+		t.Fatalf("expected 2 warning issues, got %d", len(result.Results))
+	}
+	if result.TotalCount != 2 {
+		t.Errorf("expected TotalCount=2, got %d", result.TotalCount)
+	}
+	for _, iss := range result.Results {
+		if iss.Severity != "warning" {
+			t.Errorf("expected warning severity, got %q", iss.Severity)
+		}
+	}
+	for _, ignored := range result.IgnoredFilters {
+		if ignored == "Severity" {
+			t.Fatal("Severity should not be ignored by QueryIssues")
+		}
+	}
+}
+
 func TestQueryIssues_IgnoredFilters(t *testing.T) {
 	db := testDB(t)
 	jobID := seedJobWithIssues(t, db)
@@ -343,6 +369,28 @@ func TestQueryIssues_Pagination(t *testing.T) {
 	}
 	if r3.NextCursor != "" {
 		t.Errorf("expected empty cursor on last page")
+	}
+}
+
+func TestCursorQueriesNormalizeNonPositiveLimit(t *testing.T) {
+	db := testDB(t)
+	jobID := seedJobWithIssues(t, db)
+
+	issues, err := db.QueryIssues(jobID, QueryFilter{}, "", 0)
+	if err != nil {
+		t.Fatalf("QueryIssues limit 0: %v", err)
+	}
+	if len(issues.Results) != 8 {
+		t.Fatalf("QueryIssues limit 0 returned %d results, want 8", len(issues.Results))
+	}
+
+	pagesJobID := seedJobWithPages(t, db, 3)
+	pages, err := db.QueryPages(pagesJobID, QueryFilter{}, "", -1)
+	if err != nil {
+		t.Fatalf("QueryPages negative limit: %v", err)
+	}
+	if len(pages.Results) != 3 {
+		t.Fatalf("QueryPages negative limit returned %d results, want 3", len(pages.Results))
 	}
 }
 

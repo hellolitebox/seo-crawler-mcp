@@ -68,6 +68,7 @@ func Parse(content string) *LlmsTxt {
 	matches := urlPattern.FindAllString(content, -1)
 	seen := map[string]bool{}
 	for _, u := range matches {
+		u = strings.TrimRight(u, ".,;:!?")
 		if !seen[u] {
 			seen[u] = true
 			result.URLs = append(result.URLs, u)

@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/ssrf"
 )
 
 // AxeResult holds the results from an axe-core accessibility audit.
@@ -16,6 +18,7 @@ type AxeResult struct {
 	Violations []AxeIssue `json:"violations"`
 	Passes     []AxeIssue `json:"passes"`
 	Incomplete int        `json:"incomplete"`
+	Error      string     `json:"error,omitempty"`
 }
 
 // AxeIssue represents a single accessibility violation found by axe-core.
@@ -25,18 +28,29 @@ type AxeIssue struct {
 	Description string   `json:"description"`
 	Help        string   `json:"help"`
 	HelpURL     string   `json:"helpUrl"`
-	Tags        []string `json:"tags"` // WCAG tags
+	Tags        []string `json:"tags"`  // WCAG tags
 	Nodes       int      `json:"nodes"` // Number of affected elements
 }
 
-// IsPublicURL returns true if the URL points to a public host (not localhost/loopback).
+// IsPublicURL returns true if the URL resolves to a public host.
 func IsPublicURL(rawURL string) bool {
-	parsed, err := url.Parse(rawURL)
+	guard := ssrf.NewGuard(false)
+	if err := guard.ValidateURL(rawURL); err != nil {
+		return false
+	}
+	parsedHost, err := urlHostname(rawURL)
 	if err != nil {
 		return false
 	}
-	host := parsed.Hostname()
-	return host != "localhost" && host != "127.0.0.1" && host != "::1" && host != "0.0.0.0"
+	return guard.ValidateHost(parsedHost) == nil
+}
+
+func urlHostname(rawURL string) (string, error) {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return "", err
+	}
+	return parsed.Hostname(), nil
 }
 
 // RunAxeAudit runs an axe-core accessibility audit on a single URL using Playwright.
@@ -48,6 +62,9 @@ func RunAxeAudit(ctx context.Context, pageURL string) (*AxeResult, error) {
 	}
 	if len(results) == 0 {
 		return nil, fmt.Errorf("no results returned for %s", pageURL)
+	}
+	if results[0].Error != "" {
+		return nil, fmt.Errorf("axe audit failed for %s: %s", pageURL, results[0].Error)
 	}
 	return results[0], nil
 }
@@ -88,6 +105,12 @@ func RunAxeAuditBatch(ctx context.Context, urls []string) ([]*AxeResult, error) 
 	var results []*AxeResult
 	if err := json.Unmarshal(output, &results); err != nil {
 		return nil, fmt.Errorf("parsing axe batch output: %w", err)
+	}
+	for _, result := range results {
+		if result != nil && result.Error != "" {
+			result.Violations = nil
+			result.Passes = nil
+		}
 	}
 	return results, nil
 }
@@ -157,7 +180,8 @@ with sync_playwright() as p:
                 "url": url,
                 "violations": [],
                 "passes": [],
-                "incomplete": 0
+                "incomplete": 0,
+                "error": str(e)
             })
             try:
                 page.close()

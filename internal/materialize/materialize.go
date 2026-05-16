@@ -3,24 +3,40 @@
 package materialize
 
 import (
+	"database/sql"
 	"fmt"
 	"strconv"
 
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/storage"
 )
 
+type sqlRunner interface {
+	Exec(query string, args ...any) (sql.Result, error)
+	Query(query string, args ...any) (*sql.Rows, error)
+	QueryRow(query string, args ...any) *sql.Row
+}
+
 // Materialize runs post-crawl materialization for a completed job.
 func Materialize(db *storage.DB, jobID string) error {
-	if err := materializeCanonicalClusters(db, jobID); err != nil {
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("starting materialization transaction for job %q: %w", jobID, err)
+	}
+	defer tx.Rollback()
+
+	if err := materializeCanonicalClusters(tx, jobID); err != nil {
 		return fmt.Errorf("materializing canonical clusters for job %q: %w", jobID, err)
 	}
-	if err := materializeDuplicateClusters(db, jobID); err != nil {
+	if err := materializeDuplicateClusters(tx, jobID); err != nil {
 		return fmt.Errorf("materializing duplicate clusters for job %q: %w", jobID, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing materialization for job %q: %w", jobID, err)
 	}
 	return nil
 }
 
-func materializeCanonicalClusters(db *storage.DB, jobID string) error {
+func materializeCanonicalClusters(db sqlRunner, jobID string) error {
 	// Clear existing clusters for this job
 	if _, err := db.Exec(`DELETE FROM canonical_cluster_members WHERE job_id = ?`, jobID); err != nil {
 		return fmt.Errorf("clearing canonical cluster members: %w", err)
@@ -101,7 +117,7 @@ func materializeCanonicalClusters(db *storage.DB, jobID string) error {
 	return nil
 }
 
-func materializeDuplicateClusters(db *storage.DB, jobID string) error {
+func materializeDuplicateClusters(db sqlRunner, jobID string) error {
 	// Clear existing clusters for this job
 	if _, err := db.Exec(`DELETE FROM duplicate_cluster_members WHERE job_id = ?`, jobID); err != nil {
 		return fmt.Errorf("clearing duplicate cluster members: %w", err)

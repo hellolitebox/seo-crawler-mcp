@@ -2,6 +2,7 @@ package urlutil
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"strings"
 
@@ -21,7 +22,7 @@ type ScopeChecker struct {
 func NewScopeChecker(mode string, seedHost string, allowedHosts []string) (*ScopeChecker, error) {
 	sc := &ScopeChecker{
 		mode:     mode,
-		seedHost: strings.ToLower(seedHost),
+		seedHost: normalizeHost(seedHost),
 	}
 
 	switch mode {
@@ -44,7 +45,7 @@ func NewScopeChecker(mode string, seedHost string, allowedHosts []string) (*Scop
 	case "allowlist":
 		sc.allowedHosts = make(map[string]bool, len(allowedHosts))
 		for _, h := range allowedHosts {
-			sc.allowedHosts[strings.ToLower(h)] = true
+			sc.allowedHosts[normalizeHost(h)] = true
 		}
 
 	default:
@@ -52,6 +53,14 @@ func NewScopeChecker(mode string, seedHost string, allowedHosts []string) (*Scop
 	}
 
 	return sc, nil
+}
+
+func normalizeHost(host string) string {
+	host = strings.ToLower(strings.TrimSpace(host))
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	return strings.Trim(host, "[]")
 }
 
 // IsInScope returns true if the URL is within the configured crawl boundary.

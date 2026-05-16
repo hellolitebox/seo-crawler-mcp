@@ -146,3 +146,49 @@ func TestMaterializeDuplicateClusters(t *testing.T) {
 		t.Errorf("expected 2 duplicate cluster members, got %d", members)
 	}
 }
+
+func TestMaterializeRollsBackOnLaterFailure(t *testing.T) {
+	db := testDB(t)
+	jobID := "job-materialize-rollback"
+	seedJob(t, db, jobID)
+
+	// Existing rollup data should survive if a later materialization phase fails.
+	_, err := db.Exec(`
+		INSERT INTO canonical_clusters (job_id, cluster_url, member_count, is_self_referencing)
+		VALUES (?, 'https://example.com/old', 2, 0)
+	`, jobID)
+	if err != nil {
+		t.Fatalf("seeding existing canonical cluster: %v", err)
+	}
+
+	u1 := seedURL(t, db, jobID, "https://example.com/a", "example.com")
+	u2 := seedURL(t, db, jobID, "https://example.com/b", "example.com")
+	f1 := seedFetch(t, db, jobID, 1, u1)
+	f2 := seedFetch(t, db, jobID, 2, u2)
+	for _, pair := range []struct {
+		urlID   int64
+		fetchID int64
+	}{{u1, f1}, {u2, f2}} {
+		_, err := db.Exec(`INSERT INTO pages (job_id, url_id, fetch_id, depth, canonical_url) VALUES (?, ?, ?, 1, 'https://example.com/new')`,
+			jobID, pair.urlID, pair.fetchID)
+		if err != nil {
+			t.Fatalf("seeding page: %v", err)
+		}
+	}
+
+	if _, err := db.Exec(`DROP TABLE duplicate_clusters`); err != nil {
+		t.Fatalf("dropping duplicate_clusters: %v", err)
+	}
+
+	if err := Materialize(db, jobID); err == nil {
+		t.Fatal("Materialize succeeded after dropping duplicate_clusters, want error")
+	}
+
+	var oldCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM canonical_clusters WHERE job_id = ? AND cluster_url = 'https://example.com/old'`, jobID).Scan(&oldCount); err != nil {
+		t.Fatalf("counting old canonical clusters: %v", err)
+	}
+	if oldCount != 1 {
+		t.Fatalf("old canonical cluster count = %d, want 1 after rollback", oldCount)
+	}
+}

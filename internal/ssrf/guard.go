@@ -17,26 +17,28 @@ type Guard struct {
 // NewGuard creates an SSRF guard. If allowPrivateNetworks is true, all IP checks are bypassed.
 func NewGuard(allowPrivateNetworks bool) *Guard {
 	cidrs := []string{
-		"0.0.0.0/8",         // "this host" — can alias localhost on some OS
-		"127.0.0.0/8",       // loopback
-		"10.0.0.0/8",        // private class A
-		"100.64.0.0/10",     // carrier-grade NAT (RFC 6598) — internal in cloud
-		"172.16.0.0/12",     // private class B
-		"192.0.0.0/24",      // IETF protocol assignments
-		"192.0.2.0/24",      // TEST-NET-1
-		"192.168.0.0/16",    // private class C
-		"198.18.0.0/15",     // benchmark testing (RFC 2544)
-		"198.51.100.0/24",   // TEST-NET-2
-		"203.0.113.0/24",    // TEST-NET-3
-		"169.254.0.0/16",    // link-local
-		"240.0.0.0/4",       // reserved for future use
+		"0.0.0.0/8",          // "this host" — can alias localhost on some OS
+		"127.0.0.0/8",        // loopback
+		"10.0.0.0/8",         // private class A
+		"100.64.0.0/10",      // carrier-grade NAT (RFC 6598) — internal in cloud
+		"172.16.0.0/12",      // private class B
+		"192.0.0.0/24",       // IETF protocol assignments
+		"192.0.2.0/24",       // TEST-NET-1
+		"192.168.0.0/16",     // private class C
+		"198.18.0.0/15",      // benchmark testing (RFC 2544)
+		"198.51.100.0/24",    // TEST-NET-2
+		"203.0.113.0/24",     // TEST-NET-3
+		"169.254.0.0/16",     // link-local
+		"224.0.0.0/4",        // IPv4 multicast
+		"240.0.0.0/4",        // reserved for future use
 		"255.255.255.255/32", // broadcast
-		"::1/128",           // IPv6 loopback
+		"::1/128",            // IPv6 loopback
 
-		"::/128",            // IPv6 unspecified
-		"fe80::/10",         // IPv6 link-local
-		"fc00::/7",          // IPv6 unique local
-		"2001:db8::/32",     // IPv6 documentation range
+		"::/128",        // IPv6 unspecified
+		"ff00::/8",      // IPv6 multicast
+		"fe80::/10",     // IPv6 link-local
+		"fc00::/7",      // IPv6 unique local
+		"2001:db8::/32", // IPv6 documentation range
 	}
 
 	blockedCIDRs := make([]*net.IPNet, 0, len(cidrs))

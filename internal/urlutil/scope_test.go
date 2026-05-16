@@ -148,13 +148,14 @@ func TestScopeChecker_UserinfoRejection(t *testing.T) {
 
 func TestScopeChecker_PortHandling(t *testing.T) {
 	tests := []struct {
-		name      string
-		mode      string
-		seedHost  string
-		url       string
-		want      bool
+		name     string
+		mode     string
+		seedHost string
+		url      string
+		want     bool
 	}{
 		{"registrable domain with port", "registrable_domain", "www.example.com", "https://example.com:8443/page", true},
+		{"seed host with port", "exact_host", "www.example.com:443", "https://www.example.com/page", true},
 		{"exact host with port", "exact_host", "www.example.com", "https://www.example.com:443/page", true},
 	}
 

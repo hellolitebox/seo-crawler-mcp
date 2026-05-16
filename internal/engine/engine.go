@@ -301,21 +301,24 @@ func (e *Engine) startJob(ctx context.Context, jobID string) (*storage.CrawlJob,
 	if job.Status == "cancelled" || job.Status == "cancelling" {
 		return nil, e.cancelJob(jobID, context.Canceled)
 	}
-	if job.Status != "queued" {
-		return nil, fmt.Errorf("job %s has status %q, expected queued", jobID, job.Status)
+	alreadyStarted := job.Status == "running"
+	if job.Status != "queued" && !alreadyStarted {
+		return nil, fmt.Errorf("job %s has status %q, expected queued or running", jobID, job.Status)
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, e.cancelJob(jobID, err)
 	}
-	if err := e.db.UpdateJobStarted(jobID); err != nil {
-		current, getErr := e.db.GetJob(jobID)
-		if getErr == nil && (current.Status == "cancelled" || current.Status == "cancelling" || ctx.Err() != nil) {
-			if ctx.Err() != nil {
-				return nil, e.cancelJob(jobID, ctx.Err())
+	if !alreadyStarted {
+		if err := e.db.UpdateJobStarted(jobID); err != nil {
+			current, getErr := e.db.GetJob(jobID)
+			if getErr == nil && (current.Status == "cancelled" || current.Status == "cancelling" || ctx.Err() != nil) {
+				if ctx.Err() != nil {
+					return nil, e.cancelJob(jobID, ctx.Err())
+				}
+				return nil, e.cancelJob(jobID, context.Canceled)
 			}
-			return nil, e.cancelJob(jobID, context.Canceled)
+			return nil, fmt.Errorf("starting job: %w", err)
 		}
-		return nil, fmt.Errorf("starting job: %w", err)
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, e.cancelJob(jobID, err)
@@ -859,30 +862,9 @@ func (e *Engine) runPostCrawlPhases(ctx context.Context, jobID string, counters 
 	}
 
 	// Recalculate inbound/outbound edge counts and shortest-path depths.
-	// inbound_edge_count counts every <a href>; inbound_linking_pages
-	// counts distinct source pages, which is what dashboards usually
-	// want when they ask "how many pages link here".
-	e.db.Exec(`
-		UPDATE pages SET inbound_edge_count = (
-			SELECT COUNT(*) FROM edges e
-			WHERE e.job_id = pages.job_id
-			  AND e.declared_target_url = (SELECT normalized_url FROM urls WHERE id = pages.url_id AND job_id = pages.job_id)
-			  AND e.is_internal = 1 AND e.relation_type = 'link'
-		) WHERE job_id = ?`, jobID)
-	e.db.Exec(`
-		UPDATE pages SET inbound_linking_pages = (
-			SELECT COUNT(DISTINCT e.source_url_id) FROM edges e
-			WHERE e.job_id = pages.job_id
-			  AND e.declared_target_url = (SELECT normalized_url FROM urls WHERE id = pages.url_id AND job_id = pages.job_id)
-			  AND e.is_internal = 1 AND e.relation_type = 'link'
-		) WHERE job_id = ?`, jobID)
-	e.db.Exec(`
-		UPDATE pages SET outbound_edge_count = (
-			SELECT COUNT(*) FROM edges e
-			WHERE e.job_id = pages.job_id
-			  AND e.source_url_id = pages.url_id
-			  AND e.is_internal = 1 AND e.relation_type = 'link'
-		) WHERE job_id = ?`, jobID)
+	if err := e.recalculatePageLinkCounts(jobID); err != nil {
+		slog.Warn("engine: recalculate page link counts failed", "err", err, "job_id", jobID)
+	}
 	if depthErr := e.recomputePageDepths(jobID); depthErr != nil {
 		slog.Error("engine: page depth recomputation failed", "err", depthErr, "job_id", jobID)
 	}
@@ -891,6 +873,12 @@ func (e *Engine) runPostCrawlPhases(ctx context.Context, jobID string, counters 
 	// Global issue detection + materialization.
 	e.emitPhase(jobID, "global_issues", "detecting site-wide issues (duplicates, clusters, gaps)")
 	globalCfg := issues.DefaultGlobalConfig()
+	if e.config.ThinContentThreshold > 0 {
+		globalCfg.ThinContentThreshold = e.config.ThinContentThreshold
+	}
+	if e.config.DeepPageThreshold > 0 {
+		globalCfg.DeepPageThreshold = e.config.DeepPageThreshold
+	}
 	globalCount, globalErr := issues.DetectGlobalIssues(e.db, jobID, globalCfg)
 	if globalErr != nil {
 		slog.Error("engine: global issue detection failed", "err", globalErr, "job_id", jobID)
@@ -2247,6 +2235,9 @@ func (e *Engine) checkMarkdownNegotiation(ctx context.Context, jobID string) {
 	slog.Info("engine: checking markdown content negotiation", "pages", len(urls), "job_id", jobID)
 
 	client := &http.Client{Timeout: 5 * time.Second} // shorter timeout: most servers respond fast or 404
+	if e.fetcher != nil {
+		client = e.fetcher.SafeClient()
+	}
 
 	type mdResult struct {
 		URL           string `json:"url"`
@@ -2285,6 +2276,14 @@ func (e *Engine) checkMarkdownNegotiation(ctx context.Context, jobID string) {
 				}
 				pageURL := urls[idx]
 				res := mdResult{URL: pageURL}
+
+				if e.ssrfGuard != nil {
+					parsed, parseErr := url.Parse(pageURL)
+					if parseErr != nil || e.ssrfGuard.ValidateURL(pageURL) != nil || e.ssrfGuard.ValidateHost(parsed.Hostname()) != nil {
+						results[idx] = res
+						continue
+					}
+				}
 
 				req, err := http.NewRequestWithContext(ctx, "GET", pageURL, nil)
 				if err == nil {
@@ -2762,6 +2761,44 @@ func countImagesWithEmptyAlt(images []parser.DiscoveredImage) int {
 	return count
 }
 
+// recalculatePageLinkCounts refreshes stored graph counters after post-crawl
+// phases have added their final edges. Inbound metrics use the normalized target
+// URL id captured on each edge; declared href text may differ from canonical URL
+// shape after normalization.
+func (e *Engine) recalculatePageLinkCounts(jobID string) error {
+	if _, err := e.db.Exec(`
+		UPDATE pages SET inbound_edge_count = (
+			SELECT COUNT(*) FROM edges e
+			WHERE e.job_id = pages.job_id
+			  AND e.normalized_target_url_id = pages.url_id
+			  AND e.is_internal = 1 AND e.relation_type = 'link'
+		) WHERE job_id = ?`, jobID); err != nil {
+		return fmt.Errorf("update inbound edge count: %w", err)
+	}
+
+	if _, err := e.db.Exec(`
+		UPDATE pages SET inbound_linking_pages = (
+			SELECT COUNT(DISTINCT e.source_url_id) FROM edges e
+			WHERE e.job_id = pages.job_id
+			  AND e.normalized_target_url_id = pages.url_id
+			  AND e.is_internal = 1 AND e.relation_type = 'link'
+		) WHERE job_id = ?`, jobID); err != nil {
+		return fmt.Errorf("update inbound linking pages: %w", err)
+	}
+
+	if _, err := e.db.Exec(`
+		UPDATE pages SET outbound_edge_count = (
+			SELECT COUNT(*) FROM edges e
+			WHERE e.job_id = pages.job_id
+			  AND e.source_url_id = pages.url_id
+			  AND e.is_internal = 1 AND e.relation_type = 'link'
+		) WHERE job_id = ?`, jobID); err != nil {
+		return fmt.Errorf("update outbound edge count: %w", err)
+	}
+
+	return nil
+}
+
 // recomputePageDepths recalculates page depth from the final internal link graph,
 // using the shortest path from the job's seed URLs. This avoids stale depths when
 // a page is first discovered via a longer path and a shorter path is found later.
@@ -2813,7 +2850,7 @@ func (e *Engine) recomputePageDepths(jobID string) error {
 		SELECT su.normalized_url, tu.normalized_url
 		FROM edges e
 		JOIN urls su ON su.id = e.source_url_id AND su.job_id = e.job_id
-		JOIN urls tu ON tu.normalized_url = e.declared_target_url AND tu.job_id = e.job_id
+		JOIN urls tu ON tu.id = e.normalized_target_url_id AND tu.job_id = e.job_id
 		JOIN pages sp ON sp.url_id = su.id AND sp.job_id = su.job_id
 		JOIN pages tp ON tp.url_id = tu.id AND tp.job_id = tu.job_id
 		WHERE e.job_id = ?

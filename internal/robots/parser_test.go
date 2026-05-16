@@ -145,6 +145,17 @@ func TestAnchorPattern(t *testing.T) {
 	}
 }
 
+func TestAnchoredTrailingWildcardPattern(t *testing.T) {
+	content := "User-agent: *\nDisallow: /private*$\n"
+	rf, err := robots.Parse(content)
+	if err != nil {
+		t.Fatalf("Parse() error: %v", err)
+	}
+	if rf.IsAllowed("Bot", "/private-anything") {
+		t.Error("/private-anything should match /private*$")
+	}
+}
+
 func TestCommentOnlyLines(t *testing.T) {
 	content := "# just a comment\n# another comment\n"
 	rf, err := robots.Parse(content)
@@ -166,6 +177,19 @@ func TestCaseInsensitiveUserAgent(t *testing.T) {
 
 	if rf.IsAllowed("googlebot", "/secret/page") {
 		t.Error("case-insensitive UA matching should work")
+	}
+}
+
+func TestUserAgentProductTokenMatch(t *testing.T) {
+	content := "User-agent: Googlebot\nDisallow: /secret/\n\nUser-agent: *\nAllow: /\n"
+	rf, err := robots.Parse(content)
+	if err != nil {
+		t.Fatalf("Parse() error: %v", err)
+	}
+
+	ua := "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"
+	if rf.IsAllowed(ua, "/secret/page") {
+		t.Error("full Googlebot UA should match Googlebot group")
 	}
 }
 

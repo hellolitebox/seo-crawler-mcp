@@ -354,6 +354,26 @@ func TestCleanCrawl_NoGlobalIssues(t *testing.T) {
 	}
 }
 
+func TestDetectSitemapNon200UsesLatestFetch(t *testing.T) {
+	db := testDB(t)
+	jobID := "job-sitemap-latest"
+	seedJob(t, db, jobID)
+
+	urlID := seedURL(t, db, jobID, "https://example.com/retried", "example.com", "fetched", "sitemap")
+	seedFetch(t, db, jobID, 1, urlID, 500)
+	seedFetch(t, db, jobID, 2, urlID, 200)
+	db.Exec(`INSERT INTO sitemap_entries (job_id, url, source_sitemap_url, source_host) VALUES (?, ?, ?, ?)`,
+		jobID, "https://example.com/retried", "https://example.com/sitemap.xml", "example.com")
+
+	n, err := detectSitemapNon200(db, jobID, DefaultGlobalConfig())
+	if err != nil {
+		t.Fatalf("detectSitemapNon200: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("detectSitemapNon200 inserted %d issues for a URL whose latest fetch is 200", n)
+	}
+}
+
 // ── Batch A global tests ───────────────────────────────────────────────
 
 func TestDetectDuplicateH1(t *testing.T) {
@@ -383,6 +403,42 @@ func TestDetectDuplicateH1(t *testing.T) {
 	}
 	if c := countIssuesByType(t, db, jobID, "duplicate_h1"); c != 1 {
 		t.Errorf("expected 1 issue in DB, got %d", c)
+	}
+}
+
+func TestDetectGlobalIssuesRunsDuplicateH1Detector(t *testing.T) {
+	db := testDB(t)
+	jobID := "job-global-dup-h1"
+	seedJob(t, db, jobID)
+
+	u1 := seedURL(t, db, jobID, "https://example.com/a", "example.com", "fetched", "seed")
+	u2 := seedURL(t, db, jobID, "https://example.com/b", "example.com", "fetched", "crawl")
+	f1 := seedFetch(t, db, jobID, 1, u1, 200)
+	f2 := seedFetch(t, db, jobID, 2, u2, 200)
+	seedPage(t, db, jobID, u1, f1, map[string]any{
+		"title":              "Page A",
+		"h1_json":            `["Repeated Heading"]`,
+		"inbound_edge_count": 1,
+		"canonical_url":      "https://example.com/a",
+	})
+	seedPage(t, db, jobID, u2, f2, map[string]any{
+		"title":              "Page B",
+		"h1_json":            `["Repeated Heading"]`,
+		"inbound_edge_count": 1,
+		"canonical_url":      "https://example.com/b",
+	})
+	seedEdge(t, db, jobID, u1, "https://example.com/b", "link", true, "static")
+	seedEdge(t, db, jobID, u2, "https://example.com/a", "link", true, "static")
+	db.Exec(`INSERT INTO sitemap_entries (job_id, url, source_sitemap_url, source_host) VALUES (?, ?, ?, ?)`,
+		jobID, "https://example.com/a", "https://example.com/sitemap.xml", "example.com")
+	db.Exec(`INSERT INTO sitemap_entries (job_id, url, source_sitemap_url, source_host) VALUES (?, ?, ?, ?)`,
+		jobID, "https://example.com/b", "https://example.com/sitemap.xml", "example.com")
+
+	if _, err := DetectGlobalIssues(db, jobID, DefaultGlobalConfig()); err != nil {
+		t.Fatalf("DetectGlobalIssues: %v", err)
+	}
+	if c := countIssuesByType(t, db, jobID, "duplicate_h1"); c != 1 {
+		t.Fatalf("duplicate_h1 issues = %d, want 1", c)
 	}
 }
 
@@ -427,7 +483,7 @@ func TestDetectNonIndexableCanonical(t *testing.T) {
 		"canonical_status_code": 200,
 	})
 	seedPage(t, db, jobID, u2, f2, map[string]any{
-		"title":             "Target Page",
+		"title":              "Target Page",
 		"indexability_state": "noindex_meta",
 	})
 

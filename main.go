@@ -42,7 +42,15 @@ func main() {
 
 	// Handle "purge" subcommand.
 	if flag.NArg() > 0 && flag.Arg(0) == "purge" {
-		runPurge(flag.Args()[1:])
+		cfg, err := config.LoadConfig(*configPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "config error: %v\n", err)
+			os.Exit(1)
+		}
+		if *dbPath != "" {
+			cfg.DBPath = *dbPath
+		}
+		runPurge(flag.Args()[1:], cfg.DBPath)
 		return
 	}
 
@@ -84,7 +92,7 @@ func main() {
 	// SEO_CRAWLER_RESUME_PURGES_ON_STARTUP=1 for explicit maintenance windows.
 	pendingPurges, _ := db.ResumePendingPurges()
 
-	guard := ssrf.NewGuard(cfg.AllowPrivateNetworks)
+	guard := newSSRFGuard(cfg)
 
 	f := fetcher.New(fetcher.Options{
 		UserAgent:           cfg.UserAgent,
@@ -174,4 +182,15 @@ func main() {
 		fmt.Fprintf(os.Stderr, "server error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func newSSRFGuard(cfg *config.Config) *ssrf.Guard {
+	if cfg != nil && !cfg.SSRFProtection {
+		return nil
+	}
+	allowPrivate := false
+	if cfg != nil {
+		allowPrivate = cfg.AllowPrivateNetworks
+	}
+	return ssrf.NewGuard(allowPrivate)
 }

@@ -2,6 +2,7 @@ package lighthouse
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -125,6 +126,16 @@ func TestParsePSIResponse(t *testing.T) {
 	}
 	if lcp.DisplayValue != "2.5 s" {
 		t.Errorf("LCP display = %q, want %q", lcp.DisplayValue, "2.5 s")
+	}
+}
+
+func TestPSIEndpointEscapesQueryValues(t *testing.T) {
+	endpoint := psiEndpoint("https://example.com/a?b=1&c=2", "key+with/slash", "mobile")
+	if !strings.Contains(endpoint, "url=https%3A%2F%2Fexample.com%2Fa%3Fb%3D1%26c%3D2") {
+		t.Fatalf("page URL was not escaped: %s", endpoint)
+	}
+	if !strings.Contains(endpoint, "key=key%2Bwith%2Fslash") {
+		t.Fatalf("API key was not escaped: %s", endpoint)
 	}
 }
 

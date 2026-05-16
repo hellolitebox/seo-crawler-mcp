@@ -233,3 +233,21 @@ func TestPool_Close(t *testing.T) {
 		t.Errorf("expected closed error, got: %v", err)
 	}
 }
+
+func TestPoolReleaseSlotDoesNotBlockAfterClose(t *testing.T) {
+	pool := NewPool(Options{MaxSlots: 1})
+	<-pool.slots
+	pool.Close()
+
+	done := make(chan struct{})
+	go func() {
+		pool.releaseSlot()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("releaseSlot blocked after pool close")
+	}
+}

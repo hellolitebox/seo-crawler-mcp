@@ -38,6 +38,8 @@ func DetectGlobalIssues(db *storage.DB, jobID string, cfg GlobalConfig) (int, er
 		detectDuplicateTitles,
 		detectDuplicateDescriptions,
 		detectDuplicateContent,
+		detectDuplicateH1,
+		detectDuplicateH2,
 		detectOrphanPages,
 		detectDeepPages,
 		detectHreflangNotReciprocal,
@@ -45,6 +47,8 @@ func DetectGlobalIssues(db *storage.DB, jobID string, cfg GlobalConfig) (int, er
 		detectCanonicalToNon200,
 		detectCanonicalChain,
 		detectCanonicalToRedirect,
+		detectNonIndexableCanonical,
+		detectUnlinkedCanonical,
 		detectBrokenPaginationChain,
 		detectPaginationCanonicalMismatch,
 		detectSitemapNon200,
@@ -692,9 +696,17 @@ func detectSitemapNon200(db *storage.DB, jobID string, _ GlobalConfig) (int, err
 		SELECT se.url, f.status_code, u.id
 		FROM sitemap_entries se
 		JOIN urls u ON u.job_id = se.job_id AND u.normalized_url = se.url
-		JOIN fetches f ON f.job_id = se.job_id AND f.requested_url_id = u.id
+		JOIN (
+			SELECT job_id, requested_url_id, MAX(fetch_seq) AS latest_fetch_seq
+			FROM fetches
+			WHERE job_id = ?
+			GROUP BY job_id, requested_url_id
+		) latest ON latest.job_id = se.job_id AND latest.requested_url_id = u.id
+		JOIN fetches f ON f.job_id = latest.job_id
+			AND f.requested_url_id = latest.requested_url_id
+			AND f.fetch_seq = latest.latest_fetch_seq
 		WHERE se.job_id = ? AND f.status_code IS NOT NULL AND f.status_code != 200
-	`, jobID)
+	`, jobID, jobID)
 	if err != nil {
 		return 0, fmt.Errorf("querying sitemap_non_200: %w", err)
 	}

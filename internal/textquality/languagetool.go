@@ -101,9 +101,7 @@ func (c *LTClient) Check(ctx context.Context, text, language string, opts ...Che
 
 	// Truncate very long texts to avoid overwhelming the server
 	const maxChars = 20000
-	if len(text) > maxChars {
-		text = text[:maxChars]
-	}
+	text = truncateRunes(text, maxChars)
 
 	form := url.Values{}
 	form.Set("text", text)
@@ -115,7 +113,11 @@ func (c *LTClient) Check(ctx context.Context, text, language string, opts ...Che
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	resp, err := c.HTTPClient.Do(req)
+	httpClient := c.HTTPClient
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("calling LanguageTool: %w", err)
 	}
@@ -145,8 +147,7 @@ func (c *LTClient) Check(ctx context.Context, text, language string, opts ...Che
 			skip := false
 
 			// Check the flagged word directly from text
-			if m.Length > 0 && m.Offset >= 0 && m.Offset+m.Length <= len(text) {
-				flaggedWord := text[m.Offset : m.Offset+m.Length]
+			if flaggedWord, ok := substringByRuneOffset(text, m.Offset, m.Length); ok {
 				if opt.CustomDict[flaggedWord] || opt.CustomDict[strings.ToLower(flaggedWord)] || opt.CustomDict[strings.ToUpper(flaggedWord)] {
 					skip = true
 				}
@@ -190,7 +191,7 @@ func (c *LTClient) Check(ctx context.Context, text, language string, opts ...Che
 			Message:      m.Message,
 			ShortMessage: m.ShortMessage,
 			Offset:       m.Offset,
-			Length:        m.Length,
+			Length:       m.Length,
 			Replacements: replacements,
 			RuleID:       m.Rule.ID,
 			RuleCategory: m.Rule.Category.Name,
@@ -202,6 +203,50 @@ func (c *LTClient) Check(ctx context.Context, text, language string, opts ...Che
 	return result, nil
 }
 
+func truncateRunes(s string, maxRunes int) string {
+	if maxRunes <= 0 {
+		return ""
+	}
+	count := 0
+	for idx := range s {
+		if count == maxRunes {
+			return s[:idx]
+		}
+		count++
+	}
+	return s
+}
+
+func substringByRuneOffset(s string, offset, length int) (string, bool) {
+	if offset < 0 || length <= 0 {
+		return "", false
+	}
+	start := -1
+	end := len(s)
+	runeIdx := 0
+	for byteIdx := range s {
+		if runeIdx == offset {
+			start = byteIdx
+		}
+		if runeIdx == offset+length {
+			end = byteIdx
+			break
+		}
+		runeIdx++
+	}
+	if start == -1 {
+		if runeIdx == offset {
+			start = len(s)
+		} else {
+			return "", false
+		}
+	}
+	if offset+length > runeIdx && end == len(s) {
+		return "", false
+	}
+	return s[start:end], true
+}
+
 // IsAvailable checks if the LanguageTool server is reachable.
 func (c *LTClient) IsAvailable(ctx context.Context) bool {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
@@ -210,7 +255,11 @@ func (c *LTClient) IsAvailable(ctx context.Context) bool {
 	if err != nil {
 		return false
 	}
-	resp, err := c.HTTPClient.Do(req)
+	httpClient := c.HTTPClient
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return false
 	}

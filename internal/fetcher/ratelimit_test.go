@@ -109,3 +109,43 @@ func TestRateLimiter_CrawlDelay(t *testing.T) {
 		t.Errorf("elapsed = %v, want >= ~100ms (crawl delay)", elapsed)
 	}
 }
+
+func TestRateLimiter_CrawlDelaySerializesConcurrentWaiters(t *testing.T) {
+	rl := NewRateLimiter(2)
+	host := "slow-concurrent.example.com"
+	rl.SetCrawlDelay(host, 60*time.Millisecond)
+
+	rl.Acquire(host)
+	rl.Release(host)
+
+	starts := make(chan time.Time, 2)
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := rl.AcquireContext(t.Context(), host); err != nil {
+				t.Errorf("AcquireContext: %v", err)
+				return
+			}
+			starts <- time.Now()
+			rl.Release(host)
+		}()
+	}
+	wg.Wait()
+	close(starts)
+
+	times := []time.Time{}
+	for ts := range starts {
+		times = append(times, ts)
+	}
+	if len(times) != 2 {
+		t.Fatalf("got %d start times, want 2", len(times))
+	}
+	if times[1].Before(times[0]) {
+		times[0], times[1] = times[1], times[0]
+	}
+	if delta := times[1].Sub(times[0]); delta < 45*time.Millisecond {
+		t.Fatalf("concurrent waiters started %v apart, want crawl-delay serialization", delta)
+	}
+}

@@ -133,6 +133,11 @@ func (s *Server) queueWorker() {
 			s.crawlMu.Unlock()
 			continue
 		}
+		if err := s.db.UpdateJobStarted(job.ID); err != nil {
+			s.crawlMu.Unlock()
+			slog.Error("queue worker: claiming queued job", "job", job.ID, "err", err)
+			continue
+		}
 		s.crawlMu.Unlock()
 
 		go s.runCrawlJob(job.ID)

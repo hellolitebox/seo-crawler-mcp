@@ -144,6 +144,29 @@ func TestUserGroupOverride(t *testing.T) {
 	}
 }
 
+func TestUserGroupPrefixDoesNotOverrideDifferentSegment(t *testing.T) {
+	db := testDB(t)
+	jobID := "job-prefix-boundary"
+	seedJob(t, db, jobID)
+
+	for i := 1; i <= 15; i++ {
+		seedPageWithURL(t, db, jobID, fmt.Sprintf("https://example.com/blog/post-%d", i), i)
+	}
+
+	userGroups := []config.URLGroupConfig{
+		{Name: "bl", Pattern: "/bl"},
+	}
+	if err := DetectGroups(db, jobID, userGroups); err != nil {
+		t.Fatalf("DetectGroups: %v", err)
+	}
+
+	var autoCount int
+	db.QueryRow(`SELECT COUNT(*) FROM url_pattern_groups WHERE job_id = ? AND source = 'auto' AND pattern = '/blog'`, jobID).Scan(&autoCount)
+	if autoCount != 1 {
+		t.Fatalf("expected /blog auto group to survive unrelated /bl user pattern, got %d", autoCount)
+	}
+}
+
 func TestExtractPattern(t *testing.T) {
 	tests := []struct {
 		url  string

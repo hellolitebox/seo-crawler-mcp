@@ -174,11 +174,26 @@ func (rf *RobotsFile) CrawlDelay(ua string) int {
 	return group.crawlDelay
 }
 
-// findGroup looks up the agent group for a UA. Exact match first, then *.
+// findGroup looks up the agent group for a UA. Exact match first, then
+// product-token containment, then *.
 func (rf *RobotsFile) findGroup(ua string) *agentGroup {
 	uaLower := strings.ToLower(ua)
 	if g, ok := rf.groups[uaLower]; ok {
 		return g
+	}
+	var best *agentGroup
+	bestLen := 0
+	for agent, g := range rf.groups {
+		if agent == "*" {
+			continue
+		}
+		if strings.Contains(uaLower, agent) && len(agent) > bestLen {
+			best = g
+			bestLen = len(agent)
+		}
+	}
+	if best != nil {
+		return best
 	}
 	if g, ok := rf.groups["*"]; ok {
 		return g
@@ -214,6 +229,7 @@ func matchPattern(path, pattern string) bool {
 	}
 
 	// Wildcard matching: each part between *s must appear in order.
+	trailingWildcard := strings.HasSuffix(p, "*")
 	parts := strings.Split(p, "*")
 	remaining := path
 	for i, part := range parts {
@@ -236,6 +252,9 @@ func matchPattern(path, pattern string) bool {
 	}
 
 	if hasAnchor {
+		if trailingWildcard {
+			return true
+		}
 		return remaining == ""
 	}
 	return true

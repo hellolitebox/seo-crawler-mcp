@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -191,6 +192,19 @@ func TestValidateJSONLD_JSONLDBlockWrapper(t *testing.T) {
 	}
 	if !foundImage {
 		t.Errorf("expected image in missingRequired, got %v", r.MissingRequired)
+	}
+}
+
+func TestValidateJSONLD_JSONLDBlockRawArrayRespectsResultCap(t *testing.T) {
+	items := make([]string, maxValidationResults+10)
+	for i := range items {
+		items[i] = `{\"@type\":\"Organization\"}`
+	}
+	raw := `[{"raw":"[` + strings.Join(items, `,`) + `]","type":"Organization","malformed":false}]`
+
+	results := ValidateJSONLD(raw)
+	if len(results) != maxValidationResults {
+		t.Fatalf("ValidateJSONLD returned %d results, want capped %d", len(results), maxValidationResults)
 	}
 }
 

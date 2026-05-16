@@ -89,22 +89,24 @@ func (rl *RateLimiter) AcquireContext(ctx context.Context, host string) error {
 
 	// Enforce crawl delay.
 	state.mu.Lock()
+	defer state.mu.Unlock()
 	if state.delay > 0 && !state.lastFetch.IsZero() {
 		elapsed := time.Since(state.lastFetch)
 		if elapsed < state.delay {
 			wait := state.delay - elapsed
-			state.mu.Unlock()
+			timer := time.NewTimer(wait)
 			select {
 			case <-ctx.Done():
+				if !timer.Stop() {
+					<-timer.C
+				}
 				state.sem <- struct{}{}
 				return ctx.Err()
-			case <-time.After(wait):
+			case <-timer.C:
 			}
-			state.mu.Lock()
 		}
 	}
 	state.lastFetch = time.Now()
-	state.mu.Unlock()
 
 	return nil
 }

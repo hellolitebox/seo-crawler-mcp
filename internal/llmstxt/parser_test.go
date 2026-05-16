@@ -66,6 +66,16 @@ func TestParse_URLsInVariousFormats(t *testing.T) {
 	}
 }
 
+func TestParse_URLTrimsSentencePunctuation(t *testing.T) {
+	result := Parse("See https://example.com/docs.")
+	if len(result.URLs) != 1 {
+		t.Fatalf("expected 1 URL, got %d", len(result.URLs))
+	}
+	if result.URLs[0] != "https://example.com/docs" {
+		t.Fatalf("URL = %q, want trimmed URL", result.URLs[0])
+	}
+}
+
 func TestParse_HeadingLevels(t *testing.T) {
 	content := `# H1
 Content 1

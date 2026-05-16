@@ -209,6 +209,33 @@ func TestOnboardHost_Full(t *testing.T) {
 	}
 }
 
+func TestOnboardHost_ReturnsCancellationDuringLlmsDiscovery(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/robots.txt", func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, "User-agent: *\nAllow: /\n")
+	})
+	mux.HandleFunc("/sitemap.xml", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+	mux.HandleFunc("/llms.txt", func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(100 * time.Millisecond)
+		fmt.Fprint(w, testLlmsTxt)
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	db := setupDB(t, "job-cancel-llms")
+	f := setupFetcher()
+	onboarder := NewHostOnboarder(f, db, 1000, testUserAgent)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	_, err := onboarder.OnboardHost(ctx, "job-cancel-llms", strings.TrimPrefix(ts.URL, "http://"), "http")
+	if err == nil {
+		t.Fatal("expected cancellation error")
+	}
+}
+
 func TestOnboardHost_NoRobots(t *testing.T) {
 	mux := http.NewServeMux()
 	var serverURL string

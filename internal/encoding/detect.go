@@ -13,9 +13,9 @@ import (
 )
 
 var (
-	metaCharsetRe    = regexp.MustCompile(`(?i)<meta[^>]+charset=["']?([^"'\s;>]+)`)
-	metaHTTPEquivRe  = regexp.MustCompile(`(?i)<meta[^>]+http-equiv=["']?Content-Type["']?[^>]+content=["']?[^"']*charset=([^"'\s;>]+)`)
-	metaHTTPEquivRe2 = regexp.MustCompile(`(?i)<meta[^>]+content=["']?[^"']*charset=([^"'\s;>]+)[^>]+http-equiv=["']?Content-Type["']?`)
+	metaCharsetRe    = regexp.MustCompile(`(?i)<meta[^>]+charset\s*=\s*["']?([^"'\s;>]+)`)
+	metaHTTPEquivRe  = regexp.MustCompile(`(?i)<meta[^>]+http-equiv\s*=\s*["']?Content-Type["']?[^>]+content\s*=\s*["']?[^"']*charset\s*=\s*([^"'\s;>]+)`)
+	metaHTTPEquivRe2 = regexp.MustCompile(`(?i)<meta[^>]+content\s*=\s*["']?[^"']*charset\s*=\s*([^"'\s;>]+)[^>]+http-equiv\s*=\s*["']?Content-Type["']?`)
 )
 
 // DetectAndConvert detects charset from Content-Type header and HTML meta tags,
