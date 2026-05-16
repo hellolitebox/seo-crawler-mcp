@@ -45,6 +45,24 @@ func (db *DB) InsertAsset(input AssetInput) (int64, error) {
 	return id, nil
 }
 
+// UpsertAssetMetadata updates existing placeholder rows for an asset URL or
+// inserts a new row when the asset has not been seen before.
+func (db *DB) UpsertAssetMetadata(input AssetInput) (int64, error) {
+	result, err := db.Exec(
+		`UPDATE assets
+		 SET content_type = ?, status_code = ?, content_length = ?
+		 WHERE job_id = ? AND url_id = ?`,
+		input.ContentType, input.StatusCode, input.ContentLength, input.JobID, input.URLID,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("updating asset for URL %d in job %q: %w", input.URLID, input.JobID, err)
+	}
+	if rows, rowsErr := result.RowsAffected(); rowsErr == nil && rows > 0 {
+		return 0, nil
+	}
+	return db.InsertAsset(input)
+}
+
 // InsertAssetReference creates a new asset reference linking a page to an asset.
 func (db *DB) InsertAssetReference(
 	jobID string, assetURLID, sourcePageURLID int64, referenceType string,

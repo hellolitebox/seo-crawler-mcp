@@ -1754,7 +1754,7 @@ func (e *Engine) headCheckAssets(ctx context.Context, jobID string) {
 						}
 					}
 				}
-				if _, insertErr := e.db.InsertAsset(storage.AssetInput{
+				if _, insertErr := e.db.UpsertAssetMetadata(storage.AssetInput{
 					JobID:         jobID,
 					URLID:         t.urlID,
 					ContentType:   contentType,
@@ -2784,7 +2784,7 @@ func (e *Engine) browserEnrichPages(ctx context.Context, jobID string) {
 			continue
 		}
 
-		// Register newly discovered images as assets + asset_references
+		// Register newly discovered image references
 		// so they get HEAD-checked in the next phase
 		for _, img := range page.Images {
 			if img.Src == "" {
@@ -2799,12 +2799,6 @@ func (e *Engine) browserEnrichPages(ctx context.Context, jobID string) {
 			if upsertErr != nil {
 				continue
 			}
-			// Insert asset (ignore if already exists)
-			e.db.Exec(`
-				INSERT OR IGNORE INTO assets (job_id, url_id)
-				VALUES (?, ?)`,
-				jobID, imgURLID,
-			)
 			// Insert asset_reference (ignore if already exists)
 			e.db.Exec(`
 				INSERT OR IGNORE INTO asset_references (job_id, asset_url_id, source_page_url_id, reference_type)
