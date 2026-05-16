@@ -97,19 +97,24 @@ func TestLoadReportExtrasKeepsCrossSectionDataAvailable(t *testing.T) {
 	if _, err := db.Exec("INSERT INTO redirect_hops (job_id, fetch_id, hop_index, status_code, from_url, to_url) VALUES (?, ?, 0, 301, 'http://www.pipapou.com/', 'https://www.pipapou.com/')", jobID, httpAuditFetchID); err != nil {
 		t.Fatalf("inserting redirect hop: %v", err)
 	}
-	if _, err := db.Exec("INSERT INTO assets (job_id, url_id, content_type, content_encoding, status_code, content_length) VALUES (?, ?, 'application/javascript', 'br', 200, 20000)", jobID, scriptURLID); err != nil {
+	if _, err := db.Exec("INSERT INTO assets (job_id, url_id, content_type, content_encoding, cache_control, transfer_size, decoded_size, status_code, content_length) VALUES (?, ?, 'application/javascript', 'br', 'public, max-age=31536000', 12000, 20000, 200, 12000)", jobID, scriptURLID); err != nil {
 		t.Fatalf("inserting script asset: %v", err)
 	}
-	if _, err := db.Exec("INSERT INTO asset_references (job_id, asset_url_id, source_page_url_id, reference_type) VALUES (?, ?, ?, 'img_src')", jobID, imageURLID, pageURLID); err != nil {
+	if _, err := db.Exec("INSERT INTO asset_references (job_id, asset_url_id, source_page_url_id, reference_type, natural_width, natural_height, rendered_width, rendered_height) VALUES (?, ?, ?, 'img_src', 1600, 900, 390, 219)", jobID, imageURLID, pageURLID); err != nil {
 		t.Fatalf("inserting image asset reference: %v", err)
 	}
 
 	extras := loadReportExtras(context.Background(), db, jobID)
 
 	assertMapWithValue(t, extras["asset_references"].([]map[string]any), "asset_url", "https://www.pipapou.com/_next/image?url=%2Fhero.webp&w=3840&q=75")
+	assertMapWithValue(t, extras["asset_references"].([]map[string]any), "natural_width", int64(1600))
+	assertMapWithValue(t, extras["asset_references"].([]map[string]any), "rendered_width", int64(390))
 	assets := extras["assets"].([]map[string]any)
 	assertMapWithValue(t, assets, "url", "https://www.pipapou.com/app.js")
 	assertMapWithValue(t, assets, "content_encoding", "br")
+	assertMapWithValue(t, assets, "cache_control", "public, max-age=31536000")
+	assertMapWithValue(t, assets, "transfer_size", int64(12000))
+	assertMapWithValue(t, assets, "decoded_size", int64(20000))
 	assertMapWithValue(t, extras["redirect_hops"].([]map[string]any), "from_url", "http://www.pipapou.com/")
 	assertMapWithValue(t, extras["response_codes"].([]map[string]any), "fetchKind", "http_https_audit")
 

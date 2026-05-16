@@ -215,6 +215,7 @@ func loadPageEdges(ctx context.Context, db *storage.DB, jobID string, urlID int6
 func loadPageAssets(ctx context.Context, db *storage.DB, jobID string, pageURLID int64) ([]map[string]any, []map[string]any) {
 	rows, err := db.QueryContext(ctx, `
 		SELECT ar.id, ar.job_id, ar.asset_url_id, ar.source_page_url_id, ar.reference_type,
+		       ar.natural_width, ar.natural_height, ar.rendered_width, ar.rendered_height,
 		       au.normalized_url, pu.normalized_url
 		FROM asset_references ar
 		JOIN urls au ON au.id = ar.asset_url_id
@@ -232,8 +233,10 @@ func loadPageAssets(ctx context.Context, db *storage.DB, jobID string, pageURLID
 		var (
 			id, assetURLID, srcURLID        int64
 			jid, refType, assetURL, pageURL string
+			naturalWidth, naturalHeight     sql.NullInt64
+			renderedWidth, renderedHeight   sql.NullInt64
 		)
-		if err := rows.Scan(&id, &jid, &assetURLID, &srcURLID, &refType, &assetURL, &pageURL); err != nil {
+		if err := rows.Scan(&id, &jid, &assetURLID, &srcURLID, &refType, &naturalWidth, &naturalHeight, &renderedWidth, &renderedHeight, &assetURL, &pageURL); err != nil {
 			continue
 		}
 		refs = append(refs, map[string]any{
@@ -242,6 +245,10 @@ func loadPageAssets(ctx context.Context, db *storage.DB, jobID string, pageURLID
 			"asset_url_id":       assetURLID,
 			"source_page_url_id": srcURLID,
 			"reference_type":     refType,
+			"natural_width":      nullInt64(naturalWidth),
+			"natural_height":     nullInt64(naturalHeight),
+			"rendered_width":     nullInt64(renderedWidth),
+			"rendered_height":    nullInt64(renderedHeight),
 			"asset_url":          assetURL,
 			"page_url":           pageURL,
 		})
@@ -266,6 +273,7 @@ func loadPageAssets(ctx context.Context, db *storage.DB, jobID string, pageURLID
 
 	assetRows, err := db.QueryContext(ctx, `
 		SELECT a.id, a.job_id, a.url_id, a.content_type, a.content_encoding,
+		       a.cache_control, a.transfer_size, a.decoded_size,
 		       a.status_code, a.content_length,
 		       u.normalized_url
 		FROM assets a JOIN urls u ON u.id = a.url_id
@@ -278,12 +286,13 @@ func loadPageAssets(ctx context.Context, db *storage.DB, jobID string, pageURLID
 	assets := []map[string]any{}
 	for assetRows.Next() {
 		var (
-			id, urlID                    int64
-			jid, urlStr                  string
-			contentType, contentEncoding sql.NullString
-			statusCode, contentLength    sql.NullInt64
+			id, urlID                                  int64
+			jid, urlStr                                string
+			contentType, contentEncoding, cacheControl sql.NullString
+			transferSize, decodedSize                  sql.NullInt64
+			statusCode, contentLength                  sql.NullInt64
 		)
-		if err := assetRows.Scan(&id, &jid, &urlID, &contentType, &contentEncoding, &statusCode, &contentLength, &urlStr); err != nil {
+		if err := assetRows.Scan(&id, &jid, &urlID, &contentType, &contentEncoding, &cacheControl, &transferSize, &decodedSize, &statusCode, &contentLength, &urlStr); err != nil {
 			continue
 		}
 		assets = append(assets, map[string]any{
@@ -292,6 +301,9 @@ func loadPageAssets(ctx context.Context, db *storage.DB, jobID string, pageURLID
 			"url_id":           urlID,
 			"content_type":     nullString(contentType),
 			"content_encoding": nullString(contentEncoding),
+			"cache_control":    nullString(cacheControl),
+			"transfer_size":    nullInt64(transferSize),
+			"decoded_size":     nullInt64(decodedSize),
 			"status_code":      nullInt64(statusCode),
 			"content_length":   nullInt64(contentLength),
 			"url":              urlStr,

@@ -70,12 +70,16 @@ type DiscoveredLink struct {
 
 // DiscoveredImage represents an image found in the page.
 type DiscoveredImage struct {
-	Src        string `json:"src"`
-	Alt        string `json:"alt"`
-	AltEmpty   bool   `json:"altEmpty"`
-	AltMissing bool   `json:"altMissing"`
-	HasWidth   bool   `json:"hasWidth"`
-	HasHeight  bool   `json:"hasHeight"`
+	Src            string `json:"src"`
+	Alt            string `json:"alt"`
+	AltEmpty       bool   `json:"altEmpty"`
+	AltMissing     bool   `json:"altMissing"`
+	HasWidth       bool   `json:"hasWidth"`
+	HasHeight      bool   `json:"hasHeight"`
+	NaturalWidth   int    `json:"naturalWidth,omitempty"`
+	NaturalHeight  int    `json:"naturalHeight,omitempty"`
+	RenderedWidth  int    `json:"renderedWidth,omitempty"`
+	RenderedHeight int    `json:"renderedHeight,omitempty"`
 }
 
 // DiscoveredAsset represents a non-image asset found in the page (script, stylesheet, etc.).

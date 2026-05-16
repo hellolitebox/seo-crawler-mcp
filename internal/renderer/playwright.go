@@ -15,14 +15,27 @@ const (
 	maxPlaywrightOutputBytes = maxRenderedHTML + 2*1024*1024
 	maxPlaywrightHTMLBytes   = maxRenderedHTML
 	maxPlaywrightLinks       = 5000
+	maxPlaywrightImages      = 2000
 	maxPlaywrightStderrBytes = 64 * 1024
 )
 
 // PlaywrightResult holds the output from the Playwright menu discovery script.
 type PlaywrightResult struct {
-	HTML     string   `json:"html"`
-	Links    []string `json:"links"`
-	FinalURL string   `json:"finalUrl"`
+	HTML     string        `json:"html"`
+	Links    []string      `json:"links"`
+	Images   []ImageMetric `json:"images"`
+	FinalURL string        `json:"finalUrl"`
+}
+
+// ImageMetric captures browser-observed image dimensions for one rendered
+// <img> reference.
+type ImageMetric struct {
+	Src            string `json:"src"`
+	CurrentSrc     string `json:"currentSrc"`
+	NaturalWidth   int    `json:"naturalWidth"`
+	NaturalHeight  int    `json:"naturalHeight"`
+	RenderedWidth  int    `json:"renderedWidth"`
+	RenderedHeight int    `json:"renderedHeight"`
 }
 
 // playwrightAvailable caches the result of the availability check.
@@ -92,7 +105,7 @@ from playwright.sync_api import sync_playwright
 import time as _time
 
 url = sys.argv[1]
-result = {"html": "", "links": [], "finalUrl": ""}
+result = {"html": "", "links": [], "images": [], "finalUrl": ""}
 
 _chromium_path = os.environ.get("CHROMIUM_PATH") or None
 
@@ -122,6 +135,17 @@ with sync_playwright() as p:
 
     result["html"] = page.content()
     result["links"] = page.evaluate("() => [...document.querySelectorAll('a[href]')].map(a => a.href)")
+    result["images"] = page.evaluate("""() => [...document.images].map(img => {
+        const rect = img.getBoundingClientRect();
+        return {
+            src: img.src || '',
+            currentSrc: img.currentSrc || img.src || '',
+            naturalWidth: img.naturalWidth || 0,
+            naturalHeight: img.naturalHeight || 0,
+            renderedWidth: Math.round(rect.width || 0),
+            renderedHeight: Math.round(rect.height || 0)
+        };
+    })""")
     browser.close()
 
 print(json.dumps(result))
@@ -199,6 +223,9 @@ func clampPlaywrightResult(result *PlaywrightResult) {
 	if len(result.Links) > maxPlaywrightLinks {
 		result.Links = result.Links[:maxPlaywrightLinks]
 	}
+	if len(result.Images) > maxPlaywrightImages {
+		result.Images = result.Images[:maxPlaywrightImages]
+	}
 }
 
 func playwrightScript() string {
@@ -213,7 +240,7 @@ _chromium_path = os.environ.get("CHROMIUM_PATH") or None
 with sync_playwright() as p:
     browser = p.chromium.launch(headless=True, executable_path=_chromium_path)
 
-    result = {"html": "", "links": [], "finalUrl": ""}
+    result = {"html": "", "links": [], "images": [], "finalUrl": ""}
 
     # Desktop viewport
     page = browser.new_page(viewport={"width": 1440, "height": 900})
@@ -364,6 +391,17 @@ with sync_playwright() as p:
     result["finalUrl"] = page.url
     result["html"] = page.content()
     result["links"] = list(all_found)
+    result["images"] = page.evaluate("""() => [...document.images].map(img => {
+        const rect = img.getBoundingClientRect();
+        return {
+            src: img.src || '',
+            currentSrc: img.currentSrc || img.src || '',
+            naturalWidth: img.naturalWidth || 0,
+            naturalHeight: img.naturalHeight || 0,
+            renderedWidth: Math.round(rect.width || 0),
+            renderedHeight: Math.round(rect.height || 0)
+        };
+    })""")
 
     browser.close()
 

@@ -91,10 +91,14 @@ type fetchResult struct {
 
 // discoveredImage holds a resolved image URL and its source page URL ID.
 type discoveredImage struct {
-	normalizedURL string
-	host          string
-	isInternal    bool
-	sourceURLID   int64
+	normalizedURL  string
+	host           string
+	isInternal     bool
+	sourceURLID    int64
+	naturalWidth   int
+	naturalHeight  int
+	renderedWidth  int
+	renderedHeight int
 }
 
 // discoveredAsset holds a resolved asset URL, its source page, and reference type.
@@ -1315,10 +1319,14 @@ func (e *Engine) processParseResult(
 			imgInternal = e.scopeChecker.IsInScope(imgNorm)
 		}
 		pr.images = append(pr.images, discoveredImage{
-			normalizedURL: imgNorm,
-			host:          imgHost,
-			isInternal:    imgInternal,
-			sourceURLID:   fr.urlID,
+			normalizedURL:  imgNorm,
+			host:           imgHost,
+			isInternal:     imgInternal,
+			sourceURLID:    fr.urlID,
+			naturalWidth:   img.NaturalWidth,
+			naturalHeight:  img.NaturalHeight,
+			renderedWidth:  img.RenderedWidth,
+			renderedHeight: img.RenderedHeight,
 		})
 	}
 
@@ -1913,16 +1921,20 @@ func (e *Engine) headCheckAssets(ctx context.Context, jobID string) {
 				headResult, headErr := e.fetcher.HeadContext(ctx, t.url)
 				var contentType *string
 				var contentEncoding *string
+				var cacheControl *string
 				var statusCode *int
 				var contentLength *int64
+				var transferSize *int64
 				if headErr == nil && headResult != nil {
 					contentType = strPtr(headResult.ContentType)
 					contentEncoding = strPtr(headResult.ContentEncoding)
+					cacheControl = strPtr(headResult.ResponseHeaders.Get("Cache-Control"))
 					statusCode = intPtr(headResult.StatusCode)
 					// Extract Content-Length from response headers
 					if clStr := headResult.ResponseHeaders.Get("Content-Length"); clStr != "" {
 						if cl, parseErr := strconv.ParseInt(clStr, 10, 64); parseErr == nil {
 							contentLength = &cl
+							transferSize = &cl
 						}
 					}
 				}
@@ -1931,6 +1943,8 @@ func (e *Engine) headCheckAssets(ctx context.Context, jobID string) {
 					URLID:           t.urlID,
 					ContentType:     contentType,
 					ContentEncoding: contentEncoding,
+					CacheControl:    cacheControl,
+					TransferSize:    transferSize,
 					StatusCode:      statusCode,
 					ContentLength:   contentLength,
 				}); insertErr != nil {
@@ -2046,9 +2060,16 @@ func (e *Engine) persistItem(ctx context.Context, jobID string, item persistItem
 
 	// --- Non-HTML: record as asset ---
 	if !isHTML && fr.result != nil && fr.err == nil {
+		transferSize := responseContentLength(fr.result)
+		contentLength := transferSize
+		if contentLength == nil {
+			contentLength = &fr.result.BodySize
+		}
+		decodedSize := fr.result.BodySize
 		if _, assetErr := tx.ExecContext(ctx,
-			`INSERT INTO assets (job_id, url_id, content_type, content_encoding, status_code, content_length) VALUES (?, ?, ?, ?, ?, ?)`,
-			jobID, fr.urlID, fr.result.ContentType, fr.result.ContentEncoding, fr.result.StatusCode, fr.result.BodySize,
+			`INSERT INTO assets (job_id, url_id, content_type, content_encoding, cache_control, transfer_size, decoded_size, status_code, content_length) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			jobID, fr.urlID, fr.result.ContentType, fr.result.ContentEncoding, fr.result.ResponseHeaders.Get("Cache-Control"),
+			transferSize, decodedSize, fr.result.StatusCode, contentLength,
 		); assetErr != nil {
 			return fmt.Errorf("inserting asset: %w", assetErr)
 		}
@@ -2143,9 +2164,12 @@ func (e *Engine) persistItem(ctx context.Context, jobID string, item persistItem
 			continue
 		}
 		if _, refErr := tx.ExecContext(ctx,
-			`INSERT INTO asset_references (job_id, asset_url_id, source_page_url_id, reference_type)
-			 VALUES (?, ?, ?, ?)`,
+			`INSERT INTO asset_references (job_id, asset_url_id, source_page_url_id, reference_type,
+				natural_width, natural_height, rendered_width, rendered_height)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 			jobID, imgURLID, pageURLID, "img_src",
+			positiveIntPtr(img.naturalWidth), positiveIntPtr(img.naturalHeight),
+			positiveIntPtr(img.renderedWidth), positiveIntPtr(img.renderedHeight),
 		); refErr != nil {
 			// Duplicate references are possible; ignore unique constraint errors
 			continue
@@ -2510,6 +2534,89 @@ func strPtr(s string) *string {
 
 func intPtr(i int) *int {
 	return &i
+}
+
+func positiveIntPtr(i int) *int {
+	if i <= 0 {
+		return nil
+	}
+	return &i
+}
+
+func responseContentLength(result *fetcher.FetchResult) *int64 {
+	if result == nil || result.ResponseHeaders == nil {
+		return nil
+	}
+	value := strings.TrimSpace(result.ResponseHeaders.Get("Content-Length"))
+	if value == "" {
+		return nil
+	}
+	n, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || n <= 0 {
+		return nil
+	}
+	return &n
+}
+
+func mergeImageMetrics(images []parser.DiscoveredImage, metrics []renderer.ImageMetric) {
+	if len(images) == 0 || len(metrics) == 0 {
+		return
+	}
+	byURL := make(map[string]renderer.ImageMetric, len(metrics)*2)
+	for _, metric := range metrics {
+		for _, raw := range []string{metric.CurrentSrc, metric.Src} {
+			if raw == "" {
+				continue
+			}
+			if norm, err := urlutil.Normalize(raw); err == nil {
+				byURL[norm] = metric
+			}
+		}
+	}
+	for i := range images {
+		norm, err := urlutil.Normalize(images[i].Src)
+		if err != nil {
+			continue
+		}
+		metric, ok := byURL[norm]
+		if !ok {
+			continue
+		}
+		images[i].NaturalWidth = metric.NaturalWidth
+		images[i].NaturalHeight = metric.NaturalHeight
+		images[i].RenderedWidth = metric.RenderedWidth
+		images[i].RenderedHeight = metric.RenderedHeight
+	}
+}
+
+func upsertImageAssetReferenceMetrics(db *storage.DB, jobID string, assetURLID, sourceURLID int64, img parser.DiscoveredImage) {
+	result, err := db.Exec(`
+		UPDATE asset_references
+		SET natural_width = ?, natural_height = ?, rendered_width = ?, rendered_height = ?
+		WHERE job_id = ? AND asset_url_id = ? AND source_page_url_id = ? AND reference_type = 'img_src'`,
+		positiveIntPtr(img.NaturalWidth),
+		positiveIntPtr(img.NaturalHeight),
+		positiveIntPtr(img.RenderedWidth),
+		positiveIntPtr(img.RenderedHeight),
+		jobID,
+		assetURLID,
+		sourceURLID,
+	)
+	if err == nil {
+		if rows, rowsErr := result.RowsAffected(); rowsErr == nil && rows > 0 {
+			return
+		}
+	}
+	db.Exec(`
+		INSERT INTO asset_references (job_id, asset_url_id, source_page_url_id, reference_type,
+			natural_width, natural_height, rendered_width, rendered_height)
+		VALUES (?, ?, ?, 'img_src', ?, ?, ?, ?)`,
+		jobID, assetURLID, sourceURLID,
+		positiveIntPtr(img.NaturalWidth),
+		positiveIntPtr(img.NaturalHeight),
+		positiveIntPtr(img.RenderedWidth),
+		positiveIntPtr(img.RenderedHeight),
+	)
 }
 
 func jsonStrPtr(v any) *string {
@@ -2965,18 +3072,7 @@ func (e *Engine) browserEnrichPages(ctx context.Context, jobID string) {
 		if parseErr != nil {
 			continue
 		}
-		if page.ExtractedWordCount <= pg.wordCount {
-			continue // static version already had equal or more content
-		}
-
-		enriched++
-		if err := e.updateBrowserEnrichedPage(jobID, pg.urlID, page); err != nil {
-			slog.Warn("engine: browser enrich: update page failed", "url", pg.url, "err", err)
-			continue
-		}
-
-		// Register newly discovered image references
-		// so they get HEAD-checked in the next phase
+		mergeImageMetrics(page.Images, pwResult.Images)
 		for _, img := range page.Images {
 			if img.Src == "" {
 				continue
@@ -2990,13 +3086,18 @@ func (e *Engine) browserEnrichPages(ctx context.Context, jobID string) {
 			if upsertErr != nil {
 				continue
 			}
-			// Insert asset_reference (ignore if already exists)
-			e.db.Exec(`
-				INSERT OR IGNORE INTO asset_references (job_id, asset_url_id, source_page_url_id, reference_type)
-				VALUES (?, ?, ?, 'img_src')`,
-				jobID, imgURLID, pg.urlID,
-			)
+			upsertImageAssetReferenceMetrics(e.db, jobID, imgURLID, pg.urlID, img)
 		}
+		if page.ExtractedWordCount <= pg.wordCount {
+			continue // static version already had equal or more content
+		}
+
+		enriched++
+		if err := e.updateBrowserEnrichedPage(jobID, pg.urlID, page); err != nil {
+			slog.Warn("engine: browser enrich: update page failed", "url", pg.url, "err", err)
+			continue
+		}
+
 	}
 
 	slog.Info("engine: browser enrich: updated pages with richer content", "enriched", enriched, "total", len(pages), "job_id", jobID)

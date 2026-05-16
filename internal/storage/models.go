@@ -175,6 +175,9 @@ type Asset struct {
 	URLID           int64          `json:"urlId"`
 	ContentType     sql.NullString `json:"contentType,omitempty"`
 	ContentEncoding sql.NullString `json:"contentEncoding,omitempty"`
+	CacheControl    sql.NullString `json:"cacheControl,omitempty"`
+	TransferSize    sql.NullInt64  `json:"transferSize,omitempty"`
+	DecodedSize     sql.NullInt64  `json:"decodedSize,omitempty"`
 	StatusCode      sql.NullInt64  `json:"statusCode,omitempty"`
 	ContentLength   sql.NullInt64  `json:"contentLength,omitempty"`
 }

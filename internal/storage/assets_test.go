@@ -17,6 +17,9 @@ func TestInsertAndGetAssets(t *testing.T) {
 
 	ct := "text/css"
 	ce := "br"
+	cc := "public, max-age=31536000"
+	ts := int64(4567)
+	ds := int64(12345)
 	sc := 200
 	cl := int64(12345)
 	id, err := db.InsertAsset(AssetInput{
@@ -24,6 +27,9 @@ func TestInsertAndGetAssets(t *testing.T) {
 		URLID:           urlID,
 		ContentType:     &ct,
 		ContentEncoding: &ce,
+		CacheControl:    &cc,
+		TransferSize:    &ts,
+		DecodedSize:     &ds,
 		StatusCode:      &sc,
 		ContentLength:   &cl,
 	})
@@ -47,6 +53,15 @@ func TestInsertAndGetAssets(t *testing.T) {
 	if !assets[0].ContentEncoding.Valid || assets[0].ContentEncoding.String != "br" {
 		t.Errorf("expected content_encoding %q, got %v", "br", assets[0].ContentEncoding)
 	}
+	if !assets[0].CacheControl.Valid || assets[0].CacheControl.String != cc {
+		t.Errorf("expected cache_control %q, got %v", cc, assets[0].CacheControl)
+	}
+	if !assets[0].TransferSize.Valid || assets[0].TransferSize.Int64 != ts {
+		t.Errorf("expected transfer_size %d, got %v", ts, assets[0].TransferSize)
+	}
+	if !assets[0].DecodedSize.Valid || assets[0].DecodedSize.Int64 != ds {
+		t.Errorf("expected decoded_size %d, got %v", ds, assets[0].DecodedSize)
+	}
 }
 
 func TestUpsertAssetMetadataUpdatesPlaceholder(t *testing.T) {
@@ -68,6 +83,9 @@ func TestUpsertAssetMetadataUpdatesPlaceholder(t *testing.T) {
 
 	ct := "image/jpeg"
 	ce := "gzip"
+	cc := "max-age=86400"
+	ts := int64(240000)
+	ds := int64(260588)
 	sc := 200
 	cl := int64(260588)
 	if _, err := db.UpsertAssetMetadata(AssetInput{
@@ -75,6 +93,9 @@ func TestUpsertAssetMetadataUpdatesPlaceholder(t *testing.T) {
 		URLID:           urlID,
 		ContentType:     &ct,
 		ContentEncoding: &ce,
+		CacheControl:    &cc,
+		TransferSize:    &ts,
+		DecodedSize:     &ds,
 		StatusCode:      &sc,
 		ContentLength:   &cl,
 	}); err != nil {
@@ -93,6 +114,15 @@ func TestUpsertAssetMetadataUpdatesPlaceholder(t *testing.T) {
 	}
 	if !assets[0].ContentEncoding.Valid || assets[0].ContentEncoding.String != ce {
 		t.Fatalf("expected content_encoding %q, got %v", ce, assets[0].ContentEncoding)
+	}
+	if !assets[0].CacheControl.Valid || assets[0].CacheControl.String != cc {
+		t.Fatalf("expected cache_control %q, got %v", cc, assets[0].CacheControl)
+	}
+	if !assets[0].TransferSize.Valid || assets[0].TransferSize.Int64 != ts {
+		t.Fatalf("expected transfer_size %d, got %v", ts, assets[0].TransferSize)
+	}
+	if !assets[0].DecodedSize.Valid || assets[0].DecodedSize.Int64 != ds {
+		t.Fatalf("expected decoded_size %d, got %v", ds, assets[0].DecodedSize)
 	}
 	if !assets[0].StatusCode.Valid || assets[0].StatusCode.Int64 != int64(sc) {
 		t.Fatalf("expected status_code %d, got %v", sc, assets[0].StatusCode)
