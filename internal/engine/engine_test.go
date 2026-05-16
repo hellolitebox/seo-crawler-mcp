@@ -14,6 +14,7 @@ import (
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/config"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/crawl"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/fetcher"
+	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/parser"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/ssrf"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/storage"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/urlutil"
@@ -582,6 +583,132 @@ func TestPersistItemDoesNotDoNetworkHEADInsideTransaction(t *testing.T) {
 	case <-headStarted:
 		t.Fatal("persistItem should not issue external HEAD requests")
 	default:
+	}
+}
+
+func TestPersistItemStoresPageUnderNormalizedFinalURL(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "persist-final-url.db")
+	db, err := storage.Open(dbPath)
+	if err != nil {
+		t.Fatalf("opening database: %v", err)
+	}
+	defer db.Close()
+
+	job, err := db.CreateJob("crawl", "{}", "[\"https://example.com/page\"]")
+	if err != nil {
+		t.Fatalf("creating job: %v", err)
+	}
+	requestedID, err := db.UpsertURL(job.ID, "https://example.com/page", "example.com", "fetched", true, "seed")
+	if err != nil {
+		t.Fatalf("upserting requested URL: %v", err)
+	}
+
+	scope, err := urlutil.NewScopeChecker("exact_host", "www.example.com", nil)
+	if err != nil {
+		t.Fatalf("creating scope checker: %v", err)
+	}
+	eng := &Engine{
+		db:           db,
+		scopeChecker: scope,
+		fetcher:      fetcher.New(fetcher.Options{Timeout: time.Second}),
+	}
+
+	body := []byte("<!doctype html><html><head><title>Final</title></head><body>" +
+		`<h1>Final</h1><a href="/next">Next</a><img src="/logo.png" alt="Logo">` +
+		"</body></html>")
+	page, err := parser.ParseHTML(body, "https://www.example.com:443/page", http.Header{})
+	if err != nil {
+		t.Fatalf("parsing HTML: %v", err)
+	}
+
+	item := persistItem{
+		fetchSeq: 1,
+		parseResult: parseResult{
+			fetchResult: fetchResult{
+				urlID:    requestedID,
+				url:      "https://example.com/page",
+				host:     "example.com",
+				depth:    0,
+				fetchSeq: 1,
+				result: &fetcher.FetchResult{
+					RequestedURL: "https://example.com/page",
+					FinalURL:     "https://www.example.com:443/page",
+					StatusCode:   http.StatusOK,
+					ContentType:  "text/html; charset=utf-8",
+					Body:         body,
+					BodySize:     int64(len(body)),
+					RedirectHops: []fetcher.RedirectHop{{
+						HopIndex:   0,
+						StatusCode: http.StatusMovedPermanently,
+						FromURL:    "https://example.com/page",
+						ToURL:      "https://www.example.com:443/page",
+					}},
+				},
+			},
+			page: page,
+			edges: []crawl.DiscoveredEdge{{
+				SourceURLID:         requestedID,
+				DeclaredTargetURL:   "https://www.example.com/next",
+				NormalizedTargetURL: "https://www.example.com/next",
+				SourceKind:          "html",
+				RelationType:        "link",
+				DiscoveryMode:       "static",
+				IsInternal:          true,
+			}},
+			images: []discoveredImage{{
+				normalizedURL: "https://www.example.com/logo.png",
+				host:          "www.example.com",
+				isInternal:    true,
+				sourceURLID:   requestedID,
+			}},
+		},
+	}
+	if err := eng.persistItem(context.Background(), job.ID, item); err != nil {
+		t.Fatalf("persistItem: %v", err)
+	}
+
+	var pageURL string
+	if err := db.QueryRow(
+		"SELECT u.normalized_url FROM pages p JOIN urls u ON u.id = p.url_id WHERE p.job_id = ?",
+		job.ID,
+	).Scan(&pageURL); err != nil {
+		t.Fatalf("querying page URL: %v", err)
+	}
+	if pageURL != "https://www.example.com/page" {
+		t.Fatalf("page URL = %q, want normalized final URL", pageURL)
+	}
+
+	var requestedPageCount int
+	if err := db.QueryRow(
+		"SELECT COUNT(*) FROM pages p JOIN urls u ON u.id = p.url_id WHERE p.job_id = ? AND u.normalized_url = ?",
+		job.ID, "https://example.com/page",
+	).Scan(&requestedPageCount); err != nil {
+		t.Fatalf("counting requested page rows: %v", err)
+	}
+	if requestedPageCount != 0 {
+		t.Fatalf("requested URL page rows = %d, want 0", requestedPageCount)
+	}
+
+	var edgeSourceURL string
+	if err := db.QueryRow(
+		"SELECT u.normalized_url FROM edges e JOIN urls u ON u.id = e.source_url_id WHERE e.job_id = ?",
+		job.ID,
+	).Scan(&edgeSourceURL); err != nil {
+		t.Fatalf("querying edge source URL: %v", err)
+	}
+	if edgeSourceURL != "https://www.example.com/page" {
+		t.Fatalf("edge source URL = %q, want normalized final URL", edgeSourceURL)
+	}
+
+	var assetSourceURL string
+	if err := db.QueryRow(
+		"SELECT u.normalized_url FROM asset_references ar JOIN urls u ON u.id = ar.source_page_url_id WHERE ar.job_id = ?",
+		job.ID,
+	).Scan(&assetSourceURL); err != nil {
+		t.Fatalf("querying asset source URL: %v", err)
+	}
+	if assetSourceURL != "https://www.example.com/page" {
+		t.Fatalf("asset source URL = %q, want normalized final URL", assetSourceURL)
 	}
 }
 

@@ -1096,7 +1096,7 @@ func (e *Engine) processParseResult(
 		NonDescriptiveAnchorCount:    nonDescriptiveCount,
 		NonDescriptiveAnchorExamples: nonDescriptiveExamples,
 		InternalNofollowCount:        internalNofollowCount,
-		PageURL:                      fr.url,
+		PageURL:                      fr.result.FinalURL,
 		ResponseHeaders:              fr.result.ResponseHeaders,
 		Hreflangs:                    page.Hreflangs,
 		FormInsecureActions:          page.FormInsecureActions,
@@ -1785,18 +1785,23 @@ func (e *Engine) persistItem(ctx context.Context, jobID string, item persistItem
 	// --- Resolve final URL ID (may upsert) ---
 	var finalURLID *int64
 	if fr.result != nil && fr.result.FinalURL != fr.url {
-		parsed, parseErr := url.Parse(fr.result.FinalURL)
-		if parseErr == nil {
-			finalInScope := e.scopeChecker.IsInScope(fr.result.FinalURL)
+		finalNormalized, normErr := urlutil.Normalize(fr.result.FinalURL)
+		parsed, parseErr := url.Parse(finalNormalized)
+		if normErr == nil && parseErr == nil {
+			finalInScope := e.scopeChecker.IsInScope(finalNormalized)
 			finalStatus := "fetched"
 			if !finalInScope {
 				finalStatus = "out_of_scope"
 			}
-			fid, upsertErr := txUpsertURL(tx, jobID, fr.result.FinalURL, parsed.Hostname(), finalStatus, finalInScope, "redirect")
+			fid, upsertErr := txUpsertURL(tx, jobID, finalNormalized, parsed.Hostname(), finalStatus, finalInScope, "redirect")
 			if upsertErr == nil {
 				finalURLID = &fid
 			}
 		}
+	}
+	pageURLID := fr.urlID
+	if finalURLID != nil {
+		pageURLID = *finalURLID
 	}
 
 	// --- Build fetch fields ---
@@ -1874,7 +1879,7 @@ func (e *Engine) persistItem(ctx context.Context, jobID string, item persistItem
 
 	// --- HTML: insert page record ---
 	if isHTML && item.page != nil {
-		if pageErr := txInsertPage(ctx, tx, jobID, fr.urlID, fetchID, fr.depth, item.page); pageErr != nil {
+		if pageErr := txInsertPage(ctx, tx, jobID, pageURLID, fetchID, fr.depth, item.page); pageErr != nil {
 			return fmt.Errorf("inserting page: %w", pageErr)
 		}
 	}
@@ -1916,7 +1921,7 @@ func (e *Engine) persistItem(ctx context.Context, jobID string, item persistItem
 				source_kind, relation_type, rel_flags_json, discovery_mode,
 				anchor_text, is_internal, declared_target_url, target_status_code)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			jobID, edge.SourceURLID, targetURLID,
+			jobID, pageURLID, targetURLID,
 			edge.SourceKind, edge.RelationType, relFlags, edge.DiscoveryMode,
 			anchorText, boolToInt, edge.DeclaredTargetURL, targetStatusCode,
 		); edgeErr != nil {
@@ -1929,7 +1934,7 @@ func (e *Engine) persistItem(ctx context.Context, jobID string, item persistItem
 		details := issue.DetailsJSON
 		if _, issueErr := tx.ExecContext(ctx,
 			`INSERT INTO issues (job_id, url_id, issue_type, severity, scope, details_json) VALUES (?, ?, ?, ?, ?, ?)`,
-			jobID, &fr.urlID, issue.IssueType, issue.Severity, issue.Scope, &details,
+			jobID, &pageURLID, issue.IssueType, issue.Severity, issue.Scope, &details,
 		); issueErr != nil {
 			return fmt.Errorf("inserting issue: %w", issueErr)
 		}
@@ -1944,7 +1949,7 @@ func (e *Engine) persistItem(ctx context.Context, jobID string, item persistItem
 		if _, refErr := tx.ExecContext(ctx,
 			`INSERT INTO asset_references (job_id, asset_url_id, source_page_url_id, reference_type)
 			 VALUES (?, ?, ?, ?)`,
-			jobID, imgURLID, img.sourceURLID, "img_src",
+			jobID, imgURLID, pageURLID, "img_src",
 		); refErr != nil {
 			// Duplicate references are possible; ignore unique constraint errors
 			continue
@@ -1960,7 +1965,7 @@ func (e *Engine) persistItem(ctx context.Context, jobID string, item persistItem
 		if _, refErr := tx.ExecContext(ctx,
 			`INSERT INTO asset_references (job_id, asset_url_id, source_page_url_id, reference_type)
 			 VALUES (?, ?, ?, ?)`,
-			jobID, assetURLID, asset.sourceURLID, asset.refType,
+			jobID, assetURLID, pageURLID, asset.refType,
 		); refErr != nil {
 			// Duplicate references are possible; ignore unique constraint errors
 			continue
@@ -2061,7 +2066,7 @@ func txInsertPage(ctx context.Context, tx *sql.Tx, jobID string, urlID, fetchID 
 	}
 
 	_, err := tx.ExecContext(ctx,
-		`INSERT INTO pages (job_id, url_id, fetch_id, depth,
+		`INSERT OR IGNORE INTO pages (job_id, url_id, fetch_id, depth,
 			title, title_length, meta_description, meta_description_length,
 			meta_robots, x_robots_tag, indexability_state,
 			canonical_url, canonical_is_self, rel_next_url, rel_prev_url,
