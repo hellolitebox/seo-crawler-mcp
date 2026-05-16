@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"database/sql"
 	"os"
 	"path/filepath"
 	"testing"
@@ -80,6 +81,51 @@ func TestOpenAndMigrate(t *testing.T) {
 		if err != nil {
 			t.Errorf("index %q not found: %v", index, err)
 		}
+	}
+}
+
+func TestOpenRepairsMissingTextPreviewColumn(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "legacy.db")
+
+	sqlDB, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("sql.Open(%q) failed: %v", dbPath, err)
+	}
+	for _, name := range []string{
+		"001_init.sql",
+		"002_activity_stream_indexes.sql",
+		"003_inbound_linking_pages.sql",
+	} {
+		content, err := migrationsFS.ReadFile(filepath.Join("migrations", name))
+		if err != nil {
+			t.Fatalf("reading migration %s: %v", name, err)
+		}
+		if _, err := sqlDB.Exec(string(content)); err != nil {
+			t.Fatalf("executing migration %s: %v", name, err)
+		}
+	}
+	for _, version := range []int{1, 2, 3, 4} {
+		if _, err := sqlDB.Exec("INSERT INTO schema_migrations (version) VALUES (?)", version); err != nil {
+			t.Fatalf("recording legacy migration %d: %v", version, err)
+		}
+	}
+	if err := sqlDB.Close(); err != nil {
+		t.Fatalf("closing legacy db: %v", err)
+	}
+
+	db, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open(%q) failed: %v", dbPath, err)
+	}
+	defer db.Close()
+
+	hasTextPreview, err := db.tableHasColumn("pages", "text_preview")
+	if err != nil {
+		t.Fatalf("checking text_preview column: %v", err)
+	}
+	if !hasTextPreview {
+		t.Fatal("expected pages.text_preview to be repaired")
 	}
 }
 

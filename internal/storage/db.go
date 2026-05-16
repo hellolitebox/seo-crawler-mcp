@@ -66,6 +66,10 @@ func Open(path string) (*DB, error) {
 		sqlDB.Close()
 		return nil, fmt.Errorf("running migrations on %q: %w", path, err)
 	}
+	if err := db.repairSchemaDrift(); err != nil {
+		sqlDB.Close()
+		return nil, fmt.Errorf("repairing schema drift on %q: %w", path, err)
+	}
 
 	return db, nil
 }
@@ -172,6 +176,47 @@ func (db *DB) migrate() error {
 	}
 
 	return nil
+}
+
+// repairSchemaDrift keeps older long-lived production databases usable when a
+// migration version was already recorded before a later migration reused it.
+func (db *DB) repairSchemaDrift() error {
+	hasTextPreview, err := db.tableHasColumn("pages", "text_preview")
+	if err != nil {
+		return err
+	}
+	if !hasTextPreview {
+		if _, err := db.Exec("ALTER TABLE pages ADD COLUMN text_preview TEXT"); err != nil {
+			return fmt.Errorf("adding pages.text_preview: %w", err)
+		}
+	}
+	return nil
+}
+
+func (db *DB) tableHasColumn(table, column string) (bool, error) {
+	rows, err := db.Query("PRAGMA table_info(" + table + ")")
+	if err != nil {
+		return false, fmt.Errorf("reading columns for %s: %w", table, err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cid int
+		var name, columnType string
+		var notNull int
+		var defaultValue any
+		var primaryKey int
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return false, fmt.Errorf("scanning columns for %s: %w", table, err)
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("iterating columns for %s: %w", table, err)
+	}
+	return false, nil
 }
 
 // extractVersion parses the leading numeric prefix from a migration filename.
