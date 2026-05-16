@@ -161,6 +161,60 @@ func TestNormalizeCrawlURLRejectsInvalidSchemes(t *testing.T) {
 	}
 }
 
+func TestHandleCrawlAutoRenderModeQueuesHybrid(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	db, err := storage.Open(dbPath)
+	if err != nil {
+		t.Fatalf("opening test db: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	activeJob, err := db.CreateJob("crawl", `{}`, `["https://busy.example"]`)
+	if err != nil {
+		t.Fatalf("creating active job: %v", err)
+	}
+	if err := db.UpdateJobStarted(activeJob.ID); err != nil {
+		t.Fatalf("marking active job started: %v", err)
+	}
+
+	cfg := config.DefaultConfig()
+	cfg.SSRFProtection = false
+	srv := New(db, &engine.Engine{}, &cfg)
+	handler := srv.Handler()
+
+	body := bytes.NewBufferString(`{"url":"pipapou.com","maxPages":10,"renderMode":"auto"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/crawl", body)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("POST /api/crawl status = %d, body=%s", rr.Code, rr.Body.String())
+	}
+
+	var resp map[string]string
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	job, err := db.GetJob(resp["jobId"])
+	if err != nil {
+		t.Fatalf("getting queued job: %v", err)
+	}
+	var crawlConfig map[string]any
+	if err := json.Unmarshal([]byte(job.ConfigJSON), &crawlConfig); err != nil {
+		t.Fatalf("parsing crawl config: %v", err)
+	}
+	if crawlConfig["renderMode"] != "hybrid" {
+		t.Fatalf("renderMode = %v, want hybrid", crawlConfig["renderMode"])
+	}
+	var seeds []string
+	if err := json.Unmarshal([]byte(job.SeedURLs), &seeds); err != nil {
+		t.Fatalf("parsing seeds: %v", err)
+	}
+	if fmt.Sprint(seeds) != fmt.Sprint([]string{"https://pipapou.com"}) {
+		t.Fatalf("seeds = %v, want normalized https seed", seeds)
+	}
+}
+
 func TestJobsList_EmptyDb(t *testing.T) {
 	_, h := newTestServer(t)
 

@@ -125,7 +125,7 @@ func (s *Server) handleCrawl(w http.ResponseWriter, r *http.Request) {
 		switch body.RenderMode {
 		case "static", "browser", "hybrid", "auto":
 			if body.RenderMode == "auto" {
-				renderMode = "static"
+				renderMode = "hybrid"
 			} else {
 				renderMode = body.RenderMode
 			}
