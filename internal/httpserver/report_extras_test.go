@@ -32,7 +32,7 @@ func TestLoadReportExtrasExposesSecurityAndMarkdownNegotiation(t *testing.T) {
 
 	_, err = db.Exec(`
 		INSERT INTO fetches (job_id, fetch_seq, requested_url_id, status_code, response_headers_json, fetch_kind)
-		VALUES (?, 1, ?, 200, ?, 'page')
+		VALUES (?, 1, ?, 200, ?, 'full')
 	`, jobID, urlID, `{"Content-Security-Policy":["default-src 'self'"],"X-Frame-Options":["DENY"]}`)
 	if err != nil {
 		t.Fatalf("inserting fetch: %v", err)

@@ -450,7 +450,7 @@ func loadPageSecurityHeaders(ctx context.Context, db *storage.DB, jobID string, 
 	rows, err := db.QueryContext(ctx, `
 		SELECT u.normalized_url, f.status_code, f.response_headers_json
 		FROM fetches f JOIN urls u ON u.id = f.requested_url_id
-		WHERE f.job_id = ? AND f.requested_url_id = ? AND f.fetch_kind = 'page'
+		WHERE f.job_id = ? AND f.requested_url_id = ?
 		ORDER BY f.id ASC`,
 		jobID, urlID)
 	if err != nil {
