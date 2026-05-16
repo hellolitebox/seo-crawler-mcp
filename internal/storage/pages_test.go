@@ -29,6 +29,7 @@ func TestInsertAndGetPage(t *testing.T) {
 	title := "Example Page"
 	titleLen := 12
 	wc := 500
+	textPreview := "This is visible page content."
 	input := PageInput{
 		JobID:             job.ID,
 		URLID:             urlID,
@@ -38,6 +39,7 @@ func TestInsertAndGetPage(t *testing.T) {
 		TitleLength:       &titleLen,
 		IndexabilityState: "indexable",
 		WordCount:         &wc,
+		TextPreview:       &textPreview,
 		JSSuspect:         false,
 	}
 
@@ -62,6 +64,9 @@ func TestInsertAndGetPage(t *testing.T) {
 	}
 	if got.JSSuspect {
 		t.Error("expected js_suspect false")
+	}
+	if !got.TextPreview.Valid || got.TextPreview.String != textPreview {
+		t.Errorf("expected text_preview %q, got %v", textPreview, got.TextPreview)
 	}
 }
 

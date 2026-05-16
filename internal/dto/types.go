@@ -40,6 +40,7 @@ type PageDTO struct {
 	WordCount             *int     `json:"wordCount,omitempty"`
 	MainContentWordCount  *int     `json:"mainContentWordCount,omitempty"`
 	ContentHash           *string  `json:"contentHash,omitempty"`
+	TextPreview           *string  `json:"textPreview,omitempty"`
 	JSSuspect             bool     `json:"jsSuspect"`
 	URLGroup              *string  `json:"urlGroup,omitempty"`
 	OutboundEdgeCount     int      `json:"outboundEdgeCount"`

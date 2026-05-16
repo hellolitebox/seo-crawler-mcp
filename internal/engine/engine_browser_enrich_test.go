@@ -58,6 +58,17 @@ func TestUpdateBrowserEnrichedPagePersistsAllHeadingLevels(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("inserting page: %v", err)
 	}
+	for _, issueType := range []string{"js_suspect_not_rendered", "missing_h1", "missing_h2", "thin_content", "missing_canonical"} {
+		if _, err := db.InsertIssue(storage.IssueInput{
+			JobID:     job.ID,
+			URLID:     &urlID,
+			IssueType: issueType,
+			Severity:  "warning",
+			Scope:     "page_local",
+		}); err != nil {
+			t.Fatalf("inserting issue %s: %v", issueType, err)
+		}
+	}
 
 	page, err := parser.ParseHTML([]byte(`<!doctype html><html><head><title>Rendered</title></head><body>
 		<h1>One</h1><h2>Two</h2><h3>Three</h3><h4>Four</h4><h5>Five</h5><h6>Six</h6>
@@ -68,6 +79,7 @@ func TestUpdateBrowserEnrichedPagePersistsAllHeadingLevels(t *testing.T) {
 	}
 
 	cfg := config.DefaultConfig()
+	cfg.ThinContentThreshold = 5
 	eng := New(EngineConfig{DB: db, Config: &cfg})
 	if err := eng.updateBrowserEnrichedPage(job.ID, urlID, page); err != nil {
 		t.Fatalf("updating enriched page: %v", err)
@@ -92,4 +104,27 @@ func TestUpdateBrowserEnrichedPagePersistsAllHeadingLevels(t *testing.T) {
 	assertJSON("h4_json", stored.H4JSON, `["Four"]`)
 	assertJSON("h5_json", stored.H5JSON, `["Five"]`)
 	assertJSON("h6_json", stored.H6JSON, `["Six"]`)
+	if !stored.TextPreview.Valid || stored.TextPreview.String == "" {
+		t.Fatalf("text_preview = %v, want rendered body content", stored.TextPreview)
+	}
+
+	var invalidated int
+	if err := db.QueryRow(`
+		SELECT COUNT(*) FROM issues
+		WHERE job_id = ? AND url_id = ? AND issue_type IN ('js_suspect_not_rendered', 'missing_h1', 'missing_h2', 'thin_content')`,
+		job.ID, urlID,
+	).Scan(&invalidated); err != nil {
+		t.Fatalf("count invalidated issues: %v", err)
+	}
+	if invalidated != 0 {
+		t.Fatalf("invalidated issue count = %d, want 0", invalidated)
+	}
+
+	var remaining int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM issues WHERE job_id = ? AND url_id = ? AND issue_type = 'missing_canonical'`, job.ID, urlID).Scan(&remaining); err != nil {
+		t.Fatalf("count remaining issue: %v", err)
+	}
+	if remaining != 1 {
+		t.Fatalf("remaining issue count = %d, want 1", remaining)
+	}
 }

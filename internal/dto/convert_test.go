@@ -31,6 +31,7 @@ func TestPageFromStorage_ValidFields(t *testing.T) {
 		IndexabilityState: "indexable",
 		JSSuspect:         true,
 		WordCount:         sql.NullInt64{Int64: 100, Valid: true},
+		TextPreview:       sql.NullString{String: "Visible content", Valid: true},
 	}
 
 	dto := PageFromStorage(p, testLookup)
@@ -49,6 +50,9 @@ func TestPageFromStorage_ValidFields(t *testing.T) {
 	}
 	if dto.WordCount == nil || *dto.WordCount != 100 {
 		t.Errorf("WordCount = %v, want 100", dto.WordCount)
+	}
+	if dto.TextPreview == nil || *dto.TextPreview != "Visible content" {
+		t.Errorf("TextPreview = %v, want Visible content", dto.TextPreview)
 	}
 }
 

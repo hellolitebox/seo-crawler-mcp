@@ -189,6 +189,7 @@ func (db *DB) QueryPages(
 		p.twitter_card, p.twitter_title, p.twitter_description, p.twitter_image,
 		p.jsonld_raw, p.jsonld_types_json, p.images_json,
 		p.word_count, p.main_content_word_count, p.content_hash,
+		p.text_preview,
 		p.js_suspect, p.url_group, p.outbound_edge_count, p.inbound_edge_count,
 		p.inbound_linking_pages`)
 

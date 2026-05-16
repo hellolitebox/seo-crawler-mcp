@@ -12,11 +12,11 @@ type URLLookup func(id int64) string
 // PageFromStorage converts a storage.Page to a PageDTO.
 func PageFromStorage(p storage.Page, lookup URLLookup) PageDTO {
 	dto := PageDTO{
-		ID:                p.ID,
-		URL:               lookup(p.URLID),
-		Depth:             int(p.Depth),
-		IndexabilityState: p.IndexabilityState,
-		JSSuspect:         p.JSSuspect,
+		ID:                  p.ID,
+		URL:                 lookup(p.URLID),
+		Depth:               int(p.Depth),
+		IndexabilityState:   p.IndexabilityState,
+		JSSuspect:           p.JSSuspect,
 		OutboundEdgeCount:   int(p.OutboundEdgeCount),
 		InboundEdgeCount:    int(p.InboundEdgeCount),
 		InboundLinkingPages: int(p.InboundLinkingPages),
@@ -55,6 +55,7 @@ func PageFromStorage(p storage.Page, lookup URLLookup) PageDTO {
 	dto.WordCount = intPtr(p.WordCount)
 	dto.MainContentWordCount = intPtr(p.MainContentWordCount)
 	dto.ContentHash = strPtr(p.ContentHash)
+	dto.TextPreview = strPtr(p.TextPreview)
 	dto.URLGroup = strPtr(p.URLGroup)
 
 	return dto

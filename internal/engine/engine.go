@@ -896,9 +896,7 @@ func (e *Engine) runPostCrawlPhases(ctx context.Context, jobID string, counters 
 	// reflects everything written by post-crawl phases (text quality, audits, etc.)
 	var actual int
 	if scanErr := e.db.QueryRow(`SELECT COUNT(*) FROM issues WHERE job_id = ?`, jobID).Scan(&actual); scanErr == nil {
-		if int64(actual) > counters.issuesFound.Load() {
-			counters.issuesFound.Store(int64(actual))
-		}
+		counters.issuesFound.Store(int64(actual))
 	}
 }
 
@@ -1437,6 +1435,7 @@ func (e *Engine) sitemapGapEscalation(ctx context.Context, jobID string) int {
 					word_count = MAX(COALESCE(word_count, 0), ?),
 					main_content_word_count = MAX(COALESCE(main_content_word_count, 0), ?),
 					content_hash = CASE WHEN ? > COALESCE(word_count, 0) THEN ? ELSE content_hash END,
+					text_preview = CASE WHEN ? > COALESCE(word_count, 0) THEN ? ELSE text_preview END,
 					h1_json = CASE WHEN ? > COALESCE(word_count, 0) THEN ? ELSE h1_json END,
 					h2_json = CASE WHEN ? > COALESCE(word_count, 0) THEN ? ELSE h2_json END,
 					h3_json = CASE WHEN ? > COALESCE(word_count, 0) THEN ? ELSE h3_json END,
@@ -1447,6 +1446,7 @@ func (e *Engine) sitemapGapEscalation(ctx context.Context, jobID string) int {
 				WHERE job_id = ? AND url_id = ?`,
 				page.ExtractedWordCount, page.MainContentWordCount,
 				page.ExtractedWordCount, page.ContentHash,
+				page.ExtractedWordCount, limitTextPreview(page.ExtractedText),
 				page.ExtractedWordCount, marshalStringSlice(page.Headings.H1),
 				page.ExtractedWordCount, marshalStringSlice(page.Headings.H2),
 				page.ExtractedWordCount, marshalStringSlice(page.Headings.H3),
@@ -1982,6 +1982,7 @@ func txInsertPage(ctx context.Context, tx *sql.Tx, jobID string, urlID, fetchID 
 	wordCount := intPtr(page.ExtractedWordCount)
 	mainWC := intPtr(page.MainContentWordCount)
 	contentHash := strPtr(page.ContentHash)
+	textPreview := strPtr(limitTextPreview(page.ExtractedText))
 
 	jsSuspect := 0
 	if page.JSSuspect {
@@ -1999,7 +2000,7 @@ func txInsertPage(ctx context.Context, tx *sql.Tx, jobID string, urlID, fetchID 
 			twitter_card, twitter_title, twitter_description, twitter_image,
 			jsonld_raw, jsonld_types_json,
 			images_json, word_count, main_content_word_count,
-			content_hash, js_suspect)
+			content_hash, text_preview, js_suspect)
 		 VALUES (?, ?, ?, ?,
 			?, ?, ?, ?,
 			?, ?, ?,
@@ -2010,7 +2011,7 @@ func txInsertPage(ctx context.Context, tx *sql.Tx, jobID string, urlID, fetchID 
 			?, ?, ?, ?,
 			?, ?,
 			?, ?, ?,
-			?, ?)`,
+			?, ?, ?)`,
 		jobID, urlID, fetchID, depth,
 		title, titleLen, metaDesc, metaDescLen,
 		metaRobots, xRobots, page.IndexabilityState,
@@ -2021,7 +2022,7 @@ func txInsertPage(ctx context.Context, tx *sql.Tx, jobID string, urlID, fetchID 
 		twitterCard, twitterTitle, twitterDesc, twitterImage,
 		jsonldRaw, jsonldTypes,
 		imagesJSON, wordCount, mainWC,
-		contentHash, jsSuspect,
+		contentHash, textPreview, jsSuspect,
 	)
 	return err
 }
@@ -2707,6 +2708,7 @@ func (e *Engine) updateBrowserEnrichedPage(jobID string, urlID int64, page *pars
 			word_count = ?,
 			main_content_word_count = ?,
 			content_hash = ?,
+			text_preview = ?,
 			h1_json = ?,
 			h2_json = ?,
 			h3_json = ?,
@@ -2717,6 +2719,7 @@ func (e *Engine) updateBrowserEnrichedPage(jobID string, urlID int64, page *pars
 		WHERE job_id = ? AND url_id = ?`,
 		page.ExtractedWordCount, page.MainContentWordCount,
 		page.ContentHash,
+		limitTextPreview(page.ExtractedText),
 		marshalStringSlice(page.Headings.H1),
 		marshalStringSlice(page.Headings.H2),
 		marshalStringSlice(page.Headings.H3),
@@ -2726,7 +2729,60 @@ func (e *Engine) updateBrowserEnrichedPage(jobID string, urlID int64, page *pars
 		marshalImages(page.Images),
 		jobID, urlID,
 	)
+	if err != nil {
+		return err
+	}
+	return e.removeInvalidatedBrowserIssues(jobID, urlID, page)
+}
+
+func (e *Engine) removeInvalidatedBrowserIssues(jobID string, urlID int64, page *parser.ParseResult) error {
+	issueTypes := []string{"js_suspect_not_rendered"}
+	if len(page.Headings.H1) > 0 {
+		issueTypes = append(issueTypes, "missing_h1")
+	}
+	if len(page.Headings.H2) > 0 {
+		issueTypes = append(issueTypes, "missing_h2")
+	}
+
+	threshold := issues.DefaultThresholds().ThinContentThreshold
+	if e.config != nil && e.config.ThinContentThreshold > 0 {
+		threshold = e.config.ThinContentThreshold
+	}
+	if page.ExtractedWordCount >= threshold {
+		issueTypes = append(issueTypes, "thin_content")
+	}
+
+	placeholders := make([]string, len(issueTypes))
+	args := make([]any, 0, 2+len(issueTypes))
+	args = append(args, jobID, urlID)
+	for i, issueType := range issueTypes {
+		placeholders[i] = "?"
+		args = append(args, issueType)
+	}
+
+	_, err := e.db.Exec(`
+		DELETE FROM issues
+		WHERE job_id = ?
+			AND url_id = ?
+			AND scope = 'page_local'
+			AND issue_type IN (`+strings.Join(placeholders, ",")+`)`,
+		args...,
+	)
 	return err
+}
+
+const maxTextPreviewRunes = 4000
+
+func limitTextPreview(text string) string {
+	text = strings.Join(strings.Fields(text), " ")
+	if text == "" {
+		return ""
+	}
+	runes := []rune(text)
+	if len(runes) <= maxTextPreviewRunes {
+		return text
+	}
+	return string(runes[:maxTextPreviewRunes])
 }
 
 func marshalStringSlice(items []string) string {

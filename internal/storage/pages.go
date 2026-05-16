@@ -45,6 +45,7 @@ type PageInput struct {
 	WordCount             *int
 	MainContentWordCount  *int
 	ContentHash           *string
+	TextPreview           *string
 	JSSuspect             bool
 	URLGroup              *string
 }
@@ -60,6 +61,7 @@ const pageColumns = `id, job_id, url_id, fetch_id, depth,
 	twitter_card, twitter_title, twitter_description, twitter_image,
 	jsonld_raw, jsonld_types_json, images_json,
 	word_count, main_content_word_count, content_hash,
+	text_preview,
 	js_suspect, url_group, outbound_edge_count, inbound_edge_count,
 	inbound_linking_pages`
 
@@ -78,6 +80,7 @@ func scanPage(sc interface{ Scan(...any) error }) (Page, error) {
 		&p.TwitterCard, &p.TwitterTitle, &p.TwitterDescription, &p.TwitterImage,
 		&p.JSONLDRaw, &p.JSONLDTypesJSON, &p.ImagesJSON,
 		&p.WordCount, &p.MainContentWordCount, &p.ContentHash,
+		&p.TextPreview,
 		&jsSuspect, &p.URLGroup, &p.OutboundEdgeCount, &p.InboundEdgeCount,
 		&p.InboundLinkingPages,
 	)
@@ -98,9 +101,10 @@ func (db *DB) InsertPage(input PageInput) (int64, error) {
 			twitter_card, twitter_title, twitter_description, twitter_image,
 			jsonld_raw, jsonld_types_json, images_json,
 			word_count, main_content_word_count, content_hash,
+			text_preview,
 			js_suspect, url_group)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-			?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		input.JobID, input.URLID, input.FetchID, input.Depth,
 		input.Title, input.TitleLength, input.MetaDescription, input.MetaDescriptionLength,
 		input.MetaRobots, input.XRobotsTag, input.IndexabilityState,
@@ -111,6 +115,7 @@ func (db *DB) InsertPage(input PageInput) (int64, error) {
 		input.TwitterCard, input.TwitterTitle, input.TwitterDescription, input.TwitterImage,
 		input.JSONLDRaw, input.JSONLDTypesJSON, input.ImagesJSON,
 		input.WordCount, input.MainContentWordCount, input.ContentHash,
+		input.TextPreview,
 		boolToInt(input.JSSuspect), input.URLGroup,
 	)
 	if err != nil {

@@ -56,50 +56,51 @@ type Fetch struct {
 
 // Page holds parsed SEO data for a single page.
 type Page struct {
-	ID                      int64          `json:"id"`
-	JobID                   string         `json:"jobId"`
-	URLID                   int64          `json:"urlId"`
-	FetchID                 int64          `json:"fetchId"`
-	Depth                   int64          `json:"depth"`
-	Title                   sql.NullString `json:"title,omitempty"`
-	TitleLength             sql.NullInt64  `json:"titleLength,omitempty"`
-	MetaDescription         sql.NullString `json:"metaDescription,omitempty"`
-	MetaDescriptionLength   sql.NullInt64  `json:"metaDescriptionLength,omitempty"`
-	MetaRobots              sql.NullString `json:"metaRobots,omitempty"`
-	XRobotsTag              sql.NullString `json:"xRobotsTag,omitempty"`
-	IndexabilityState       string         `json:"indexabilityState"`
-	CanonicalURL            sql.NullString `json:"canonicalUrl,omitempty"`
-	CanonicalIsSelf         sql.NullInt64  `json:"canonicalIsSelf,omitempty"`
-	CanonicalStatusCode     sql.NullInt64  `json:"canonicalStatusCode,omitempty"`
-	RelNextURL              sql.NullString `json:"relNextUrl,omitempty"`
-	RelPrevURL              sql.NullString `json:"relPrevUrl,omitempty"`
-	HreflangJSON            sql.NullString `json:"hreflangJson,omitempty"`
-	H1JSON                  sql.NullString `json:"h1Json,omitempty"`
-	H2JSON                  sql.NullString `json:"h2Json,omitempty"`
-	H3JSON                  sql.NullString `json:"h3Json,omitempty"`
-	H4JSON                  sql.NullString `json:"h4Json,omitempty"`
-	H5JSON                  sql.NullString `json:"h5Json,omitempty"`
-	H6JSON                  sql.NullString `json:"h6Json,omitempty"`
-	OGTitle                 sql.NullString `json:"ogTitle,omitempty"`
-	OGDescription           sql.NullString `json:"ogDescription,omitempty"`
-	OGImage                 sql.NullString `json:"ogImage,omitempty"`
-	OGURL                   sql.NullString `json:"ogUrl,omitempty"`
-	OGType                  sql.NullString `json:"ogType,omitempty"`
-	TwitterCard             sql.NullString `json:"twitterCard,omitempty"`
-	TwitterTitle            sql.NullString `json:"twitterTitle,omitempty"`
-	TwitterDescription      sql.NullString `json:"twitterDescription,omitempty"`
-	TwitterImage            sql.NullString `json:"twitterImage,omitempty"`
-	JSONLDRaw               sql.NullString `json:"jsonldRaw,omitempty"`
-	JSONLDTypesJSON         sql.NullString `json:"jsonldTypesJson,omitempty"`
-	ImagesJSON              sql.NullString `json:"imagesJson,omitempty"`
-	WordCount               sql.NullInt64  `json:"wordCount,omitempty"`
-	MainContentWordCount    sql.NullInt64  `json:"mainContentWordCount,omitempty"`
-	ContentHash             sql.NullString `json:"contentHash,omitempty"`
-	JSSuspect               bool           `json:"jsSuspect"`
-	URLGroup                sql.NullString `json:"urlGroup,omitempty"`
-	OutboundEdgeCount       int64          `json:"outboundEdgeCount"`
-	InboundEdgeCount        int64          `json:"inboundEdgeCount"`
-	InboundLinkingPages     int64          `json:"inboundLinkingPages"`
+	ID                    int64          `json:"id"`
+	JobID                 string         `json:"jobId"`
+	URLID                 int64          `json:"urlId"`
+	FetchID               int64          `json:"fetchId"`
+	Depth                 int64          `json:"depth"`
+	Title                 sql.NullString `json:"title,omitempty"`
+	TitleLength           sql.NullInt64  `json:"titleLength,omitempty"`
+	MetaDescription       sql.NullString `json:"metaDescription,omitempty"`
+	MetaDescriptionLength sql.NullInt64  `json:"metaDescriptionLength,omitempty"`
+	MetaRobots            sql.NullString `json:"metaRobots,omitempty"`
+	XRobotsTag            sql.NullString `json:"xRobotsTag,omitempty"`
+	IndexabilityState     string         `json:"indexabilityState"`
+	CanonicalURL          sql.NullString `json:"canonicalUrl,omitempty"`
+	CanonicalIsSelf       sql.NullInt64  `json:"canonicalIsSelf,omitempty"`
+	CanonicalStatusCode   sql.NullInt64  `json:"canonicalStatusCode,omitempty"`
+	RelNextURL            sql.NullString `json:"relNextUrl,omitempty"`
+	RelPrevURL            sql.NullString `json:"relPrevUrl,omitempty"`
+	HreflangJSON          sql.NullString `json:"hreflangJson,omitempty"`
+	H1JSON                sql.NullString `json:"h1Json,omitempty"`
+	H2JSON                sql.NullString `json:"h2Json,omitempty"`
+	H3JSON                sql.NullString `json:"h3Json,omitempty"`
+	H4JSON                sql.NullString `json:"h4Json,omitempty"`
+	H5JSON                sql.NullString `json:"h5Json,omitempty"`
+	H6JSON                sql.NullString `json:"h6Json,omitempty"`
+	OGTitle               sql.NullString `json:"ogTitle,omitempty"`
+	OGDescription         sql.NullString `json:"ogDescription,omitempty"`
+	OGImage               sql.NullString `json:"ogImage,omitempty"`
+	OGURL                 sql.NullString `json:"ogUrl,omitempty"`
+	OGType                sql.NullString `json:"ogType,omitempty"`
+	TwitterCard           sql.NullString `json:"twitterCard,omitempty"`
+	TwitterTitle          sql.NullString `json:"twitterTitle,omitempty"`
+	TwitterDescription    sql.NullString `json:"twitterDescription,omitempty"`
+	TwitterImage          sql.NullString `json:"twitterImage,omitempty"`
+	JSONLDRaw             sql.NullString `json:"jsonldRaw,omitempty"`
+	JSONLDTypesJSON       sql.NullString `json:"jsonldTypesJson,omitempty"`
+	ImagesJSON            sql.NullString `json:"imagesJson,omitempty"`
+	WordCount             sql.NullInt64  `json:"wordCount,omitempty"`
+	MainContentWordCount  sql.NullInt64  `json:"mainContentWordCount,omitempty"`
+	ContentHash           sql.NullString `json:"contentHash,omitempty"`
+	TextPreview           sql.NullString `json:"textPreview,omitempty"`
+	JSSuspect             bool           `json:"jsSuspect"`
+	URLGroup              sql.NullString `json:"urlGroup,omitempty"`
+	OutboundEdgeCount     int64          `json:"outboundEdgeCount"`
+	InboundEdgeCount      int64          `json:"inboundEdgeCount"`
+	InboundLinkingPages   int64          `json:"inboundLinkingPages"`
 }
 
 // Edge represents a link between two URLs.
@@ -132,15 +133,15 @@ type RedirectHop struct {
 
 // SitemapEntry represents a URL found in a sitemap.
 type SitemapEntry struct {
-	ID                    int64            `json:"id"`
-	JobID                 string           `json:"jobId"`
-	URL                   string           `json:"url"`
-	SourceSitemapURL      string           `json:"sourceSitemapUrl"`
-	SourceHost            string           `json:"sourceHost"`
-	Lastmod               sql.NullString   `json:"lastmod,omitempty"`
-	Changefreq            sql.NullString   `json:"changefreq,omitempty"`
-	Priority              sql.NullFloat64  `json:"priority,omitempty"`
-	ReconciliationStatus  string           `json:"reconciliationStatus"`
+	ID                   int64           `json:"id"`
+	JobID                string          `json:"jobId"`
+	URL                  string          `json:"url"`
+	SourceSitemapURL     string          `json:"sourceSitemapUrl"`
+	SourceHost           string          `json:"sourceHost"`
+	Lastmod              sql.NullString  `json:"lastmod,omitempty"`
+	Changefreq           sql.NullString  `json:"changefreq,omitempty"`
+	Priority             sql.NullFloat64 `json:"priority,omitempty"`
+	ReconciliationStatus string          `json:"reconciliationStatus"`
 }
 
 // RobotsDirective represents a parsed robots.txt rule.
@@ -156,12 +157,12 @@ type RobotsDirective struct {
 
 // LlmsFinding holds llms.txt analysis results for a host.
 type LlmsFinding struct {
-	ID                int64          `json:"id"`
-	JobID             string         `json:"jobId"`
-	Host              string         `json:"host"`
-	Present           bool           `json:"present"`
-	RawContent        sql.NullString `json:"rawContent,omitempty"`
-	SectionsJSON      sql.NullString `json:"sectionsJson,omitempty"`
+	ID                 int64          `json:"id"`
+	JobID              string         `json:"jobId"`
+	Host               string         `json:"host"`
+	Present            bool           `json:"present"`
+	RawContent         sql.NullString `json:"rawContent,omitempty"`
+	SectionsJSON       sql.NullString `json:"sectionsJson,omitempty"`
 	ReferencedURLsJSON sql.NullString `json:"referencedUrlsJson,omitempty"`
 }
 
@@ -177,11 +178,11 @@ type Asset struct {
 
 // AssetReference links a page to an asset it references.
 type AssetReference struct {
-	ID               int64  `json:"id"`
-	JobID            string `json:"jobId"`
-	AssetURLID       int64  `json:"assetUrlId"`
-	SourcePageURLID  int64  `json:"sourcePageUrlId"`
-	ReferenceType    string `json:"referenceType"`
+	ID              int64  `json:"id"`
+	JobID           string `json:"jobId"`
+	AssetURLID      int64  `json:"assetUrlId"`
+	SourcePageURLID int64  `json:"sourcePageUrlId"`
+	ReferenceType   string `json:"referenceType"`
 }
 
 // Issue represents a detected SEO issue.
