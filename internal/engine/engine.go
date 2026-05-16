@@ -558,6 +558,12 @@ func (e *Engine) runCrawlPipeline(
 	persistQueue := make(chan persistItem, 128)
 
 	var fetchSeq atomic.Int64
+	var lastFetchSeq int64
+	if err := e.db.QueryRow(`SELECT COALESCE(MAX(fetch_seq), 0) FROM fetches WHERE job_id = ?`, jobID).Scan(&lastFetchSeq); err != nil {
+		slog.Warn("engine: failed to load last fetch sequence", "err", err, "job_id", jobID)
+	} else {
+		fetchSeq.Store(lastFetchSeq)
+	}
 
 	concurrency := e.config.GlobalConcurrency
 	if concurrency < 1 {
