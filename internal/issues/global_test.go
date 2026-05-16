@@ -380,6 +380,71 @@ func TestDetectSitemapNon200UsesLatestFetch(t *testing.T) {
 	}
 }
 
+func TestDetectHTTPToHTTPSMissing(t *testing.T) {
+	db := testDB(t)
+	jobID := "job-http-missing"
+	seedJob(t, db, jobID)
+
+	seedURL(t, db, jobID, "http://blog.example.com/", "blog.example.com", "fetched", "http_https_audit")
+
+	n, err := detectHTTPToHTTPSMissing(db, jobID, DefaultGlobalConfig())
+	if err != nil {
+		t.Fatalf("detectHTTPToHTTPSMissing: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("detectHTTPToHTTPSMissing inserted %d issues, want 1", n)
+	}
+	if c := countIssuesByType(t, db, jobID, "http_to_https_missing"); c != 1 {
+		t.Fatalf("http_to_https_missing issues = %d, want 1", c)
+	}
+}
+
+func TestDetectHTTPToHTTPSMissingCleanWhenHostRedirects(t *testing.T) {
+	db := testDB(t)
+	jobID := "job-http-clean"
+	seedJob(t, db, jobID)
+
+	urlID := seedURL(t, db, jobID, "http://blog.example.com/", "blog.example.com", "fetched", "http_https_audit")
+	fetchID := seedFetch(t, db, jobID, 1, urlID, 301)
+	if _, err := db.Exec(`
+		INSERT INTO redirect_hops (job_id, fetch_id, hop_index, status_code, from_url, to_url)
+		VALUES (?, ?, 0, 301, 'http://blog.example.com/', 'https://blog.example.com/')
+	`, jobID, fetchID); err != nil {
+		t.Fatalf("seeding redirect hop: %v", err)
+	}
+
+	n, err := detectHTTPToHTTPSMissing(db, jobID, DefaultGlobalConfig())
+	if err != nil {
+		t.Fatalf("detectHTTPToHTTPSMissing: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("detectHTTPToHTTPSMissing inserted %d issues, want 0", n)
+	}
+}
+
+func TestDetectHTTPToHTTPSMissingDoesNotUseHostPrefixMatch(t *testing.T) {
+	db := testDB(t)
+	jobID := "job-http-prefix"
+	seedJob(t, db, jobID)
+
+	urlID := seedURL(t, db, jobID, "http://example.com/", "example.com", "fetched", "http_https_audit")
+	fetchID := seedFetch(t, db, jobID, 1, urlID, 301)
+	if _, err := db.Exec(`
+		INSERT INTO redirect_hops (job_id, fetch_id, hop_index, status_code, from_url, to_url)
+		VALUES (?, ?, 0, 301, 'http://example.com.evil/', 'https://example.com.evil/')
+	`, jobID, fetchID); err != nil {
+		t.Fatalf("seeding redirect hop: %v", err)
+	}
+
+	n, err := detectHTTPToHTTPSMissing(db, jobID, DefaultGlobalConfig())
+	if err != nil {
+		t.Fatalf("detectHTTPToHTTPSMissing: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("detectHTTPToHTTPSMissing inserted %d issues, want 1", n)
+	}
+}
+
 // ── Batch A global tests ───────────────────────────────────────────────
 
 func TestDetectDuplicateH1(t *testing.T) {

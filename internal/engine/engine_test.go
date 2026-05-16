@@ -221,6 +221,83 @@ func TestRunCrawlIntegration(t *testing.T) {
 	}
 }
 
+func TestAuditHTTPToHTTPSRedirectsChecksEveryDiscoveredHost(t *testing.T) {
+	redirectServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "https://127.0.0.1:1/", http.StatusMovedPermanently)
+	}))
+	defer redirectServer.Close()
+	noRedirectServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, "<html><body>still http</body></html>")
+	}))
+	defer noRedirectServer.Close()
+
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	db, err := storage.Open(dbPath)
+	if err != nil {
+		t.Fatalf("opening database: %v", err)
+	}
+	defer db.Close()
+
+	f := fetcher.New(fetcher.Options{
+		UserAgent:           "test-crawler/1.0",
+		Timeout:             500 * time.Millisecond,
+		MaxResponseBody:     1024,
+		MaxDecompressedBody: 1024,
+		MaxRedirectHops:     5,
+	})
+	eng := New(EngineConfig{DB: db, Fetcher: f})
+
+	job, err := db.CreateJob("crawl", "{}", `["https://example.com/"]`)
+	if err != nil {
+		t.Fatalf("creating job: %v", err)
+	}
+	for _, serverURL := range []string{redirectServer.URL, noRedirectServer.URL} {
+		parsed, err := url.Parse(serverURL)
+		if err != nil {
+			t.Fatalf("parsing test server URL: %v", err)
+		}
+		httpsVariant := "https://" + parsed.Host + "/"
+		if _, err := db.UpsertURL(job.ID, httpsVariant, parsed.Hostname(), "fetched", true, "seed"); err != nil {
+			t.Fatalf("seeding URL: %v", err)
+		}
+	}
+
+	eng.auditHTTPToHTTPSRedirects(context.Background(), job.ID)
+
+	var auditFetches int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM fetches WHERE job_id = ? AND fetch_kind = 'http_https_audit'`, job.ID).Scan(&auditFetches); err != nil {
+		t.Fatalf("counting audit fetches: %v", err)
+	}
+	if auditFetches != 2 {
+		t.Fatalf("audit fetches = %d, want 2", auditFetches)
+	}
+
+	redirectParsed, _ := url.Parse(redirectServer.URL)
+	var redirectHops int
+	if err := db.QueryRow(`
+		SELECT COUNT(*) FROM redirect_hops
+		WHERE job_id = ? AND from_url = ? AND to_url LIKE 'https://%'
+	`, job.ID, "http://"+redirectParsed.Host+"/").Scan(&redirectHops); err != nil {
+		t.Fatalf("counting redirect hops: %v", err)
+	}
+	if redirectHops != 1 {
+		t.Fatalf("redirect audit hops = %d, want 1", redirectHops)
+	}
+
+	noRedirectParsed, _ := url.Parse(noRedirectServer.URL)
+	var noRedirectURLCount int
+	if err := db.QueryRow(`
+		SELECT COUNT(*) FROM urls
+		WHERE job_id = ? AND normalized_url = ?
+	`, job.ID, "http://"+noRedirectParsed.Host+"/").Scan(&noRedirectURLCount); err != nil {
+		t.Fatalf("counting no-redirect audit URL: %v", err)
+	}
+	if noRedirectURLCount != 1 {
+		t.Fatalf("no-redirect audit URL rows = %d, want 1", noRedirectURLCount)
+	}
+}
+
 func TestRunCrawlRebuildsScopeCheckerForEachJob(t *testing.T) {
 	// Regression for production bug: a long-lived HTTP server reuses one Engine
 	// across jobs. The first crawl's scope checker must not reject the next

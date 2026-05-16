@@ -848,6 +848,11 @@ func (e *Engine) runPostCrawlPhases(ctx context.Context, jobID string, counters 
 	// HEAD-check discovered image/script/stylesheet assets.
 	e.headCheckAssets(ctx, jobID)
 
+	// Check the insecure variant for every discovered host/subdomain before
+	// global issue detection decides whether HTTP-to-HTTPS redirects are missing.
+	e.emitPhase(jobID, "http_https_audit", "checking HTTP to HTTPS redirects")
+	e.auditHTTPToHTTPSRedirects(ctx, jobID)
+
 	// Performance + Accessibility audits (parallel).
 	var auditWg sync.WaitGroup
 	slog.Info("engine: PSI API key configured", "configured", e.config != nil && e.config.PSIAPIKey != "")
@@ -915,6 +920,171 @@ func (e *Engine) runPostCrawlPhases(ctx context.Context, jobID string, counters 
 	if scanErr := e.db.QueryRow(`SELECT COUNT(*) FROM issues WHERE job_id = ?`, jobID).Scan(&actual); scanErr == nil {
 		counters.issuesFound.Store(int64(actual))
 	}
+}
+
+func (e *Engine) auditHTTPToHTTPSRedirects(ctx context.Context, jobID string) {
+	if e.fetcher == nil {
+		return
+	}
+
+	hosts, err := e.discoveredHostPorts(jobID)
+	if err != nil {
+		slog.Warn("engine: HTTP to HTTPS audit host query failed", "err", err, "job_id", jobID)
+		return
+	}
+	if len(hosts) == 0 {
+		return
+	}
+
+	var lastFetchSeq int64
+	if err := e.db.QueryRow(`SELECT COALESCE(MAX(fetch_seq), 0) FROM fetches WHERE job_id = ?`, jobID).Scan(&lastFetchSeq); err != nil {
+		slog.Warn("engine: HTTP to HTTPS audit fetch sequence query failed", "err", err, "job_id", jobID)
+		return
+	}
+
+	audited := 0
+	for _, hostPort := range hosts {
+		if ctx.Err() != nil {
+			return
+		}
+		if e.auditHTTPToHTTPSHost(ctx, jobID, hostPort, int(lastFetchSeq)+audited+1) {
+			audited++
+		}
+	}
+
+	slog.Info("engine: HTTP to HTTPS audit complete", "hosts", len(hosts), "audited", audited, "job_id", jobID)
+}
+
+func (e *Engine) discoveredHostPorts(jobID string) ([]string, error) {
+	rows, err := e.db.Query(`
+		SELECT DISTINCT normalized_url
+		FROM urls
+		WHERE job_id = ? AND is_internal = 1 AND normalized_url LIKE 'https://%'
+	`, jobID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	seen := map[string]bool{}
+	var hosts []string
+	for rows.Next() {
+		var rawURL string
+		if err := rows.Scan(&rawURL); err != nil {
+			return nil, err
+		}
+		parsed, err := url.Parse(rawURL)
+		if err != nil || parsed.Host == "" {
+			continue
+		}
+		hostPort := strings.ToLower(parsed.Host)
+		if !seen[hostPort] {
+			seen[hostPort] = true
+			hosts = append(hosts, hostPort)
+		}
+	}
+	return hosts, rows.Err()
+}
+
+func (e *Engine) auditHTTPToHTTPSHost(ctx context.Context, jobID string, hostPort string, fetchSeq int) bool {
+	httpURL := "http://" + hostPort + "/"
+	normalizedHTTPURL, err := urlutil.Normalize(httpURL)
+	if err != nil {
+		slog.Warn("engine: HTTP to HTTPS audit URL normalization failed", "url", httpURL, "err", err, "job_id", jobID)
+		return false
+	}
+
+	parsedHTTP, err := url.Parse(normalizedHTTPURL)
+	if err != nil {
+		return false
+	}
+	urlID, err := e.db.UpsertURL(jobID, normalizedHTTPURL, parsedHTTP.Hostname(), "queued", true, "http_https_audit")
+	if err != nil {
+		slog.Warn("engine: HTTP to HTTPS audit URL upsert failed", "url", normalizedHTTPURL, "err", err, "job_id", jobID)
+		return false
+	}
+
+	result, fetchErr := e.fetcher.FetchContext(ctx, normalizedHTTPURL)
+	status := "fetched"
+	if fetchErr != nil {
+		status = "errored"
+	}
+	_ = e.db.UpdateURLStatus(urlID, status)
+
+	var finalURLID *int64
+	if result != nil && result.FinalURL != "" && result.FinalURL != normalizedHTTPURL {
+		if finalNormalized, normErr := urlutil.Normalize(result.FinalURL); normErr == nil {
+			if parsedFinal, parseErr := url.Parse(finalNormalized); parseErr == nil {
+				finalInScope := e.scopeChecker == nil || e.scopeChecker.IsInScope(finalNormalized)
+				finalID, upsertErr := e.db.UpsertURL(jobID, finalNormalized, parsedFinal.Hostname(), "fetched", finalInScope, "http_https_audit")
+				if upsertErr == nil {
+					finalURLID = &finalID
+				}
+			}
+		}
+	}
+
+	var fetchErrText *string
+	if fetchErr != nil {
+		errText := fetchErr.Error()
+		fetchErrText = &errText
+	}
+
+	headersJSON := ""
+	statusCode := 0
+	var ttfbMS int64
+	var bodySize int64
+	contentType := ""
+	contentEncoding := ""
+	redirectHopCount := 0
+	if result != nil {
+		statusCode = result.StatusCode
+		ttfbMS = result.TTFBMS
+		bodySize = result.BodySize
+		contentType = result.ContentType
+		contentEncoding = result.ContentEncoding
+		redirectHopCount = len(result.RedirectHops)
+		if result.ResponseHeaders != nil {
+			if payload, err := json.Marshal(result.ResponseHeaders); err == nil {
+				headersJSON = string(payload)
+			}
+		}
+	}
+
+	fetchID, err := e.db.InsertFetch(storage.FetchInput{
+		JobID:               jobID,
+		FetchSeq:            fetchSeq,
+		RequestedURLID:      urlID,
+		FinalURLID:          finalURLID,
+		StatusCode:          statusCode,
+		RedirectHopCount:    redirectHopCount,
+		TTFBMs:              ttfbMS,
+		ResponseBodySize:    bodySize,
+		ContentType:         contentType,
+		ContentEncoding:     contentEncoding,
+		ResponseHeadersJSON: headersJSON,
+		HTTPMethod:          "GET",
+		FetchKind:           "http_https_audit",
+		RenderMode:          "static",
+		Error:               fetchErrText,
+	})
+	if err != nil {
+		slog.Warn("engine: HTTP to HTTPS audit fetch insert failed", "url", normalizedHTTPURL, "err", err, "job_id", jobID)
+		return false
+	}
+
+	if result != nil {
+		for _, hop := range result.RedirectHops {
+			if _, err := e.db.Exec(
+				`INSERT INTO redirect_hops (job_id, fetch_id, hop_index, status_code, from_url, to_url) VALUES (?, ?, ?, ?, ?, ?)`,
+				jobID, fetchID, hop.HopIndex, hop.StatusCode, hop.FromURL, hop.ToURL,
+			); err != nil {
+				slog.Warn("engine: HTTP to HTTPS audit redirect hop insert failed", "url", normalizedHTTPURL, "err", err, "job_id", jobID)
+			}
+		}
+	}
+
+	return true
 }
 
 // finalizeJob writes the final counters to the job row and sets the

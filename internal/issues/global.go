@@ -886,9 +886,13 @@ func detectHTTPToHTTPSMissing(db *storage.DB, jobID string, _ GlobalConfig) (int
 			SELECT COUNT(*)
 			FROM redirect_hops rh
 			WHERE rh.job_id = ?
-				AND rh.from_url LIKE 'http://' || ? || '%%'
+				AND (
+					rh.from_url = 'http://' || ?
+					OR rh.from_url LIKE 'http://' || ? || '/%%'
+					OR rh.from_url LIKE 'http://' || ? || ':%%'
+				)
 				AND rh.to_url LIKE 'https://%%'
-		`, jobID, host).Scan(&redirectCount); err != nil {
+		`, jobID, host, host, host).Scan(&redirectCount); err != nil {
 			return total, fmt.Errorf("checking HTTP to HTTPS redirect for host %q: %w", host, err)
 		}
 		if redirectCount > 0 {
