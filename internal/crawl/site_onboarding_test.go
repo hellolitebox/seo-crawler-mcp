@@ -209,6 +209,65 @@ func TestOnboardHost_Full(t *testing.T) {
 	}
 }
 
+func TestOnboardHost_DiscoversSupplementalDocsSitemap(t *testing.T) {
+	var serverURL string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/robots.txt", func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprintf(w, "User-agent: *\nAllow: /\nSitemap: %s/sitemap.xml\n", serverURL)
+	})
+	mux.HandleFunc("/sitemap.xml", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/xml")
+		fmt.Fprintf(w, `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>%s/</loc></url>
+</urlset>`, serverURL)
+	})
+	mux.HandleFunc("/docs/sitemap.xml", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/xml")
+		fmt.Fprintf(w, `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>%s/docs/quickstart</loc></url>
+  <url><loc>%s/docs/settings/context-and-secrets</loc></url>
+</urlset>`, serverURL, serverURL)
+	})
+	mux.HandleFunc("/llms.txt", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(404)
+	})
+
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+	serverURL = ts.URL
+
+	f := setupFetcher()
+	onboarder := NewHostOnboarder(f, nil, 1000, testUserAgent)
+
+	host := strings.TrimPrefix(ts.URL, "http://")
+	info, err := onboarder.OnboardHost(context.Background(), "job-docs-sitemap", host, "http")
+	if err != nil {
+		t.Fatalf("OnboardHost failed: %v", err)
+	}
+
+	if len(info.SitemapEntries) != 3 {
+		t.Fatalf("expected 3 sitemap entries across root and docs sitemaps, got %d", len(info.SitemapEntries))
+	}
+	var foundDocsSitemap bool
+	var foundDocsURL bool
+	for _, entry := range info.SitemapEntries {
+		if entry.SourceURL == serverURL+"/docs/sitemap.xml" {
+			foundDocsSitemap = true
+		}
+		if entry.Loc == serverURL+"/docs/settings/context-and-secrets" {
+			foundDocsURL = true
+		}
+	}
+	if !foundDocsSitemap {
+		t.Fatal("expected supplemental /docs/sitemap.xml entries")
+	}
+	if !foundDocsURL {
+		t.Fatal("expected docs URL from supplemental sitemap")
+	}
+}
+
 func TestOnboardHost_ReturnsCancellationDuringLlmsDiscovery(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/robots.txt", func(w http.ResponseWriter, _ *http.Request) {

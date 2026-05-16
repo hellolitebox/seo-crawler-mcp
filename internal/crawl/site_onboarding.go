@@ -196,12 +196,9 @@ func (h *HostOnboarder) storeRobotsDirectives(jobID, host, sourceURL string, rf 
 func (h *HostOnboarder) discoverSitemaps(ctx context.Context, jobID, host, scheme string, info *HostInfo) {
 	// If robots.txt didn't provide sitemaps, try fallback locations.
 	if len(info.SitemapURLs) == 0 {
-		info.SitemapURLs = []string{
-			fmt.Sprintf("%s://%s/sitemap.xml", scheme, host),
-			fmt.Sprintf("%s://%s/sitemap_index.xml", scheme, host),
-		}
 		info.Events = append(info.Events, fmt.Sprintf("no sitemaps in robots.txt for %q — trying fallback locations", host))
 	}
+	info.SitemapURLs = sitemapCandidates(host, scheme, info.SitemapURLs)
 
 	allEntries := make([]sitemap.Entry, 0)
 
@@ -211,6 +208,9 @@ func (h *HostOnboarder) discoverSitemaps(ctx context.Context, jobID, host, schem
 		}
 
 		remaining := h.sitemapMax - len(allEntries)
+		if remaining <= 0 {
+			break
+		}
 		entries, _, err := sitemap.FetchAndParseContext(ctx, sitemapURL, remaining, h.httpClient)
 		if err != nil {
 			info.Events = append(info.Events, fmt.Sprintf("sitemap fetch/parse error for %q: %v", sitemapURL, err))
@@ -248,6 +248,37 @@ func (h *HostOnboarder) discoverSitemaps(ctx context.Context, jobID, host, schem
 			info.Events = append(info.Events, fmt.Sprintf("warning: failed to store sitemap entry %q: %v", e.Loc, err))
 		}
 	}
+}
+
+func sitemapCandidates(host, scheme string, declared []string) []string {
+	seen := map[string]bool{}
+	candidates := make([]string, 0, len(declared)+10)
+	add := func(rawURL string) {
+		if rawURL == "" || seen[rawURL] {
+			return
+		}
+		seen[rawURL] = true
+		candidates = append(candidates, rawURL)
+	}
+
+	for _, sitemapURL := range declared {
+		add(sitemapURL)
+	}
+	base := fmt.Sprintf("%s://%s", scheme, host)
+	for _, path := range []string{
+		"/sitemap.xml",
+		"/sitemap_index.xml",
+		"/sitemap.xml.gz",
+		"/docs/sitemap.xml",
+		"/blog/sitemap.xml",
+		"/guides/sitemap.xml",
+		"/help/sitemap.xml",
+		"/learn/sitemap.xml",
+		"/resources/sitemap.xml",
+	} {
+		add(base + path)
+	}
+	return candidates
 }
 
 // discoverLlmsTxt fetches and parses llms.txt for the host.
