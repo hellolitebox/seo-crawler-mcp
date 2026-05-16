@@ -1439,12 +1439,20 @@ func (e *Engine) sitemapGapEscalation(ctx context.Context, jobID string) int {
 					content_hash = CASE WHEN ? > COALESCE(word_count, 0) THEN ? ELSE content_hash END,
 					h1_json = CASE WHEN ? > COALESCE(word_count, 0) THEN ? ELSE h1_json END,
 					h2_json = CASE WHEN ? > COALESCE(word_count, 0) THEN ? ELSE h2_json END,
+					h3_json = CASE WHEN ? > COALESCE(word_count, 0) THEN ? ELSE h3_json END,
+					h4_json = CASE WHEN ? > COALESCE(word_count, 0) THEN ? ELSE h4_json END,
+					h5_json = CASE WHEN ? > COALESCE(word_count, 0) THEN ? ELSE h5_json END,
+					h6_json = CASE WHEN ? > COALESCE(word_count, 0) THEN ? ELSE h6_json END,
 					images_json = CASE WHEN ? > COALESCE((SELECT COUNT(*) FROM json_each(images_json)), 0) THEN ? ELSE images_json END
 				WHERE job_id = ? AND url_id = ?`,
 				page.ExtractedWordCount, page.MainContentWordCount,
 				page.ExtractedWordCount, page.ContentHash,
 				page.ExtractedWordCount, marshalStringSlice(page.Headings.H1),
 				page.ExtractedWordCount, marshalStringSlice(page.Headings.H2),
+				page.ExtractedWordCount, marshalStringSlice(page.Headings.H3),
+				page.ExtractedWordCount, marshalStringSlice(page.Headings.H4),
+				page.ExtractedWordCount, marshalStringSlice(page.Headings.H5),
+				page.ExtractedWordCount, marshalStringSlice(page.Headings.H6),
 				len(page.Images), marshalImages(page.Images),
 				jobID, kp.urlID,
 			)
@@ -2655,22 +2663,10 @@ func (e *Engine) browserEnrichPages(ctx context.Context, jobID string) {
 		}
 
 		enriched++
-		e.db.Exec(`
-			UPDATE pages SET
-				word_count = ?,
-				main_content_word_count = ?,
-				content_hash = ?,
-				h1_json = ?,
-				h2_json = ?,
-				images_json = ?
-			WHERE job_id = ? AND url_id = ?`,
-			page.ExtractedWordCount, page.MainContentWordCount,
-			page.ContentHash,
-			marshalStringSlice(page.Headings.H1),
-			marshalStringSlice(page.Headings.H2),
-			marshalImages(page.Images),
-			jobID, pg.urlID,
-		)
+		if err := e.updateBrowserEnrichedPage(jobID, pg.urlID, page); err != nil {
+			slog.Warn("engine: browser enrich: update page failed", "url", pg.url, "err", err)
+			continue
+		}
 
 		// Register newly discovered images as assets + asset_references
 		// so they get HEAD-checked in the next phase
@@ -2703,6 +2699,34 @@ func (e *Engine) browserEnrichPages(ctx context.Context, jobID string) {
 	}
 
 	slog.Info("engine: browser enrich: updated pages with richer content", "enriched", enriched, "total", len(pages), "job_id", jobID)
+}
+
+func (e *Engine) updateBrowserEnrichedPage(jobID string, urlID int64, page *parser.ParseResult) error {
+	_, err := e.db.Exec(`
+		UPDATE pages SET
+			word_count = ?,
+			main_content_word_count = ?,
+			content_hash = ?,
+			h1_json = ?,
+			h2_json = ?,
+			h3_json = ?,
+			h4_json = ?,
+			h5_json = ?,
+			h6_json = ?,
+			images_json = ?
+		WHERE job_id = ? AND url_id = ?`,
+		page.ExtractedWordCount, page.MainContentWordCount,
+		page.ContentHash,
+		marshalStringSlice(page.Headings.H1),
+		marshalStringSlice(page.Headings.H2),
+		marshalStringSlice(page.Headings.H3),
+		marshalStringSlice(page.Headings.H4),
+		marshalStringSlice(page.Headings.H5),
+		marshalStringSlice(page.Headings.H6),
+		marshalImages(page.Images),
+		jobID, urlID,
+	)
+	return err
 }
 
 func marshalStringSlice(items []string) string {
