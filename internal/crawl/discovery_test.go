@@ -120,6 +120,25 @@ func TestBuildEdges_DropsMailtoAndJavascript(t *testing.T) {
 	}
 }
 
+func TestBuildEdges_DropsSamePageLinks(t *testing.T) {
+	scope := newScope(t)
+	result := &parser.ParseResult{
+		Links: []parser.DiscoveredLink{
+			{URL: "https://example.com/#productos", AnchorText: "Productos"},
+			{URL: "https://example.com/", AnchorText: "Home"},
+			{URL: "https://example.com/about#team", AnchorText: "Team"},
+		},
+	}
+
+	edges := BuildEdges(1, "https://example.com/", result, scope, "browser")
+	if len(edges) != 1 {
+		t.Fatalf("expected only the cross-page anchor edge, got %d: %#v", len(edges), edges)
+	}
+	if edges[0].NormalizedTargetURL != "https://example.com/about" {
+		t.Errorf("expected /about edge, got %q", edges[0].NormalizedTargetURL)
+	}
+}
+
 func TestBuildEdges_Pagination(t *testing.T) {
 	scope := newScope(t)
 	result := &parser.ParseResult{

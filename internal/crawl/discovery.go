@@ -35,6 +35,7 @@ func BuildEdges(
 	discoveryMode string,
 ) []DiscoveredEdge {
 	edges := []DiscoveredEdge{}
+	sourceNormalized, _ := urlutil.Normalize(pageURL)
 
 	sourceKind := "html"
 	if discoveryMode == "browser" {
@@ -45,6 +46,9 @@ func BuildEdges(
 	for _, link := range result.Links {
 		edge := buildEdge(sourceURLID, link.URL, sourceKind, "link", discoveryMode, scope)
 		if edge == nil {
+			continue
+		}
+		if edge.NormalizedTargetURL == sourceNormalized {
 			continue
 		}
 		edge.AnchorText = link.AnchorText
@@ -128,10 +132,10 @@ func parseRelFlags(rel string) string {
 	}
 
 	knownFlags := map[string]bool{
-		"nofollow":  true,
-		"ugc":       true,
-		"sponsored": true,
-		"noopener":  true,
+		"nofollow":   true,
+		"ugc":        true,
+		"sponsored":  true,
+		"noopener":   true,
 		"noreferrer": true,
 	}
 

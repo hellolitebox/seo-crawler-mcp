@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/storage"
+	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/urlutil"
 )
 
 // GlobalConfig holds thresholds for global issue detection.
@@ -947,6 +948,10 @@ func detectJSOnlyNavigation(db *storage.DB, jobID string, _ GlobalConfig) (int, 
 	}
 
 	for _, link := range links {
+		normalizedTarget, normErr := urlutil.Normalize(link.targetURL)
+		if normErr == nil && normalizedTarget == link.sourceURL {
+			continue
+		}
 		if err := insertGlobalIssue(db, jobID, &link.sourceURLID, "js_only_navigation", "warning", map[string]any{
 			"sourceUrl":     link.sourceURL,
 			"targetUrl":     link.targetURL,
@@ -956,7 +961,16 @@ func detectJSOnlyNavigation(db *storage.DB, jobID string, _ GlobalConfig) (int, 
 		}
 	}
 
-	return len(links), nil
+	return countIssuesByTypeAfterInsert(db, jobID, "js_only_navigation")
+}
+
+func countIssuesByTypeAfterInsert(db *storage.DB, jobID, issueType string) (int, error) {
+	var count int
+	err := db.QueryRow(`SELECT COUNT(*) FROM issues WHERE job_id = ? AND issue_type = ?`, jobID, issueType).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("counting %s issues: %w", issueType, err)
+	}
+	return count, nil
 }
 
 func detectImageOver100KB(db *storage.DB, jobID string, _ GlobalConfig) (int, error) {
