@@ -121,6 +121,46 @@ func TestHandleCrawlWithoutEngine(t *testing.T) {
 	}
 }
 
+func TestNormalizeCrawlURL(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "plain domain", in: "pipapou.com", want: "https://pipapou.com"},
+		{name: "plain domain with path", in: "www.pipapou.com/wizard", want: "https://www.pipapou.com/wizard"},
+		{name: "plain domain with port", in: "example.com:8443/path", want: "https://example.com:8443/path"},
+		{name: "explicit https", in: "https://example.com/path", want: "https://example.com/path"},
+		{name: "explicit http", in: "http://example.com", want: "http://example.com"},
+		{name: "trims whitespace", in: "  pipapou.com  ", want: "https://pipapou.com"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, parsed, err := normalizeCrawlURL(tt.in)
+			if err != nil {
+				t.Fatalf("normalizeCrawlURL(%q) error = %v", tt.in, err)
+			}
+			if got != tt.want {
+				t.Fatalf("normalizeCrawlURL(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+			if parsed.Hostname() == "" {
+				t.Fatalf("normalized URL %q has empty hostname", got)
+			}
+		})
+	}
+}
+
+func TestNormalizeCrawlURLRejectsInvalidSchemes(t *testing.T) {
+	for _, rawURL := range []string{"ftp://example.com", "javascript:alert(1)", "mailto:test@example.com"} {
+		t.Run(rawURL, func(t *testing.T) {
+			if got, _, err := normalizeCrawlURL(rawURL); err == nil {
+				t.Fatalf("normalizeCrawlURL(%q) = %q, want error", rawURL, got)
+			}
+		})
+	}
+}
+
 func TestJobsList_EmptyDb(t *testing.T) {
 	_, h := newTestServer(t)
 

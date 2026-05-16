@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/dto"
@@ -26,6 +27,48 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 // writeError writes a JSON error response.
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
+}
+
+func normalizeCrawlURL(rawURL string) (string, *url.URL, error) {
+	trimmed := strings.TrimSpace(rawURL)
+	if trimmed == "" {
+		return "", nil, fmt.Errorf("url is required")
+	}
+
+	if !strings.Contains(trimmed, "://") {
+		if looksLikeUnsupportedScheme(trimmed) {
+			return "", nil, fmt.Errorf("invalid URL %q: enter a domain or http(s) URL", rawURL)
+		}
+		trimmed = "https://" + strings.TrimLeft(trimmed, "/")
+	}
+
+	parsed, err := url.ParseRequestURI(trimmed)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Hostname() == "" {
+		return "", nil, fmt.Errorf("invalid URL %q: enter a domain or http(s) URL", rawURL)
+	}
+	return trimmed, parsed, nil
+}
+
+func looksLikeUnsupportedScheme(value string) bool {
+	colon := strings.Index(value, ":")
+	if colon <= 0 {
+		return false
+	}
+	if sep := strings.IndexAny(value, "/?#"); sep >= 0 && sep < colon {
+		return false
+	}
+
+	hostPart := value[:colon]
+	rest := value[colon+1:]
+	if sep := strings.IndexAny(rest, "/?#"); sep >= 0 {
+		rest = rest[:sep]
+	}
+	if (strings.Contains(hostPart, ".") || strings.EqualFold(hostPart, "localhost")) && rest != "" {
+		if _, err := strconv.Atoi(rest); err == nil {
+			return false
+		}
+	}
+	return true
 }
 
 // handleCrawl handles POST /api/crawl.
@@ -47,16 +90,12 @@ func (s *Server) handleCrawl(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if body.URL == "" {
-		writeError(w, http.StatusBadRequest, "url is required")
+	normalizedURL, parsed, err := normalizeCrawlURL(body.URL)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-
-	parsed, err := url.ParseRequestURI(body.URL)
-	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid URL %q: must be http or https", body.URL))
-		return
-	}
+	body.URL = normalizedURL
 	if s.config == nil || s.config.SSRFProtection {
 		allowPrivate := false
 		if s.config != nil {
