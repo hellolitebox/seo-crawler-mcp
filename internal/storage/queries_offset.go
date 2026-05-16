@@ -61,6 +61,8 @@ func (db *DB) QueryPagesOffset(
 	}
 
 	const selectCols = `p.id, p.job_id, p.url_id, p.fetch_id, p.depth,
+		(SELECT f.status_code FROM fetches f WHERE f.id = p.fetch_id),
+		(SELECT f.content_type FROM fetches f WHERE f.id = p.fetch_id),
 		p.title, p.title_length, p.meta_description, p.meta_description_length,
 		p.meta_robots, p.x_robots_tag, p.indexability_state,
 		p.canonical_url, p.canonical_is_self, p.canonical_status_code,

@@ -305,7 +305,13 @@ func loadEdges(ctx context.Context, db *storage.DB, jobID string) ([]map[string]
 		SELECT e.id, e.job_id, e.source_url_id, e.normalized_target_url_id,
 		       e.source_kind, e.relation_type, e.rel_flags_json, e.discovery_mode,
 		       e.anchor_text, e.is_internal, e.declared_target_url,
-		       e.final_target_url_id, e.target_status_code,
+		       e.final_target_url_id,
+		       COALESCE(e.target_status_code, (
+		         SELECT f.status_code FROM fetches f
+		         WHERE f.job_id = e.job_id
+		           AND f.requested_url_id = COALESCE(e.final_target_url_id, e.normalized_target_url_id)
+		         ORDER BY f.id DESC LIMIT 1
+		       )) AS target_status_code,
 		       su.normalized_url AS source_url
 		FROM edges e JOIN urls su ON su.id = e.source_url_id
 		WHERE e.job_id = ? LIMIT ?`, jobID, reportExtrasLimit)

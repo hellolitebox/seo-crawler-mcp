@@ -282,7 +282,7 @@ func (e *Engine) RunCrawl(ctx context.Context, jobID string) error {
 	completionErr := e.runCrawlPipeline(ctx, cancel, jobID, q, counters, effectiveMaxPages, effectiveMaxDepth)
 
 	if completionErr == nil {
-		e.runPostCrawlPhases(ctx, jobID, counters, cancel, effectiveRenderMode)
+		e.runPostCrawlPhases(ctx, jobID, counters, cancel, effectiveRenderMode, effectiveMaxPages, effectiveMaxDepth)
 	}
 
 	return e.finalizeJob(ctx, jobID, completionErr, counters)
@@ -759,7 +759,7 @@ func (e *Engine) runCrawlPipeline(
 loop:
 	for {
 		for {
-			if maxPages > 0 && int(scheduledFetches.Load()) >= maxPages {
+			if maxPages > 0 && int(counters.pagesCrawled.Load()+scheduledFetches.Load()) >= maxPages {
 				break
 			}
 			item, ok := q.Pop()
@@ -780,7 +780,7 @@ loop:
 
 		// Check completion: nothing in queue and nothing in flight. If the max-page
 		// scheduling cap is reached, do not wait for leftover frontier URLs.
-		maxPagesReached := maxPages > 0 && int(scheduledFetches.Load()) >= maxPages
+		maxPagesReached := maxPages > 0 && int(counters.pagesCrawled.Load()+scheduledFetches.Load()) >= maxPages
 		if (q.Len() == 0 || maxPagesReached) && inFlight.Load() == 0 {
 			break loop
 		}
@@ -814,12 +814,19 @@ loop:
 //
 // `cancel` is the pipeline's CancelCauseFunc; passed so panic recovers in
 // goroutines spawned here can unwind the whole crawl.
-func (e *Engine) runPostCrawlPhases(ctx context.Context, jobID string, counters *crawlCounters, cancel context.CancelCauseFunc, renderMode config.RenderMode) {
+func (e *Engine) runPostCrawlPhases(ctx context.Context, jobID string, counters *crawlCounters, cancel context.CancelCauseFunc, renderMode config.RenderMode, maxPages int, maxDepth int) {
 	// Sitemap gap browser escalation (hybrid/browser mode).
 	if renderMode != config.RenderModeStatic {
 		e.emitPhase(jobID, "sitemap_gap", "checking sitemap URLs missing from crawl (JS render)")
 		if escalated := e.sitemapGapEscalation(ctx, jobID); escalated > 0 {
 			slog.Info("engine: sitemap gap escalation discovered new URLs", "count", escalated, "job_id", jobID)
+		}
+		if q := e.queueBrowserDiscoveredLinkURLs(jobID, maxDepth); q.Len() > 0 {
+			e.emitPhase(jobID, "browser_discovered_crawl", fmt.Sprintf("crawling %d browser-discovered internal URLs", q.Len()))
+			if err := e.runCrawlPipeline(ctx, cancel, jobID, q, counters, maxPages, maxDepth); err != nil {
+				cancel(err)
+				return
+			}
 		}
 	}
 
@@ -1601,6 +1608,52 @@ func (e *Engine) sitemapGapEscalation(ctx context.Context, jobID string) int {
 func hasURLFragment(rawURL string) bool {
 	parsed, err := url.Parse(rawURL)
 	return err == nil && parsed.Fragment != ""
+}
+
+func (e *Engine) queueBrowserDiscoveredLinkURLs(jobID string, maxDepth int) *frontier.Queue {
+	q := frontier.New()
+	rows, err := e.db.Query(`
+		SELECT u.id, u.normalized_url, u.host, MIN(COALESCE(p.depth, 0) + 1) AS depth
+		FROM edges e
+		JOIN urls u ON u.id = e.normalized_target_url_id AND u.job_id = e.job_id
+		LEFT JOIN pages p ON p.job_id = e.job_id AND p.url_id = e.source_url_id
+		WHERE e.job_id = ?
+		  AND e.relation_type = 'link'
+		  AND e.is_internal = 1
+		  AND e.discovery_mode = 'browser'
+		  AND u.status IN ('discovered', 'queued')
+		  AND NOT EXISTS (
+		    SELECT 1 FROM pages crawled
+		    WHERE crawled.job_id = e.job_id AND crawled.url_id = u.id
+		  )
+		GROUP BY u.id, u.normalized_url, u.host
+		ORDER BY depth ASC, u.id ASC`, jobID)
+	if err != nil {
+		slog.Warn("engine: browser-discovered URL query failed", "err", err, "job_id", jobID)
+		return q
+	}
+	defer rows.Close()
+
+	seen := map[int64]bool{}
+	for rows.Next() {
+		var item frontier.Item
+		if err := rows.Scan(&item.URLID, &item.NormalizedURL, &item.Host, &item.Depth); err != nil {
+			continue
+		}
+		if seen[item.URLID] {
+			continue
+		}
+		seen[item.URLID] = true
+		if maxDepth > 0 && item.Depth > maxDepth {
+			continue
+		}
+		if err := e.db.UpdateURLStatus(item.URLID, "queued"); err != nil {
+			slog.Warn("engine: browser-discovered URL queue status update failed", "url", item.NormalizedURL, "err", err)
+			continue
+		}
+		q.Push(item)
+	}
+	return q
 }
 
 // maxAssetHeadChecks bounds the number of unique asset URLs we HEAD-check

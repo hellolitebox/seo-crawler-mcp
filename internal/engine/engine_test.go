@@ -605,3 +605,56 @@ func TestHasURLFragment(t *testing.T) {
 		})
 	}
 }
+
+func TestQueueBrowserDiscoveredLinkURLs(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "browser-discovered.db")
+	db, err := storage.Open(dbPath)
+	if err != nil {
+		t.Fatalf("opening database: %v", err)
+	}
+	defer db.Close()
+
+	job, err := db.CreateJob("crawl", `{}`, `["https://example.com/"]`)
+	if err != nil {
+		t.Fatalf("creating job: %v", err)
+	}
+	sourceID, err := db.UpsertURL(job.ID, "https://example.com/", "example.com", "fetched", true, "seed")
+	if err != nil {
+		t.Fatalf("upserting source: %v", err)
+	}
+	fetchID, err := db.InsertFetch(storage.FetchInput{JobID: job.ID, FetchSeq: 1, RequestedURLID: sourceID, StatusCode: 200, ContentType: "text/html", RenderMode: "static"})
+	if err != nil {
+		t.Fatalf("inserting fetch: %v", err)
+	}
+	title := "Home"
+	if _, err := db.InsertPage(storage.PageInput{JobID: job.ID, URLID: sourceID, FetchID: fetchID, Depth: 0, Title: &title, IndexabilityState: "indexable"}); err != nil {
+		t.Fatalf("inserting source page: %v", err)
+	}
+	targetID, err := db.UpsertURL(job.ID, "https://example.com/return-policy", "example.com", "discovered", true, "browser")
+	if err != nil {
+		t.Fatalf("upserting target: %v", err)
+	}
+	if _, err := db.InsertEdge(storage.EdgeInput{JobID: job.ID, SourceURLID: sourceID, NormalizedTargetURLID: targetID, SourceKind: "rendered_dom", RelationType: "link", DiscoveryMode: "browser", IsInternal: true, DeclaredTargetURL: "https://example.com/return-policy"}); err != nil {
+		t.Fatalf("inserting edge: %v", err)
+	}
+
+	eng := &Engine{db: db}
+	q := eng.queueBrowserDiscoveredLinkURLs(job.ID, 5)
+	if q.Len() != 1 {
+		t.Fatalf("queued URLs = %d, want 1", q.Len())
+	}
+	item, ok := q.Pop()
+	if !ok {
+		t.Fatal("expected queued item")
+	}
+	if item.URLID != targetID || item.Depth != 1 {
+		t.Fatalf("queued item = %+v, want target ID %d at depth 1", item, targetID)
+	}
+	rec, err := db.GetURL(targetID)
+	if err != nil {
+		t.Fatalf("getting target URL: %v", err)
+	}
+	if rec.Status != "queued" {
+		t.Fatalf("target status = %q, want queued", rec.Status)
+	}
+}

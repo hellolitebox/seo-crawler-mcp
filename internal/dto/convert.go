@@ -23,6 +23,8 @@ func PageFromStorage(p storage.Page, lookup URLLookup) PageDTO {
 	}
 
 	dto.Title = strPtr(p.Title)
+	dto.StatusCode = intPtr(p.StatusCode)
+	dto.ContentType = strPtr(p.ContentType)
 	dto.TitleLength = intPtr(p.TitleLength)
 	dto.MetaDescription = strPtr(p.MetaDescription)
 	dto.MetaDescriptionLength = intPtr(p.MetaDescriptionLength)

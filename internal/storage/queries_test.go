@@ -481,6 +481,26 @@ func TestQueryResponseCodes_FilterByFamily(t *testing.T) {
 	}
 }
 
+func TestQueryPagesIncludesFetchMetadata(t *testing.T) {
+	db := testDB(t)
+	jobID := seedJobWithPages(t, db, 5)
+
+	result, err := db.QueryPagesOffset(jobID, QueryFilter{URLPattern: "page-5"}, 10, 0)
+	if err != nil {
+		t.Fatalf("QueryPagesOffset: %v", err)
+	}
+	if len(result.Results) != 1 {
+		t.Fatalf("expected one page, got %d", len(result.Results))
+	}
+	page := result.Results[0]
+	if !page.StatusCode.Valid || page.StatusCode.Int64 != 404 {
+		t.Fatalf("status code = %v, want 404", page.StatusCode)
+	}
+	if !page.ContentType.Valid || page.ContentType.String != "text/html" {
+		t.Fatalf("content type = %v, want text/html", page.ContentType)
+	}
+}
+
 func TestGetCrawlSummary(t *testing.T) {
 	db := testDB(t)
 	jobID := seedJobWithPages(t, db, 5)

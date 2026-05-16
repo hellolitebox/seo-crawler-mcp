@@ -61,6 +61,8 @@ type Page struct {
 	URLID                 int64          `json:"urlId"`
 	FetchID               int64          `json:"fetchId"`
 	Depth                 int64          `json:"depth"`
+	StatusCode            sql.NullInt64  `json:"statusCode,omitempty"`
+	ContentType           sql.NullString `json:"contentType,omitempty"`
 	Title                 sql.NullString `json:"title,omitempty"`
 	TitleLength           sql.NullInt64  `json:"titleLength,omitempty"`
 	MetaDescription       sql.NullString `json:"metaDescription,omitempty"`

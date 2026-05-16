@@ -52,6 +52,8 @@ type PageInput struct {
 
 // pageColumns is the canonical SELECT list for pages.
 const pageColumns = `id, job_id, url_id, fetch_id, depth,
+	(SELECT f.status_code FROM fetches f WHERE f.id = pages.fetch_id),
+	(SELECT f.content_type FROM fetches f WHERE f.id = pages.fetch_id),
 	title, title_length, meta_description, meta_description_length,
 	meta_robots, x_robots_tag, indexability_state,
 	canonical_url, canonical_is_self, canonical_status_code,
@@ -71,6 +73,7 @@ func scanPage(sc interface{ Scan(...any) error }) (Page, error) {
 	var jsSuspect int
 	err := sc.Scan(
 		&p.ID, &p.JobID, &p.URLID, &p.FetchID, &p.Depth,
+		&p.StatusCode, &p.ContentType,
 		&p.Title, &p.TitleLength, &p.MetaDescription, &p.MetaDescriptionLength,
 		&p.MetaRobots, &p.XRobotsTag, &p.IndexabilityState,
 		&p.CanonicalURL, &p.CanonicalIsSelf, &p.CanonicalStatusCode,
