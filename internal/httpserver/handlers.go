@@ -100,6 +100,10 @@ func (s *Server) handleCrawl(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "database unavailable")
 		return
 	}
+	if s.engine == nil {
+		writeError(w, http.StatusServiceUnavailable, "crawler engine unavailable")
+		return
+	}
 
 	// Rate limit check.
 	maxJobsPerHour := 20
@@ -121,10 +125,7 @@ func (s *Server) handleCrawl(w http.ResponseWriter, r *http.Request) {
 	// 3K-page sites) compete for the single SQLite write connection during
 	// post-processing and starve every other API request. Override via
 	// s.config.MaxConcurrentCrawls if you really want more.
-	maxConcurrent := 1
-	if s.config != nil && s.config.MaxConcurrentCrawls > 0 {
-		maxConcurrent = s.config.MaxConcurrentCrawls
-	}
+	maxConcurrent := s.maxConcurrentCrawls()
 
 	crawlConfig := map[string]any{
 		"scopeMode":     "registrable_domain",
@@ -189,9 +190,7 @@ func (s *Server) handleCrawl(w http.ResponseWriter, r *http.Request) {
 
 	// Slot free — start immediately. runCrawlJob owns panic recovery and the
 	// post-completion queue signal so we don't have to here.
-	if s.engine != nil {
-		go s.runCrawlJob(job.ID)
-	}
+	go s.runCrawlJob(job.ID)
 
 	writeJSON(w, http.StatusAccepted, map[string]string{
 		"jobId":  job.ID,

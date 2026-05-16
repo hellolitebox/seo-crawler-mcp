@@ -38,6 +38,8 @@ const hiddenMenuPage = `<!DOCTYPE html>
 
 func TestRenderWithPlaywright_MenuDiscovery(t *testing.T) {
 	skipIfNoPlaywright(t)
+	allowPrivateRendererURLsForTest = true
+	defer func() { allowPrivateRendererURLsForTest = false }()
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
@@ -85,6 +87,8 @@ func TestRenderWithPlaywright_MenuDiscovery(t *testing.T) {
 
 func TestRenderWithPlaywright_BasicPage(t *testing.T) {
 	skipIfNoPlaywright(t)
+	allowPrivateRendererURLsForTest = true
+	defer func() { allowPrivateRendererURLsForTest = false }()
 
 	const basicPage = `<!DOCTYPE html>
 <html>
@@ -122,4 +126,44 @@ func TestIsPlaywrightAvailable(t *testing.T) {
 	// This just tests that the function doesn't panic and returns a bool.
 	available := IsPlaywrightAvailable()
 	t.Logf("Playwright available: %v", available)
+}
+
+func TestClampPlaywrightResultLimitsHTMLAndLinks(t *testing.T) {
+	links := make([]string, maxPlaywrightLinks+10)
+	for i := range links {
+		links[i] = "https://example.com/page"
+	}
+	result := &PlaywrightResult{
+		HTML:  strings.Repeat("x", maxPlaywrightHTMLBytes+10),
+		Links: links,
+	}
+
+	clampPlaywrightResult(result)
+
+	if len(result.HTML) != maxPlaywrightHTMLBytes {
+		t.Fatalf("HTML length = %d, want %d", len(result.HTML), maxPlaywrightHTMLBytes)
+	}
+	if len(result.Links) != maxPlaywrightLinks {
+		t.Fatalf("links length = %d, want %d", len(result.Links), maxPlaywrightLinks)
+	}
+}
+
+func TestValidatePlaywrightResultRejectsPrivateFinalURL(t *testing.T) {
+	result := &PlaywrightResult{FinalURL: "http://127.0.0.1/admin"}
+	if err := validatePlaywrightResult("https://example.com/", result); err == nil {
+		t.Fatal("expected private final URL to be rejected")
+	}
+}
+
+func TestRunPythonJSONRejectsOversizedOutput(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := runPythonJSON(ctx, "import sys; sys.stdout.write('x' * (12 * 1024 * 1024 + 1))")
+	if err == nil {
+		t.Fatal("expected oversized output error")
+	}
+	if !strings.Contains(err.Error(), "output exceeded") {
+		t.Fatalf("unexpected error: %v", err)
+	}
 }

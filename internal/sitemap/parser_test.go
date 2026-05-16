@@ -137,6 +137,54 @@ func TestFetchAndParse_IndexWithChild(t *testing.T) {
 	}
 }
 
+func TestFetchAndParse_RootFetchErrorReturnsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "no sitemap", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	entries, count, err := sitemap.FetchAndParse(srv.URL+"/sitemap.xml", 1000, srv.Client())
+	if err == nil {
+		t.Fatal("expected root fetch error")
+	}
+	if len(entries) != 0 {
+		t.Fatalf("expected no entries, got %d", len(entries))
+	}
+	if count != 0 {
+		t.Fatalf("expected sitemapCount=0, got %d", count)
+	}
+}
+
+func TestFetchAndParse_ChildFetchErrorIsBestEffort(t *testing.T) {
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	indexXML := `<?xml version="1.0" encoding="UTF-8"?>
+<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <sitemap><loc>` + srv.URL + `/missing.xml</loc></sitemap>
+</sitemapindex>`
+
+	mux.HandleFunc("/sitemap.xml", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/xml")
+		w.Write([]byte(indexXML))
+	})
+	mux.HandleFunc("/missing.xml", func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "missing", http.StatusNotFound)
+	})
+
+	entries, count, err := sitemap.FetchAndParse(srv.URL+"/sitemap.xml", 1000, srv.Client())
+	if err != nil {
+		t.Fatalf("child fetch error should be best-effort, got %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("expected no entries, got %d", len(entries))
+	}
+	if count != 1 {
+		t.Fatalf("expected only root sitemap counted, got %d", count)
+	}
+}
+
 func TestFetchAndParse_StopsUnboundedIndexTraversal(t *testing.T) {
 	mux := http.NewServeMux()
 	srv := httptest.NewServer(mux)

@@ -95,6 +95,9 @@ func FetchAndParseContext(ctx context.Context, sitemapURL string, maxEntries int
 
 		data, err := fetchSitemapContent(ctx, current, client)
 		if err != nil {
+			if current == sitemapURL {
+				return entries, sitemapCount, err
+			}
 			slog.Warn("sitemap: skipping unreadable", "url", current, "err", err)
 			continue
 		}
@@ -114,6 +117,9 @@ func FetchAndParseContext(ctx context.Context, sitemapURL string, maxEntries int
 		// Try as urlset.
 		parsed, err := ParseXML(data)
 		if err != nil {
+			if current == sitemapURL {
+				return entries, sitemapCount, err
+			}
 			slog.Warn("sitemap: skipping malformed", "url", current, "err", err)
 			continue
 		}

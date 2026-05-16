@@ -98,3 +98,28 @@ func TestExtractJSONLD_TypeAsArray(t *testing.T) {
 		t.Errorf("unexpected types: %v", blocks[0].Types)
 	}
 }
+
+func TestExtractJSONLD_TopLevelArray(t *testing.T) {
+	html := "<html><head><script type=\"application/ld+json\">[{\"@type\":\"Article\"},{\"@type\":\"FAQPage\"}]</script></head></html>"
+	blocks := ExtractJSONLD(docFromHTML(html))
+	if len(blocks) != 1 {
+		t.Fatalf("expected 1 block, got %d", len(blocks))
+	}
+	if len(blocks[0].Types) != 2 {
+		t.Fatalf("expected 2 types, got %v", blocks[0].Types)
+	}
+	if blocks[0].Types[0] != "Article" || blocks[0].Types[1] != "FAQPage" {
+		t.Errorf("unexpected types: %v", blocks[0].Types)
+	}
+}
+
+func TestExtractJSONLD_MIMEVariants(t *testing.T) {
+	html := "<html><head><script type=\"Application/LD+JSON; charset=utf-8\">{\"@type\":\"Organization\"}</script></head></html>"
+	blocks := ExtractJSONLD(docFromHTML(html))
+	if len(blocks) != 1 {
+		t.Fatalf("expected 1 block, got %d", len(blocks))
+	}
+	if len(blocks[0].Types) != 1 || blocks[0].Types[0] != "Organization" {
+		t.Fatalf("expected types=[Organization], got %v", blocks[0].Types)
+	}
+}

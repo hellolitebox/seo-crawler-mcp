@@ -4,22 +4,33 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os/exec"
 	"strings"
 	"sync"
 	"time"
 )
 
+const (
+	maxPlaywrightOutputBytes = maxRenderedHTML + 2*1024*1024
+	maxPlaywrightHTMLBytes   = maxRenderedHTML
+	maxPlaywrightLinks       = 5000
+	maxPlaywrightStderrBytes = 64 * 1024
+)
+
 // PlaywrightResult holds the output from the Playwright menu discovery script.
 type PlaywrightResult struct {
-	HTML  string   `json:"html"`
-	Links []string `json:"links"`
+	HTML     string   `json:"html"`
+	Links    []string `json:"links"`
+	FinalURL string   `json:"finalUrl"`
 }
 
 // playwrightAvailable caches the result of the availability check.
 var (
 	playwrightOnce      sync.Once
 	playwrightAvailable bool
+
+	allowPrivateRendererURLsForTest bool
 )
 
 // IsPlaywrightAvailable returns true if python3 and the playwright package
@@ -40,16 +51,15 @@ func IsPlaywrightAvailable() bool {
 // with full menu discovery (desktop + mobile viewports, clicking nav triggers).
 // Returns the final HTML and all discovered link URLs.
 func RenderWithPlaywright(ctx context.Context, pageURL string) (*PlaywrightResult, error) {
+	if !isAllowedPlaywrightURL(pageURL) {
+		return nil, fmt.Errorf("playwright render rejected non-public URL %q", pageURL)
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "python3", "-c", playwrightScript(), pageURL)
-
-	output, err := cmd.Output()
+	output, err := runPythonJSON(ctx, playwrightScript(), pageURL)
 	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			return nil, fmt.Errorf("playwright render failed: %w; stderr: %s", err, string(exitErr.Stderr))
-		}
 		return nil, fmt.Errorf("playwright render failed: %w", err)
 	}
 
@@ -57,6 +67,10 @@ func RenderWithPlaywright(ctx context.Context, pageURL string) (*PlaywrightResul
 	if err := json.Unmarshal(output, &result); err != nil {
 		return nil, fmt.Errorf("playwright output parse failed: %w", err)
 	}
+	if err := validatePlaywrightResult(pageURL, &result); err != nil {
+		return nil, err
+	}
+	clampPlaywrightResult(&result)
 
 	return &result, nil
 }
@@ -65,6 +79,10 @@ func RenderWithPlaywright(ctx context.Context, pageURL string) (*PlaywrightResul
 // but WITHOUT menu discovery clicks. This preserves the page's own content
 // for accurate word count and image extraction.
 func RenderPageContentOnly(ctx context.Context, pageURL string) (*PlaywrightResult, error) {
+	if !isAllowedPlaywrightURL(pageURL) {
+		return nil, fmt.Errorf("playwright content render rejected non-public URL %q", pageURL)
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
 
@@ -74,7 +92,7 @@ from playwright.sync_api import sync_playwright
 import time as _time
 
 url = sys.argv[1]
-result = {"html": "", "links": []}
+result = {"html": "", "links": [], "finalUrl": ""}
 
 _chromium_path = os.environ.get("CHROMIUM_PATH") or None
 
@@ -82,6 +100,7 @@ with sync_playwright() as p:
     browser = p.chromium.launch(headless=True, executable_path=_chromium_path)
     page = browser.new_page(viewport={"width": 1440, "height": 900})
     page.goto(url, wait_until="networkidle", timeout=30000)
+    result["finalUrl"] = page.url
     page.wait_for_timeout(2000)
 
     # Full scroll to trigger lazy loading
@@ -108,12 +127,8 @@ with sync_playwright() as p:
 print(json.dumps(result))
 `
 
-	cmd := exec.CommandContext(ctx, "python3", "-c", script, pageURL)
-	output, err := cmd.Output()
+	output, err := runPythonJSON(ctx, script, pageURL)
 	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			return nil, fmt.Errorf("playwright content render failed: %w; stderr: %s", err, string(exitErr.Stderr))
-		}
 		return nil, fmt.Errorf("playwright content render failed: %w", err)
 	}
 
@@ -121,8 +136,69 @@ print(json.dumps(result))
 	if err := json.Unmarshal(output, &result); err != nil {
 		return nil, fmt.Errorf("playwright content output parse failed: %w", err)
 	}
+	if err := validatePlaywrightResult(pageURL, &result); err != nil {
+		return nil, err
+	}
+	clampPlaywrightResult(&result)
 
 	return &result, nil
+}
+
+func runPythonJSON(ctx context.Context, script string, args ...string) ([]byte, error) {
+	cmdArgs := append([]string{"-c", script}, args...)
+	cmd := exec.CommandContext(ctx, "python3", cmdArgs...)
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return nil, err
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+
+	out, readErr := io.ReadAll(io.LimitReader(stdout, maxPlaywrightOutputBytes+1))
+	errOut, _ := io.ReadAll(io.LimitReader(stderr, maxPlaywrightStderrBytes))
+	waitErr := cmd.Wait()
+	if readErr != nil {
+		return nil, readErr
+	}
+	if len(out) > maxPlaywrightOutputBytes {
+		return nil, fmt.Errorf("playwright output exceeded %d bytes", maxPlaywrightOutputBytes)
+	}
+	if waitErr != nil {
+		if len(errOut) > 0 {
+			return nil, fmt.Errorf("%w; stderr: %s", waitErr, strings.TrimSpace(string(errOut)))
+		}
+		return nil, waitErr
+	}
+	return out, nil
+}
+
+func validatePlaywrightResult(requestedURL string, result *PlaywrightResult) error {
+	if result.FinalURL == "" {
+		result.FinalURL = requestedURL
+	}
+	if !isAllowedPlaywrightURL(result.FinalURL) {
+		return fmt.Errorf("playwright render final URL rejected as non-public: %q", result.FinalURL)
+	}
+	return nil
+}
+
+func isAllowedPlaywrightURL(rawURL string) bool {
+	return IsPublicURL(rawURL) || allowPrivateRendererURLsForTest
+}
+
+func clampPlaywrightResult(result *PlaywrightResult) {
+	if len(result.HTML) > maxPlaywrightHTMLBytes {
+		result.HTML = result.HTML[:maxPlaywrightHTMLBytes]
+	}
+	if len(result.Links) > maxPlaywrightLinks {
+		result.Links = result.Links[:maxPlaywrightLinks]
+	}
 }
 
 func playwrightScript() string {
@@ -137,11 +213,12 @@ _chromium_path = os.environ.get("CHROMIUM_PATH") or None
 with sync_playwright() as p:
     browser = p.chromium.launch(headless=True, executable_path=_chromium_path)
 
-    result = {"html": "", "links": []}
+    result = {"html": "", "links": [], "finalUrl": ""}
 
     # Desktop viewport
     page = browser.new_page(viewport={"width": 1440, "height": 900})
     page.goto(url, wait_until="networkidle", timeout=30000)
+    result["finalUrl"] = page.url
     page.wait_for_timeout(2000)
 
     # Collect links incrementally after each interaction
@@ -284,6 +361,7 @@ with sync_playwright() as p:
     all_found.update(page.evaluate("() => [...document.querySelectorAll('a[href]')].map(a => a.href)"))
 
     # Get final HTML
+    result["finalUrl"] = page.url
     result["html"] = page.content()
     result["links"] = list(all_found)
 

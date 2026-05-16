@@ -50,6 +50,7 @@ type Engine struct {
 	fetcher      *fetcher.Fetcher
 	rateLimiter  *fetcher.RateLimiter
 	scopeChecker *urlutil.ScopeChecker
+	runMu        sync.Mutex
 	// scopeCheckerExplicit is true when the caller supplied a fixed checker in
 	// EngineConfig. Otherwise the checker is derived fresh from each job's seed.
 	// The HTTP server reuses one Engine across many jobs, so caching the first
@@ -251,6 +252,12 @@ func (e *Engine) emitPhase(jobID, phase, message string) {
 // dedicated method to keep this top-level orchestrator readable and to
 // make the phases independently testable.
 func (e *Engine) RunCrawl(ctx context.Context, jobID string) error {
+	// Engine currently owns crawl-scoped mutable fields (derived scope checker,
+	// robots cache, and rate limiter reset state). Serialize runs on one Engine
+	// instance until those fields are moved into explicit per-run state.
+	e.runMu.Lock()
+	defer e.runMu.Unlock()
+
 	job, err := e.startJob(ctx, jobID)
 	if err != nil {
 		return err
@@ -622,7 +629,6 @@ func (e *Engine) runCrawlPipeline(
 
 	// inFlight tracks items between dispatch and persist completion.
 	var inFlight atomic.Int64
-	var scheduledFetches atomic.Int64
 
 	// Persister (1 goroutine) — serialized writes to SQLite.
 	var persisterWg sync.WaitGroup
@@ -765,7 +771,7 @@ func (e *Engine) runCrawlPipeline(
 loop:
 	for {
 		for {
-			if maxPages > 0 && int(counters.pagesCrawled.Load()+scheduledFetches.Load()) >= maxPages {
+			if maxPages > 0 && int(counters.pagesCrawled.Load()+inFlight.Load()) >= maxPages {
 				break
 			}
 			item, ok := q.Pop()
@@ -773,12 +779,10 @@ loop:
 				break
 			}
 			inFlight.Add(1)
-			scheduledFetches.Add(1)
 			select {
 			case fetchQueue <- item:
 			case <-ctx.Done():
 				inFlight.Add(-1)
-				scheduledFetches.Add(-1)
 				completionErr = context.Cause(ctx)
 				break loop
 			}
@@ -786,7 +790,7 @@ loop:
 
 		// Check completion: nothing in queue and nothing in flight. If the max-page
 		// scheduling cap is reached, do not wait for leftover frontier URLs.
-		maxPagesReached := maxPages > 0 && int(counters.pagesCrawled.Load()+scheduledFetches.Load()) >= maxPages
+		maxPagesReached := maxPages > 0 && int(counters.pagesCrawled.Load()+inFlight.Load()) >= maxPages
 		if (q.Len() == 0 || maxPagesReached) && inFlight.Load() == 0 {
 			break loop
 		}
@@ -1416,7 +1420,7 @@ func (e *Engine) sitemapGapEscalation(ctx context.Context, jobID string) int {
 				slog.Warn("engine: sitemap gap: playwright render failed, falling back to chromedp", "url", kp.url, "err", pwErr)
 			} else {
 				renderHTML = pwResult.HTML
-				renderFinalURL = kp.url
+				renderFinalURL = pwResult.FinalURL
 				playwrightLinks = pwResult.Links // Links collected incrementally during menu clicks
 			}
 		}
@@ -2766,7 +2770,7 @@ func (e *Engine) browserEnrichPages(ctx context.Context, jobID string) {
 		if pwErr != nil {
 			continue
 		}
-		page, parseErr := parser.ParseHTML([]byte(pwResult.HTML), pg.url, http.Header{})
+		page, parseErr := parser.ParseHTML([]byte(pwResult.HTML), pwResult.FinalURL, http.Header{})
 		if parseErr != nil {
 			continue
 		}

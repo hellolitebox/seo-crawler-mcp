@@ -368,6 +368,9 @@ func TestRunCrawlHonorsMaxPagesWhenFrontierIsLarge(t *testing.T) {
 	if got.PagesCrawled > 5 {
 		t.Fatalf("pages_crawled = %d, want <= 5", got.PagesCrawled)
 	}
+	if got.PagesCrawled != 5 {
+		t.Fatalf("pages_crawled = %d, want crawl to fill maxPages limit 5", got.PagesCrawled)
+	}
 }
 
 func TestRunCrawlUsesJobRenderModeConfig(t *testing.T) {

@@ -106,6 +106,21 @@ func TestHealth(t *testing.T) {
 	}
 }
 
+func TestHandleCrawlWithoutEngine(t *testing.T) {
+	_, handler := newTestServer(t)
+
+	body := bytes.NewBufferString(`{"url":"https://example.com","maxPages":1}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/crawl", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d; body=%s", w.Code, http.StatusServiceUnavailable, w.Body.String())
+	}
+}
+
 func TestJobsList_EmptyDb(t *testing.T) {
 	_, h := newTestServer(t)
 

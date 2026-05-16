@@ -14,6 +14,8 @@ import (
 
 func skipIfNoChrome(t *testing.T) {
 	t.Helper()
+	allowPrivateRendererURLsForTest = true
+	t.Cleanup(func() { allowPrivateRendererURLsForTest = false })
 	if _, err := exec.LookPath("chromium"); err != nil {
 		if _, err := exec.LookPath("google-chrome"); err != nil {
 			if _, err := exec.LookPath("chromium-browser"); err != nil {

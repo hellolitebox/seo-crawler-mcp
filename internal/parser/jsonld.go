@@ -19,7 +19,10 @@ type JSONLDBlockParsed struct {
 func ExtractJSONLD(doc *goquery.Document) []JSONLDBlockParsed {
 	blocks := []JSONLDBlockParsed{}
 
-	doc.Find(`script[type="application/ld+json"]`).Each(func(_ int, s *goquery.Selection) {
+	doc.Find("script[type]").Each(func(_ int, s *goquery.Selection) {
+		if !isJSONLDType(s.AttrOr("type", "")) {
+			return
+		}
 		raw := strings.TrimSpace(s.Text())
 		if raw == "" {
 			return
@@ -47,10 +50,23 @@ func ExtractJSONLD(doc *goquery.Document) []JSONLDBlockParsed {
 	return blocks
 }
 
+func isJSONLDType(scriptType string) bool {
+	mediaType := strings.ToLower(strings.TrimSpace(scriptType))
+	if idx := strings.Index(mediaType, ";"); idx >= 0 {
+		mediaType = strings.TrimSpace(mediaType[:idx])
+	}
+	return mediaType == "application/ld+json"
+}
+
 // extractTypesFromValue recursively extracts @type values from a parsed JSON value.
 func extractTypesFromValue(v interface{}, types []string) []string {
 	obj, ok := v.(map[string]interface{})
 	if !ok {
+		if arr, ok := v.([]interface{}); ok {
+			for _, item := range arr {
+				types = extractTypesFromValue(item, types)
+			}
+		}
 		return types
 	}
 

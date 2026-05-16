@@ -160,6 +160,10 @@ func (p *Pool) Render(ctx context.Context, rawURL string) (*RenderResult, error)
 			RenderTime: elapsed,
 		}, fmt.Errorf("render %q failed: %w", rawURL, err)
 	}
+	if !isAllowedRendererURL(finalURL) {
+		return &RenderResult{RenderTime: elapsed, FinalURL: finalURL},
+			fmt.Errorf("render %q rejected non-public final URL %q", rawURL, finalURL)
+	}
 
 	// Enforce HTML size limit to prevent OOM on pathological pages.
 	if len(html) > maxRenderedHTML {
@@ -275,6 +279,10 @@ func (p *Pool) RenderWithOptions(ctx context.Context, rawURL string, opts Render
 	if err != nil {
 		return &RenderResult{RenderTime: elapsed},
 			fmt.Errorf("render %q: HTML extraction failed: %w", rawURL, err)
+	}
+	if !isAllowedRendererURL(finalURL) {
+		return &RenderResult{RenderTime: elapsed, FinalURL: finalURL},
+			fmt.Errorf("render %q rejected non-public final URL %q", rawURL, finalURL)
 	}
 
 	if len(html) > maxRenderedHTML {
@@ -395,6 +403,10 @@ func clickDiscoveredTriggers(taskCtx context.Context) {
 			chromedp.Sleep(500*time.Millisecond),
 		)
 	}
+}
+
+func isAllowedRendererURL(rawURL string) bool {
+	return IsPublicURL(rawURL) || allowPrivateRendererURLsForTest
 }
 
 // Close marks the pool as closed and cancels all in-flight renders.

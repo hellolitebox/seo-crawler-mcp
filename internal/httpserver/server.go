@@ -112,10 +112,7 @@ func (s *Server) queueWorker() {
 			continue
 		}
 
-		maxConcurrent := 1
-		if s.config != nil && s.config.MaxConcurrentCrawls > 0 {
-			maxConcurrent = s.config.MaxConcurrentCrawls
-		}
+		maxConcurrent := s.maxConcurrentCrawls()
 
 		s.crawlMu.Lock()
 		runningCount, err := s.db.CountRunningJobs("crawl")
@@ -142,6 +139,13 @@ func (s *Server) queueWorker() {
 
 		go s.runCrawlJob(job.ID)
 	}
+}
+
+func (s *Server) maxConcurrentCrawls() int {
+	// A Server owns one shared Engine, and Engine runs are intentionally
+	// serialized while crawl-scoped state still lives on Engine. Keep HTTP
+	// queue semantics honest by never promoting more than one crawl at a time.
+	return 1
 }
 
 // runCrawlJob runs a single crawl in the engine, recovering from panics so
