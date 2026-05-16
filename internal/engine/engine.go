@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/url"
 	"strconv"
 	"strings"
@@ -27,6 +28,7 @@ import (
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/parser"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/renderer"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/robots"
+	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/sitemap"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/ssrf"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/storage"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/textquality"
@@ -63,6 +65,16 @@ type Engine struct {
 	// robotsRules caches parsed robots.txt per host during a crawl.
 	robotsRules   map[string]*robots.RobotsFile
 	robotsRulesMu sync.RWMutex
+
+	// hostOnboarding tracks hosts already probed for robots/sitemaps during a crawl.
+	hostOnboarding *hostOnboardingState
+}
+
+type hostOnboardingState struct {
+	mu        sync.Mutex
+	seen      map[string]bool
+	onboarder *crawl.HostOnboarder
+	userAgent string
 }
 
 // New creates a new crawl engine.
@@ -471,76 +483,112 @@ func (e *Engine) onboardSeedHosts(ctx context.Context, jobID string, seeds []str
 		robotsPolicy = "allow"
 	}
 	onboarder := crawl.NewHostOnboarderWithPolicy(e.fetcher, e.db, sitemapMax, userAgent, robotsPolicy)
+	e.hostOnboarding = &hostOnboardingState{
+		seen:      map[string]bool{},
+		onboarder: onboarder,
+		userAgent: userAgent,
+	}
 
-	seenHosts := map[string]bool{}
 	for _, seedURL := range seeds {
 		parsed, parseErr := url.Parse(seedURL)
 		if parseErr != nil {
 			continue
 		}
-		hostWithPort := parsed.Host
-		hostOnly := parsed.Hostname()
-		if seenHosts[hostWithPort] {
-			continue
-		}
-		seenHosts[hostWithPort] = true
-
-		info, onboardErr := onboarder.OnboardHost(ctx, jobID, hostWithPort, parsed.Scheme)
-		if onboardErr != nil {
-			slog.Warn("engine: onboarding host failed", "host", hostWithPort, "err", onboardErr)
-			continue
-		}
-
-		// Cache robots rules for fetch-time checking (keyed by hostname without port).
-		if info.RobotsFile != nil {
-			e.robotsRulesMu.Lock()
-			e.robotsRules[hostOnly] = info.RobotsFile
-			e.robotsRulesMu.Unlock()
-		}
-
-		if info.CrawlDelay > 0 {
-			e.rateLimiter.SetCrawlDelay(hostOnly, info.CrawlDelay)
-			slog.Info("engine: crawl-delay applied", "host", hostOnly, "delay", info.CrawlDelay)
-		}
-
-		for _, entry := range info.SitemapEntries {
-			normalized, normErr := urlutil.Normalize(entry.Loc)
-			if normErr != nil {
-				continue
-			}
-			parsedURL, parseErr2 := url.Parse(normalized)
-			if parseErr2 != nil {
-				continue
-			}
-			entryHost := parsedURL.Hostname()
-
-			if e.scopeChecker != nil && !e.scopeChecker.IsInScope(normalized) {
-				continue
-			}
-			if e.config.RespectRobots && info.RobotsFile != nil {
-				if !info.RobotsFile.IsAllowed(userAgent, parsedURL.Path) {
-					continue
-				}
-			}
-
-			urlID, upsertErr := e.db.UpsertURL(jobID, normalized, entryHost, "queued", true, "sitemap")
-			if upsertErr != nil {
-				continue
-			}
-			if !q.Contains(urlID) {
-				q.Push(frontier.Item{
-					URLID:         urlID,
-					NormalizedURL: normalized,
-					Host:          entryHost,
-					Depth:         1,
-				})
-			}
-		}
-
-		eventDetails := fmt.Sprintf(`{"host":%q,"sitemapEntries":%d,"crawlDelay":%q}`,
-			hostWithPort, len(info.SitemapEntries), info.CrawlDelay.String())
-		e.db.InsertEvent(jobID, "host_onboarded", &eventDetails, nil)
+		e.ensureHostOnboarded(ctx, jobID, parsed.Host, parsed.Scheme, q, 1)
 	}
+}
+
+func (e *Engine) ensureHostOnboarded(ctx context.Context, jobID, hostWithPort, scheme string, q *frontier.Queue, sitemapDepth int) {
+	state := e.hostOnboarding
+	if state == nil || state.onboarder == nil || hostWithPort == "" || scheme == "" {
+		return
+	}
+
+	key := strings.ToLower(scheme + "://" + hostWithPort)
+	state.mu.Lock()
+	if state.seen[key] {
+		state.mu.Unlock()
+		return
+	}
+	state.seen[key] = true
+	state.mu.Unlock()
+
+	info, onboardErr := state.onboarder.OnboardHost(ctx, jobID, hostWithPort, scheme)
+	if onboardErr != nil {
+		slog.Warn("engine: onboarding host failed", "host", hostWithPort, "err", onboardErr)
+		return
+	}
+
+	hostOnly := hostnameFromHost(hostWithPort)
+	if info.RobotsFile != nil {
+		e.robotsRulesMu.Lock()
+		e.robotsRules[hostOnly] = info.RobotsFile
+		e.robotsRulesMu.Unlock()
+	}
+
+	if info.CrawlDelay > 0 {
+		e.rateLimiter.SetCrawlDelay(hostOnly, info.CrawlDelay)
+		slog.Info("engine: crawl-delay applied", "host", hostOnly, "delay", info.CrawlDelay)
+	}
+
+	for _, entry := range info.SitemapEntries {
+		e.enqueueSitemapEntry(ctx, jobID, entry, q, sitemapDepth, state.userAgent)
+	}
+
+	eventDetails := fmt.Sprintf(`{"host":%q,"sitemapEntries":%d,"crawlDelay":%q}`,
+		hostWithPort, len(info.SitemapEntries), info.CrawlDelay.String())
+	e.db.InsertEvent(jobID, "host_onboarded", &eventDetails, nil)
+}
+
+func (e *Engine) enqueueSitemapEntry(ctx context.Context, jobID string, entry sitemap.Entry, q *frontier.Queue, depth int, userAgent string) {
+	if ctx.Err() != nil {
+		return
+	}
+	normalized, normErr := urlutil.Normalize(entry.Loc)
+	if normErr != nil {
+		return
+	}
+	parsedURL, parseErr := url.Parse(normalized)
+	if parseErr != nil {
+		return
+	}
+	if e.scopeChecker != nil && !e.scopeChecker.IsInScope(normalized) {
+		return
+	}
+
+	if parsedURL.Host != "" {
+		e.ensureHostOnboarded(ctx, jobID, parsedURL.Host, parsedURL.Scheme, q, depth)
+	}
+
+	targetHost := parsedURL.Hostname()
+	if e.config.RespectRobots {
+		e.robotsRulesMu.RLock()
+		rf := e.robotsRules[targetHost]
+		e.robotsRulesMu.RUnlock()
+		if rf != nil && !rf.IsAllowed(userAgent, parsedURL.Path) {
+			return
+		}
+	}
+
+	urlID, upsertErr := e.db.UpsertURL(jobID, normalized, targetHost, "queued", true, "sitemap")
+	if upsertErr != nil {
+		return
+	}
+	if !q.Contains(urlID) {
+		q.Push(frontier.Item{
+			URLID:         urlID,
+			NormalizedURL: normalized,
+			Host:          targetHost,
+			Depth:         depth,
+		})
+	}
+}
+
+func hostnameFromHost(hostWithPort string) string {
+	if host, _, err := net.SplitHostPort(hostWithPort); err == nil {
+		return host
+	}
+	return hostWithPort
 }
 
 // runCrawlPipeline runs the fetch -> parse -> persist worker pools and the
@@ -701,8 +749,12 @@ func (e *Engine) runCrawlPipeline(
 					continue
 				}
 
+				parsedItem, parseErr := url.Parse(item.NormalizedURL)
+				if parseErr == nil {
+					e.ensureHostOnboarded(ctx, jobID, parsedItem.Host, parsedItem.Scheme, q, item.Depth+1)
+				}
+
 				if e.config.RespectRobots {
-					parsedItem, parseErr := url.Parse(item.NormalizedURL)
 					if parseErr == nil {
 						e.robotsRulesMu.RLock()
 						rf := e.robotsRules[item.Host]
