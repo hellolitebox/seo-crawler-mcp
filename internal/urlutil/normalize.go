@@ -192,6 +192,41 @@ func Normalize(rawURL string) (string, error) {
 	return b.String(), nil
 }
 
+// PageIdentityKey returns the coarse identity key used to group URL variants
+// that represent the same crawlable page. It keeps scheme, path, and query, but
+// strips a leading www. host label and normalizes trailing slashes/default ports.
+func PageIdentityKey(rawURL string) (string, error) {
+	normalized, err := Normalize(rawURL)
+	if err != nil {
+		return "", err
+	}
+	u, err := url.Parse(normalized)
+	if err != nil {
+		return "", err
+	}
+	host := strings.TrimPrefix(strings.ToLower(u.Host), "www.")
+	path := u.EscapedPath()
+	if path == "" {
+		path = "/"
+	}
+	if path != "/" {
+		path = strings.TrimRight(path, "/")
+		if path == "" {
+			path = "/"
+		}
+	}
+	var b strings.Builder
+	b.WriteString(u.Scheme)
+	b.WriteString("://")
+	b.WriteString(host)
+	b.WriteString(path)
+	if u.RawQuery != "" {
+		b.WriteByte('?')
+		b.WriteString(u.RawQuery)
+	}
+	return b.String(), nil
+}
+
 // FrontierKey normalizes a URL and strips ignored query parameters for
 // frontier deduplication. Supports exact param names and wildcard suffix
 // patterns like "utm_*". Splits query manually to preserve original param

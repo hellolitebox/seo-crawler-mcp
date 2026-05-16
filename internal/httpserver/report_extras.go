@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/storage"
+	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/urlutil"
 )
 
 // reportExtrasLimit caps the number of rows returned per array in /report.
@@ -35,6 +36,8 @@ func loadReportExtras(ctx context.Context, db *storage.DB, jobID string) map[str
 		"axe_audits":           []any{},
 		"security":             []any{},
 		"markdown_negotiation": []any{},
+		"url_clusters":         []any{},
+		"url_variant_issues":   []any{},
 	}
 
 	if v, err := loadSitemapEntries(ctx, db, jobID); err != nil {
@@ -95,6 +98,12 @@ func loadReportExtras(ctx context.Context, db *storage.DB, jobID string) map[str
 		log.Printf("report_extras: security: %v", err)
 	} else {
 		out["security"] = v
+	}
+	if clusters, issues, err := loadURLClusters(ctx, db, jobID); err != nil {
+		log.Printf("report_extras: url_clusters: %v", err)
+	} else {
+		out["url_clusters"] = clusters
+		out["url_variant_issues"] = issues
 	}
 
 	return out
@@ -225,6 +234,191 @@ func loadURLs(ctx context.Context, db *storage.DB, jobID string) ([]map[string]a
 		})
 	}
 	return out, rows.Err()
+}
+
+type urlVariantCluster struct {
+	PageKey       string
+	PrimaryURL    string
+	CanonicalURL  string
+	ContentHash   string
+	PageURLs      map[string]bool
+	ContentHashes map[string]bool
+	CanonicalKeys map[string]bool
+	Variants      map[string]map[string]any
+}
+
+func loadURLClusters(ctx context.Context, db *storage.DB, jobID string) ([]map[string]any, []map[string]any, error) {
+	query := "SELECT p.id, u.normalized_url, ru.normalized_url, fu.normalized_url, p.canonical_url, p.content_hash, p.indexability_state, f.status_code " +
+		"FROM pages p " +
+		"JOIN urls u ON u.id = p.url_id " +
+		"JOIN fetches f ON f.id = p.fetch_id " +
+		"JOIN urls ru ON ru.id = f.requested_url_id " +
+		"LEFT JOIN urls fu ON fu.id = f.final_url_id " +
+		"WHERE p.job_id = ? ORDER BY p.id ASC LIMIT ?"
+	rows, err := db.QueryContext(ctx, query, jobID, reportExtrasLimit)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+
+	clustersByKey := map[string]*urlVariantCluster{}
+	for rows.Next() {
+		var (
+			pageID                    int64
+			pageURL, requestedURL     string
+			finalURL, canonicalURL    sql.NullString
+			contentHash, indexability sql.NullString
+			statusCode                sql.NullInt64
+		)
+		if err := rows.Scan(&pageID, &pageURL, &requestedURL, &finalURL, &canonicalURL, &contentHash, &indexability, &statusCode); err != nil {
+			return nil, nil, err
+		}
+
+		identityURL := pageURL
+		if canonicalURL.Valid && strings.TrimSpace(canonicalURL.String) != "" {
+			identityURL = canonicalURL.String
+		}
+		pageKey := pageIdentityKey(identityURL)
+		if pageKey == "" {
+			pageKey = pageIdentityKey(pageURL)
+		}
+		if pageKey == "" {
+			continue
+		}
+
+		cluster := clustersByKey[pageKey]
+		if cluster == nil {
+			cluster = &urlVariantCluster{
+				PageKey:       pageKey,
+				PrimaryURL:    pageURL,
+				PageURLs:      map[string]bool{},
+				ContentHashes: map[string]bool{},
+				CanonicalKeys: map[string]bool{},
+				Variants:      map[string]map[string]any{},
+			}
+			clustersByKey[pageKey] = cluster
+		}
+		cluster.PageURLs[pageURL] = true
+		if contentHash.Valid && strings.TrimSpace(contentHash.String) != "" {
+			cluster.ContentHashes[contentHash.String] = true
+			if cluster.ContentHash == "" {
+				cluster.ContentHash = contentHash.String
+			}
+		}
+		if canonicalURL.Valid && strings.TrimSpace(canonicalURL.String) != "" {
+			cluster.CanonicalURL = canonicalURL.String
+			if key := pageIdentityKey(canonicalURL.String); key != "" {
+				cluster.CanonicalKeys[key] = true
+			}
+		}
+
+		statusValue := int64(0)
+		if statusCode.Valid {
+			statusValue = statusCode.Int64
+		}
+
+		addURLVariant(cluster, requestedURL, "requested", pageID, statusValue, indexability)
+		if finalURL.Valid && strings.TrimSpace(finalURL.String) != "" {
+			addURLVariant(cluster, finalURL.String, "final", pageID, statusValue, indexability)
+		} else {
+			addURLVariant(cluster, pageURL, "final", pageID, statusValue, indexability)
+		}
+		if canonicalURL.Valid && strings.TrimSpace(canonicalURL.String) != "" {
+			addURLVariant(cluster, canonicalURL.String, "canonical", pageID, statusValue, indexability)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+
+	clusters := make([]map[string]any, 0, len(clustersByKey))
+	issues := []map[string]any{}
+	for _, cluster := range clustersByKey {
+		clusterType, severity := classifyURLVariantCluster(cluster)
+		hasIssue := severity != ""
+		variants := make([]map[string]any, 0, len(cluster.Variants))
+		for _, v := range cluster.Variants {
+			variants = append(variants, v)
+		}
+		clusters = append(clusters, map[string]any{
+			"pageKey":       cluster.PageKey,
+			"primaryUrl":    cluster.PrimaryURL,
+			"canonicalUrl":  emptyStringNil(cluster.CanonicalURL),
+			"contentHash":   emptyStringNil(cluster.ContentHash),
+			"variantCount":  len(cluster.Variants),
+			"pageCount":     len(cluster.PageURLs),
+			"clusterType":   clusterType,
+			"hasIssue":      hasIssue,
+			"issueSeverity": emptyStringNil(severity),
+			"variants":      variants,
+		})
+		if hasIssue {
+			details, _ := json.Marshal(map[string]any{
+				"pageKey":      cluster.PageKey,
+				"variantCount": len(cluster.Variants),
+				"pageCount":    len(cluster.PageURLs),
+				"clusterType":  clusterType,
+			})
+			issues = append(issues, map[string]any{
+				"url":         cluster.PrimaryURL,
+				"issueType":   "duplicate_url_variants",
+				"severity":    severity,
+				"scope":       "page",
+				"detailsJson": string(details),
+			})
+		}
+	}
+	return clusters, issues, nil
+}
+
+func pageIdentityKey(rawURL string) string {
+	key, err := urlutil.PageIdentityKey(rawURL)
+	if err == nil {
+		return key
+	}
+	return strings.TrimRight(strings.TrimSpace(rawURL), "/")
+}
+
+func addURLVariant(cluster *urlVariantCluster, rawURL, kind string, pageID, statusCode int64, indexability sql.NullString) {
+	if strings.TrimSpace(rawURL) == "" {
+		return
+	}
+	key := kind + "\x00" + rawURL
+	if _, exists := cluster.Variants[key]; exists {
+		return
+	}
+	cluster.Variants[key] = map[string]any{
+		"url":               rawURL,
+		"kind":              kind,
+		"pageId":            pageID,
+		"statusCode":        statusCode,
+		"indexabilityState": nullString(indexability),
+		"pageKey":           pageIdentityKey(rawURL),
+	}
+}
+
+func classifyURLVariantCluster(cluster *urlVariantCluster) (string, string) {
+	if len(cluster.PageURLs) < 2 {
+		return "redirect_consolidated", ""
+	}
+	if len(cluster.ContentHashes) > 1 {
+		return "distinct_content", ""
+	}
+	if len(cluster.CanonicalKeys) == 1 {
+		for key := range cluster.CanonicalKeys {
+			if key == cluster.PageKey {
+				return "canonicalized_duplicate", "info"
+			}
+		}
+	}
+	return "duplicate_content_variant", "warning"
+}
+
+func emptyStringNil(value string) any {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	return value
 }
 
 func loadAssets(ctx context.Context, db *storage.DB, jobID string) ([]map[string]any, error) {

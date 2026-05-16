@@ -5,6 +5,7 @@ package dto
 type PageDTO struct {
 	ID                    int64   `json:"id"`
 	URL                   string  `json:"url"`
+	NormalizedPageKey     string  `json:"normalizedPageKey,omitempty"`
 	Depth                 int     `json:"depth"`
 	StatusCode            *int    `json:"statusCode,omitempty"`
 	ContentType           *string `json:"contentType,omitempty"`

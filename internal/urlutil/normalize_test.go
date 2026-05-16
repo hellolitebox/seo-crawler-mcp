@@ -210,6 +210,47 @@ func TestFrontierKey(t *testing.T) {
 	}
 }
 
+func TestPageIdentityKey(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "strips www and trailing slash",
+			input: "https://www.pipapou.com/auth/login/",
+			want:  "https://pipapou.com/auth/login",
+		},
+		{
+			name:  "apex path matches www path",
+			input: "https://pipapou.com/auth/login",
+			want:  "https://pipapou.com/auth/login",
+		},
+		{
+			name:  "preserves scheme and query",
+			input: "http://www.example.com/search/?q=x",
+			want:  "http://example.com/search?q=x",
+		},
+		{
+			name:  "keeps non-default port",
+			input: "https://www.example.com:8443/path/",
+			want:  "https://example.com:8443/path",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := PageIdentityKey(tt.input)
+			if err != nil {
+				t.Fatalf("PageIdentityKey(%q) error: %v", tt.input, err)
+			}
+			if got != tt.want {
+				t.Fatalf("PageIdentityKey(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestHasRepeatedPathSegments(t *testing.T) {
 	tests := []struct {
 		name  string

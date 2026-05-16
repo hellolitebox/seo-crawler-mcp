@@ -4,6 +4,7 @@ import (
 	"database/sql"
 
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/storage"
+	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/urlutil"
 )
 
 // URLLookup resolves a URL ID to its normalized URL string.
@@ -11,9 +12,12 @@ type URLLookup func(id int64) string
 
 // PageFromStorage converts a storage.Page to a PageDTO.
 func PageFromStorage(p storage.Page, lookup URLLookup) PageDTO {
+	pageURL := lookup(p.URLID)
+	pageKey, _ := urlutil.PageIdentityKey(pageURL)
 	dto := PageDTO{
 		ID:                  p.ID,
-		URL:                 lookup(p.URLID),
+		URL:                 pageURL,
+		NormalizedPageKey:   pageKey,
 		Depth:               int(p.Depth),
 		IndexabilityState:   p.IndexabilityState,
 		JSSuspect:           p.JSSuspect,
