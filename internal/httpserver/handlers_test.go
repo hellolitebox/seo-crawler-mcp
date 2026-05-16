@@ -215,6 +215,89 @@ func TestHandleCrawlAutoRenderModeQueuesHybrid(t *testing.T) {
 	}
 }
 
+func TestHandleCrawlHonorsConfigAndRequestSettings(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	db, err := storage.Open(dbPath)
+	if err != nil {
+		t.Fatalf("opening test db: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	activeJob, err := db.CreateJob("crawl", "{}", "[\"https://busy.example\"]")
+	if err != nil {
+		t.Fatalf("creating active job: %v", err)
+	}
+	if err := db.UpdateJobStarted(activeJob.ID); err != nil {
+		t.Fatalf("marking active job started: %v", err)
+	}
+
+	cfg := config.DefaultConfig()
+	cfg.SSRFProtection = false
+	cfg.MaxConcurrentCrawls = 1
+	cfg.MaxPages = 123
+	cfg.MaxDepth = 7
+	cfg.ScopeMode = config.ScopeModeExactHost
+	cfg.RespectRobots = false
+	srv := New(db, &engine.Engine{}, &cfg)
+	handler := srv.Handler()
+
+	body := bytes.NewBufferString("{\"url\":\"example.com\",\"urls\":[\"example.com/docs\"],\"scopeMode\":\"allowlist\",\"allowedHosts\":[\"example.com\",\"docs.example.com\"],\"maxPages\":10,\"maxDepth\":3,\"renderMode\":\"static\",\"respectRobots\":true,\"dryRun\":true}")
+	req := httptest.NewRequest(http.MethodPost, "/api/crawl", body)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("POST /api/crawl status = %d, body=%s", rr.Code, rr.Body.String())
+	}
+
+	var resp map[string]string
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	job, err := db.GetJob(resp["jobId"])
+	if err != nil {
+		t.Fatalf("getting queued job: %v", err)
+	}
+	var crawlConfig map[string]any
+	if err := json.Unmarshal([]byte(job.ConfigJSON), &crawlConfig); err != nil {
+		t.Fatalf("parsing crawl config: %v", err)
+	}
+	assertConfig := map[string]any{
+		"scopeMode":     "allowlist",
+		"maxPages":      float64(10),
+		"maxDepth":      float64(3),
+		"renderMode":    "static",
+		"respectRobots": true,
+		"dryRun":        true,
+	}
+	for key, want := range assertConfig {
+		if got := crawlConfig[key]; got != want {
+			t.Fatalf("%s = %#v, want %#v", key, got, want)
+		}
+	}
+	allowedHosts, ok := crawlConfig["allowedHosts"].([]any)
+	if !ok || len(allowedHosts) != 2 || allowedHosts[1] != "docs.example.com" {
+		t.Fatalf("allowedHosts = %#v, want request hosts", crawlConfig["allowedHosts"])
+	}
+	var seeds []string
+	if err := json.Unmarshal([]byte(job.SeedURLs), &seeds); err != nil {
+		t.Fatalf("parsing seeds: %v", err)
+	}
+	wantSeeds := []string{"https://example.com", "https://example.com/docs"}
+	if fmt.Sprint(seeds) != fmt.Sprint(wantSeeds) {
+		t.Fatalf("seeds = %v, want %v", seeds, wantSeeds)
+	}
+}
+
+func TestMaxConcurrentCrawlsUsesConfig(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.MaxConcurrentCrawls = 2
+	s := New(nil, nil, &cfg)
+	if got := s.maxConcurrentCrawls(); got != 2 {
+		t.Fatalf("maxConcurrentCrawls() = %d, want 2", got)
+	}
+}
+
 func TestJobsList_EmptyDb(t *testing.T) {
 	_, h := newTestServer(t)
 

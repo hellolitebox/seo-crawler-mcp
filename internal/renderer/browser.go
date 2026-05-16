@@ -273,6 +273,7 @@ func (p *Pool) RenderWithOptions(ctx context.Context, rawURL string, opts Render
 	// ── 4. Extract fully-expanded HTML ──────────────────────────────────
 	var html string
 	err = chromedp.Run(taskCtx,
+		chromedp.Location(&finalURL),
 		chromedp.OuterHTML("html", &html),
 	)
 	elapsed := time.Since(start)

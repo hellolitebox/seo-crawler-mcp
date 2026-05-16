@@ -2,6 +2,7 @@
 package issues
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -29,8 +30,13 @@ func DefaultGlobalConfig() GlobalConfig {
 // Returns the total number of new issues inserted.
 // The function is idempotent: it deletes any existing global issues before re-detecting.
 func DetectGlobalIssues(db *storage.DB, jobID string, cfg GlobalConfig) (int, error) {
+	previousIssues, err := loadExistingGlobalIssueInputs(db, jobID)
+	if err != nil {
+		return 0, err
+	}
+
 	// Idempotency guard: clear existing global issues so retries are safe.
-	_, err := db.Exec("DELETE FROM issues WHERE job_id = ? AND scope = 'global'", jobID)
+	_, err = db.Exec("DELETE FROM issues WHERE job_id = ? AND scope = 'global'", jobID)
 	if err != nil {
 		return 0, fmt.Errorf("clearing existing global issues: %w", err)
 	}
@@ -69,12 +75,56 @@ func DetectGlobalIssues(db *storage.DB, jobID string, cfg GlobalConfig) (int, er
 	for _, detector := range detectors {
 		count, err := detector(db, jobID, cfg)
 		if err != nil {
+			if restoreErr := restoreGlobalIssues(db, jobID, previousIssues); restoreErr != nil {
+				return total, fmt.Errorf("%w; additionally failed to restore previous global issues: %v", err, restoreErr)
+			}
 			return total, err
 		}
 		total += count
 	}
 
 	return total, nil
+}
+
+func loadExistingGlobalIssueInputs(db *storage.DB, jobID string) ([]storage.IssueInput, error) {
+	rows, err := db.Query("SELECT url_id, issue_type, severity, details_json FROM issues WHERE job_id = ? AND scope = 'global' ORDER BY id ASC", jobID)
+	if err != nil {
+		return nil, fmt.Errorf("loading existing global issues: %w", err)
+	}
+	defer rows.Close()
+
+	var inputs []storage.IssueInput
+	for rows.Next() {
+		var urlID sql.NullInt64
+		var details sql.NullString
+		input := storage.IssueInput{JobID: jobID, Scope: "global"}
+		if err := rows.Scan(&urlID, &input.IssueType, &input.Severity, &details); err != nil {
+			return nil, fmt.Errorf("scanning existing global issue: %w", err)
+		}
+		if urlID.Valid {
+			id := urlID.Int64
+			input.URLID = &id
+		}
+		if details.Valid {
+			detailsJSON := details.String
+			input.DetailsJSON = &detailsJSON
+		}
+		inputs = append(inputs, input)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating existing global issues: %w", err)
+	}
+	return inputs, nil
+}
+
+func restoreGlobalIssues(db *storage.DB, jobID string, inputs []storage.IssueInput) error {
+	if _, err := db.Exec("DELETE FROM issues WHERE job_id = ? AND scope = 'global'", jobID); err != nil {
+		return fmt.Errorf("clearing partial global issues: %w", err)
+	}
+	if err := db.InsertIssuesBatch(inputs); err != nil {
+		return fmt.Errorf("re-inserting previous global issues: %w", err)
+	}
+	return nil
 }
 
 func insertGlobalIssue(db *storage.DB, jobID string, urlID *int64, issueType, severity string, details map[string]any) error {

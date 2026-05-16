@@ -30,10 +30,12 @@ type Entry struct {
 }
 
 type urlSet struct {
-	URLs []Entry `xml:"url"`
+	XMLName xml.Name `xml:"urlset"`
+	URLs    []Entry  `xml:"url"`
 }
 
 type sitemapIndex struct {
+	XMLName  xml.Name `xml:"sitemapindex"`
 	Sitemaps []struct {
 		Loc string `xml:"loc"`
 	} `xml:"sitemap"`
@@ -45,6 +47,9 @@ func ParseXML(data []byte) ([]Entry, error) {
 	if err := xml.Unmarshal(data, &us); err != nil {
 		return nil, fmt.Errorf("parsing urlset XML: %w", err)
 	}
+	if us.XMLName.Local != "urlset" {
+		return nil, fmt.Errorf("parsing urlset XML: unexpected root %q", us.XMLName.Local)
+	}
 	entries := make([]Entry, len(us.URLs))
 	copy(entries, us.URLs)
 	return entries, nil
@@ -55,6 +60,9 @@ func ParseIndex(data []byte) ([]string, error) {
 	var si sitemapIndex
 	if err := xml.Unmarshal(data, &si); err != nil {
 		return nil, fmt.Errorf("parsing sitemapindex XML: %w", err)
+	}
+	if si.XMLName.Local != "sitemapindex" {
+		return nil, fmt.Errorf("parsing sitemapindex XML: unexpected root %q", si.XMLName.Local)
 	}
 	urls := make([]string, 0, len(si.Sitemaps))
 	for _, s := range si.Sitemaps {
@@ -73,6 +81,14 @@ func FetchAndParse(sitemapURL string, maxEntries int, client *http.Client) ([]En
 // FetchAndParseContext fetches a sitemap URL with cancellation support, auto-detects index vs urlset,
 // recursively follows index children, and respects maxEntries limit.
 func FetchAndParseContext(ctx context.Context, sitemapURL string, maxEntries int, client *http.Client) ([]Entry, int, error) {
+	return FetchAndParseContextWithUserAgent(ctx, sitemapURL, maxEntries, client, "")
+}
+
+// FetchAndParseContextWithUserAgent is FetchAndParseContext with an explicit User-Agent header.
+func FetchAndParseContextWithUserAgent(ctx context.Context, sitemapURL string, maxEntries int, client *http.Client, userAgent string) ([]Entry, int, error) {
+	if client == nil {
+		client = http.DefaultClient
+	}
 	entries := make([]Entry, 0)
 	visited := make(map[string]bool)
 	queue := []string{sitemapURL}
@@ -93,7 +109,7 @@ func FetchAndParseContext(ctx context.Context, sitemapURL string, maxEntries int
 		}
 		visited[current] = true
 
-		data, err := fetchSitemapContent(ctx, current, client)
+		data, err := fetchSitemapContent(ctx, current, client, userAgent)
 		if err != nil {
 			if current == sitemapURL {
 				return entries, sitemapCount, err
@@ -141,10 +157,13 @@ func FetchAndParseContext(ctx context.Context, sitemapURL string, maxEntries int
 // fetchSitemapContent fetches a URL and returns the raw body bytes,
 // handling gzip decompression when needed.
 
-func fetchSitemapContent(ctx context.Context, rawURL string, client *http.Client) ([]byte, error) {
+func fetchSitemapContent(ctx context.Context, rawURL string, client *http.Client, userAgent string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("creating request for %q: %w", rawURL, err)
+	}
+	if userAgent != "" {
+		req.Header.Set("User-Agent", userAgent)
 	}
 	resp, err := client.Do(req)
 	if err != nil {

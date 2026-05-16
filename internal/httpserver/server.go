@@ -142,9 +142,9 @@ func (s *Server) queueWorker() {
 }
 
 func (s *Server) maxConcurrentCrawls() int {
-	// A Server owns one shared Engine, and Engine runs are intentionally
-	// serialized while crawl-scoped state still lives on Engine. Keep HTTP
-	// queue semantics honest by never promoting more than one crawl at a time.
+	if s.config != nil && s.config.MaxConcurrentCrawls > 0 {
+		return s.config.MaxConcurrentCrawls
+	}
 	return 1
 }
 

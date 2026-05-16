@@ -29,6 +29,9 @@ func (s *Server) handleAnalyzeSEOPrompt(
 	ctx context.Context,
 	req gomcp.GetPromptRequest,
 ) (*gomcp.GetPromptResult, error) {
+	if s.db == nil {
+		return nil, fmt.Errorf("server not configured: database unavailable")
+	}
 	jobID := req.Params.Arguments["jobId"]
 	if jobID == "" {
 		return nil, fmt.Errorf("missing required argument %q", "jobId")
@@ -78,6 +81,9 @@ func (s *Server) handleInvestigateURLPrompt(
 	ctx context.Context,
 	req gomcp.GetPromptRequest,
 ) (*gomcp.GetPromptResult, error) {
+	if s.db == nil {
+		return nil, fmt.Errorf("server not configured: database unavailable")
+	}
 	jobID := req.Params.Arguments["jobId"]
 	if jobID == "" {
 		return nil, fmt.Errorf("missing required argument %q", "jobId")

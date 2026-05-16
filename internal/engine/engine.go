@@ -2800,6 +2800,9 @@ func (e *Engine) checkMarkdownNegotiation(ctx context.Context, jobID string) {
 	}
 	close(urlIdxChan)
 	wg.Wait()
+	if ctx.Err() != nil {
+		return
+	}
 
 	total := int(processed.Load())
 	supportedCount := int(supported.Load())
@@ -2819,6 +2822,9 @@ func (e *Engine) checkMarkdownNegotiation(ctx context.Context, jobID string) {
 	// (single) SQLite write connection 2.5K times, blocking other queries.
 	issueBatch := make([]storage.IssueInput, 0, len(results))
 	for _, r := range results {
+		if r.URL == "" {
+			continue
+		}
 		d, _ := json.Marshal(map[string]interface{}{
 			"url":         r.URL,
 			"contentType": r.ContentType,

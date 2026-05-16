@@ -81,9 +81,15 @@ func (s *Server) handleCrawl(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 
 	var body struct {
-		URL        string `json:"url"`
-		MaxPages   int    `json:"maxPages"`
-		RenderMode string `json:"renderMode"`
+		URL           string   `json:"url"`
+		URLs          []string `json:"urls"`
+		ScopeMode     string   `json:"scopeMode"`
+		AllowedHosts  []string `json:"allowedHosts"`
+		MaxPages      int      `json:"maxPages"`
+		MaxDepth      int      `json:"maxDepth"`
+		RenderMode    string   `json:"renderMode"`
+		RespectRobots *bool    `json:"respectRobots"`
+		DryRun        bool     `json:"dryRun"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
@@ -96,6 +102,30 @@ func (s *Server) handleCrawl(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	body.URL = normalizedURL
+	seedURLs := []string{body.URL}
+	for _, rawSeed := range body.URLs {
+		normalizedSeed, parsedSeed, seedErr := normalizeCrawlURL(rawSeed)
+		if seedErr != nil {
+			writeError(w, http.StatusBadRequest, seedErr.Error())
+			return
+		}
+		if s.config == nil || s.config.SSRFProtection {
+			allowPrivate := false
+			if s.config != nil {
+				allowPrivate = s.config.AllowPrivateNetworks
+			}
+			guard := ssrf.NewGuard(allowPrivate)
+			if err := guard.ValidateURL(normalizedSeed); err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			if err := guard.ValidateHost(parsedSeed.Hostname()); err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+		}
+		seedURLs = append(seedURLs, normalizedSeed)
+	}
 	if s.config == nil || s.config.SSRFProtection {
 		allowPrivate := false
 		if s.config != nil {
@@ -113,6 +143,9 @@ func (s *Server) handleCrawl(w http.ResponseWriter, r *http.Request) {
 	}
 
 	maxPages := 500
+	if s.config != nil && s.config.MaxPages > 0 {
+		maxPages = s.config.MaxPages
+	}
 	if body.MaxPages > 0 {
 		maxPages = body.MaxPages
 		if maxPages > 100000 {
@@ -120,7 +153,48 @@ func (s *Server) handleCrawl(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	maxDepth := 50
+	if s.config != nil && s.config.MaxDepth > 0 {
+		maxDepth = s.config.MaxDepth
+	}
+	if body.MaxDepth > 0 {
+		maxDepth = body.MaxDepth
+	}
+
+	scopeMode := "registrable_domain"
+	if s.config != nil && s.config.ScopeMode != "" {
+		scopeMode = string(s.config.ScopeMode)
+	}
+	if body.ScopeMode != "" {
+		switch body.ScopeMode {
+		case "registrable_domain", "exact_host", "allowlist":
+			scopeMode = body.ScopeMode
+		default:
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid scopeMode %q", body.ScopeMode))
+			return
+		}
+	}
+
+	allowedHosts := []string{}
+	if s.config != nil && len(s.config.AllowedHosts) > 0 {
+		allowedHosts = append(allowedHosts, s.config.AllowedHosts...)
+	}
+	if len(body.AllowedHosts) > 0 {
+		allowedHosts = append([]string{}, body.AllowedHosts...)
+	}
+
+	respectRobots := true
+	if s.config != nil {
+		respectRobots = s.config.RespectRobots
+	}
+	if body.RespectRobots != nil {
+		respectRobots = *body.RespectRobots
+	}
+
 	renderMode := "static"
+	if s.config != nil && s.config.RenderMode != "" {
+		renderMode = string(s.config.RenderMode)
+	}
 	if body.RenderMode != "" {
 		switch body.RenderMode {
 		case "static", "browser", "hybrid", "auto":
@@ -167,13 +241,13 @@ func (s *Server) handleCrawl(w http.ResponseWriter, r *http.Request) {
 	maxConcurrent := s.maxConcurrentCrawls()
 
 	crawlConfig := map[string]any{
-		"scopeMode":     "registrable_domain",
-		"allowedHosts":  []string{},
+		"scopeMode":     scopeMode,
+		"allowedHosts":  allowedHosts,
 		"maxPages":      maxPages,
-		"maxDepth":      50,
+		"maxDepth":      maxDepth,
 		"renderMode":    renderMode,
-		"respectRobots": true,
-		"dryRun":        false,
+		"respectRobots": respectRobots,
+		"dryRun":        body.DryRun,
 	}
 	configJSON, err := json.Marshal(crawlConfig)
 	if err != nil {
@@ -181,7 +255,6 @@ func (s *Server) handleCrawl(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	seedURLs := []string{body.URL}
 	seedJSON, err := json.Marshal(seedURLs)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("marshalling seed URLs: %v", err))

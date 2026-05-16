@@ -149,3 +149,42 @@ func TestRateLimiter_CrawlDelaySerializesConcurrentWaiters(t *testing.T) {
 		t.Fatalf("concurrent waiters started %v apart, want crawl-delay serialization", delta)
 	}
 }
+
+func TestRateLimiter_ThrottleDoesNotClearExistingCrawlDelay(t *testing.T) {
+	rl := NewRateLimiter(1)
+	host := "throttled-delay.example.com"
+	rl.SetCrawlDelay(host, 120*time.Millisecond)
+
+	rl.Acquire(host)
+	rl.Release(host)
+
+	rl.ThrottleHost(host, 20*time.Millisecond)
+	time.Sleep(35 * time.Millisecond)
+
+	start := time.Now()
+	rl.Acquire(host)
+	rl.Release(host)
+	if elapsed := time.Since(start); elapsed < 60*time.Millisecond {
+		t.Fatalf("Acquire waited %v, want existing crawl-delay to remain active", elapsed)
+	}
+}
+
+func TestRateLimiter_ShorterThrottleDoesNotClearLongerThrottle(t *testing.T) {
+	rl := NewRateLimiter(1)
+	host := "overlap-throttle.example.com"
+
+	rl.Acquire(host)
+	rl.Release(host)
+
+	rl.ThrottleHost(host, 90*time.Millisecond)
+	time.Sleep(10 * time.Millisecond)
+	rl.ThrottleHost(host, 20*time.Millisecond)
+	time.Sleep(30 * time.Millisecond)
+
+	start := time.Now()
+	rl.Acquire(host)
+	rl.Release(host)
+	if elapsed := time.Since(start); elapsed < 25*time.Millisecond {
+		t.Fatalf("Acquire waited %v, want longer throttle to remain active", elapsed)
+	}
+}

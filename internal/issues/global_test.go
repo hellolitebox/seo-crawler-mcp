@@ -116,6 +116,32 @@ func countIssuesByType(t *testing.T, db *storage.DB, jobID, issueType string) in
 	return count
 }
 
+func TestDetectGlobalIssuesRestoresPreviousIssuesOnFailure(t *testing.T) {
+	db := testDB(t)
+	jobID := "job-restore-global"
+	seedJob(t, db, jobID)
+	details := "{\"before\":true}"
+	if _, err := db.InsertIssue(storage.IssueInput{
+		JobID:       jobID,
+		IssueType:   "previous_global",
+		Severity:    "warning",
+		Scope:       "global",
+		DetailsJSON: &details,
+	}); err != nil {
+		t.Fatalf("seeding previous issue: %v", err)
+	}
+	if _, err := db.Exec("DROP TABLE pages"); err != nil {
+		t.Fatalf("dropping pages table: %v", err)
+	}
+
+	if _, err := DetectGlobalIssues(db, jobID, DefaultGlobalConfig()); err == nil {
+		t.Fatal("expected detector error")
+	}
+	if got := countIssuesByType(t, db, jobID, "previous_global"); got != 1 {
+		t.Fatalf("previous global issues after failure = %d, want 1", got)
+	}
+}
+
 func seedEdge(t *testing.T, db *storage.DB, jobID string, sourceURLID int64, declaredTargetURL string, relationType string, isInternal bool, discoveryMode string) {
 	t.Helper()
 	internal := 0

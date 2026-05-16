@@ -60,6 +60,30 @@ func textFromContents(t *testing.T, contents []gomcp.ResourceContents) string {
 	return tc.Text
 }
 
+func TestResourcesReturnErrorWithoutDatabase(t *testing.T) {
+	s := NewServer(ServerConfig{})
+	checks := []struct {
+		name string
+		uri  string
+		fn   func(context.Context, gomcp.ReadResourceRequest) ([]gomcp.ResourceContents, error)
+	}{
+		{"jobs", "seo-crawler://jobs", s.handleJobListResource},
+		{"detail", "seo-crawler://jobs/job-1", s.handleJobDetailResource},
+		{"summary", "seo-crawler://jobs/job-1/summary", s.handleJobSummaryResource},
+		{"events", "seo-crawler://jobs/job-1/events", s.handleJobEventsResource},
+		{"page", "seo-crawler://jobs/job-1/page/1", s.handlePageDetailResource},
+	}
+	for _, tt := range checks {
+		t.Run(tt.name, func(t *testing.T) {
+			req := gomcp.ReadResourceRequest{}
+			req.Params.URI = tt.uri
+			if _, err := tt.fn(context.Background(), req); err == nil {
+				t.Fatal("expected database unavailable error")
+			}
+		})
+	}
+}
+
 func TestJobListResource(t *testing.T) {
 	db := setupTestDB(t)
 	cfg := config.DefaultConfig()
@@ -274,10 +298,10 @@ func TestPageDetailResource(t *testing.T) {
 
 func TestExtractURLID(t *testing.T) {
 	tests := []struct {
-		uri      string
-		wantJob  string
-		wantURL  int64
-		wantOK   bool
+		uri     string
+		wantJob string
+		wantURL int64
+		wantOK  bool
 	}{
 		{"seo-crawler://jobs/abc123/page/42", "abc123", 42, true},
 		{"seo-crawler://jobs/abc123/page/0", "abc123", 0, true},

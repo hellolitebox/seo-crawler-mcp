@@ -83,6 +83,24 @@ func TestAnalyzeSEOPrompt_MissingJobID(t *testing.T) {
 	}
 }
 
+func TestPromptsReturnErrorWithoutDatabase(t *testing.T) {
+	s := NewServer(ServerConfig{})
+
+	analyzeReq := gomcp.GetPromptRequest{}
+	analyzeReq.Params.Name = "analyze_technical_seo"
+	analyzeReq.Params.Arguments = map[string]string{"jobId": "job-1"}
+	if _, err := s.handleAnalyzeSEOPrompt(context.Background(), analyzeReq); err == nil {
+		t.Fatal("expected analyze prompt to return database unavailable error")
+	}
+
+	investigateReq := gomcp.GetPromptRequest{}
+	investigateReq.Params.Name = "investigate_url"
+	investigateReq.Params.Arguments = map[string]string{"jobId": "job-1", "url": "https://example.com"}
+	if _, err := s.handleInvestigateURLPrompt(context.Background(), investigateReq); err == nil {
+		t.Fatal("expected investigate prompt to return database unavailable error")
+	}
+}
+
 func TestInvestigateURLPrompt(t *testing.T) {
 	db := setupTestDB(t)
 	cfg := config.DefaultConfig()

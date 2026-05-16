@@ -71,6 +71,13 @@ func TestParseXML_Empty(t *testing.T) {
 	}
 }
 
+func TestParseXML_RejectsWrongRoot(t *testing.T) {
+	_, err := sitemap.ParseXML([]byte(`<?xml version="1.0"?><feed><entry /></feed>`))
+	if err == nil {
+		t.Fatal("expected wrong-root XML to be rejected")
+	}
+}
+
 func TestParseIndex_TwoSitemaps(t *testing.T) {
 	data := []byte(`<?xml version="1.0" encoding="UTF-8"?>
 <sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
@@ -94,6 +101,13 @@ func TestParseIndex_TwoSitemaps(t *testing.T) {
 	}
 	if urls[1] != "https://example.com/sitemap2.xml" {
 		t.Errorf("urls[1] = %q, want %q", urls[1], "https://example.com/sitemap2.xml")
+	}
+}
+
+func TestParseIndex_RejectsWrongRoot(t *testing.T) {
+	_, err := sitemap.ParseIndex([]byte(`<?xml version="1.0"?><urlset><url /></urlset>`))
+	if err == nil {
+		t.Fatal("expected wrong-root XML to be rejected")
 	}
 }
 
@@ -152,6 +166,41 @@ func TestFetchAndParse_RootFetchErrorReturnsError(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatalf("expected sitemapCount=0, got %d", count)
+	}
+}
+
+func TestFetchAndParse_NilClientUsesDefaultClient(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/xml")
+		w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://example.com/a</loc></url>
+</urlset>`))
+	}))
+	defer srv.Close()
+
+	entries, _, err := sitemap.FetchAndParse(srv.URL+"/sitemap.xml", 10, nil)
+	if err != nil {
+		t.Fatalf("FetchAndParse() error: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(entries))
+	}
+}
+
+func TestFetchAndParse_RejectsNonSitemapXML(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/xml")
+		w.Write([]byte(`<?xml version="1.0"?><feed><entry /></feed>`))
+	}))
+	defer srv.Close()
+
+	entries, _, err := sitemap.FetchAndParse(srv.URL+"/sitemap.xml", 10, srv.Client())
+	if err == nil {
+		t.Fatal("expected non-sitemap XML to return an error")
+	}
+	if len(entries) != 0 {
+		t.Fatalf("expected no entries, got %d", len(entries))
 	}
 }
 

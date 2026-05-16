@@ -111,13 +111,19 @@ func RunAxeAuditBatch(ctx context.Context, urls []string) ([]*AxeResult, error) 
 			result.Violations = nil
 			result.Passes = nil
 		}
+		if result != nil && result.Error == "" && !IsPublicURL(result.URL) {
+			result.Error = fmt.Sprintf("axe final URL rejected as non-public: %s", result.URL)
+			result.Violations = nil
+			result.Passes = nil
+		}
 	}
 	return results, nil
 }
 
 func axeBatchScript() string {
 	return `
-import os, sys, json
+import ipaddress, os, socket, sys, json
+from urllib.parse import urlparse
 from playwright.sync_api import sync_playwright
 
 urls = json.loads(sys.stdin.read())
@@ -126,6 +132,23 @@ results = []
 
 _chromium_path = os.environ.get("CHROMIUM_PATH") or None
 
+def is_public_url(raw_url):
+    parsed = urlparse(raw_url)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        return False
+    try:
+        infos = socket.getaddrinfo(parsed.hostname, None)
+    except Exception:
+        return False
+    for info in infos:
+        try:
+            ip = ipaddress.ip_address(info[4][0])
+        except Exception:
+            return False
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved or ip.is_unspecified:
+            return False
+    return True
+
 with sync_playwright() as p:
     browser = p.chromium.launch(headless=True, executable_path=_chromium_path)
 
@@ -133,6 +156,9 @@ with sync_playwright() as p:
         try:
             page = browser.new_page(viewport={"width": 1440, "height": 900})
             page.goto(url, wait_until="networkidle", timeout=30000)
+            final_url = page.url
+            if not is_public_url(final_url):
+                raise Exception(f"final URL rejected as non-public: {final_url}")
             page.wait_for_timeout(1000)
 
             # Inject axe-core from CDN
@@ -167,7 +193,7 @@ with sync_playwright() as p:
             """)
 
             results.append({
-                "url": url,
+                "url": final_url,
                 "violations": axe_results["violations"],
                 "passes": axe_results["passes"],
                 "incomplete": axe_results["incomplete"]

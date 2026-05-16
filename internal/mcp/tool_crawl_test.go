@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -156,6 +157,63 @@ func TestCrawlSite_InvalidScopeMode(t *testing.T) {
 
 	if !result.IsError {
 		t.Error("expected error result for invalid scope mode")
+	}
+}
+
+func TestCrawlSiteViaHTTPForwardsCrawlSettings(t *testing.T) {
+	var got map[string]any
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/crawl" {
+			t.Fatalf("path = %q, want /api/crawl", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decoding request body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		fmt.Fprint(w, "{\"jobId\":\"job-http\",\"status\":\"queued\"}")
+	}))
+	defer api.Close()
+	t.Setenv("SEO_CRAWLER_HTTP_API", api.URL)
+	defer os.Unsetenv("SEO_CRAWLER_HTTP_API")
+
+	s := NewServer(ServerConfig{})
+	result := callTool(t, s, map[string]any{
+		"url":           "https://example.com",
+		"urls":          []any{"https://docs.example.com/start"},
+		"scopeMode":     "allowlist",
+		"allowedHosts":  []any{"example.com", "docs.example.com"},
+		"maxPages":      float64(42),
+		"maxDepth":      float64(4),
+		"renderMode":    "hybrid",
+		"respectRobots": false,
+		"dryRun":        true,
+	})
+	if result.IsError {
+		t.Fatalf("expected success, got error: %v", result.Content)
+	}
+
+	want := map[string]any{
+		"url":           "https://example.com",
+		"scopeMode":     "allowlist",
+		"maxPages":      float64(42),
+		"maxDepth":      float64(4),
+		"renderMode":    "hybrid",
+		"respectRobots": false,
+		"dryRun":        true,
+	}
+	for key, expected := range want {
+		if got[key] != expected {
+			t.Fatalf("%s = %#v, want %#v; body=%#v", key, got[key], expected, got)
+		}
+	}
+	urls, ok := got["urls"].([]any)
+	if !ok || len(urls) != 1 || urls[0] != "https://docs.example.com/start" {
+		t.Fatalf("urls = %#v", got["urls"])
+	}
+	allowedHosts, ok := got["allowedHosts"].([]any)
+	if !ok || len(allowedHosts) != 2 || allowedHosts[1] != "docs.example.com" {
+		t.Fatalf("allowedHosts = %#v", got["allowedHosts"])
 	}
 }
 

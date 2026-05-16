@@ -160,7 +160,17 @@ func (s *Server) handleCrawlSite(ctx context.Context, req gomcp.CallToolRequest)
 
 	// If SEO_CRAWLER_HTTP_API is set, delegate to the remote HTTP server.
 	if httpAPI := os.Getenv("SEO_CRAWLER_HTTP_API"); httpAPI != "" {
-		return s.crawlSiteViaHTTP(ctx, normalizedURL, maxPages, renderMode, additionalURLs)
+		return s.crawlSiteViaHTTP(ctx, crawlSiteArgs{
+			URL:           normalizedURL,
+			URLs:          additionalURLs,
+			ScopeMode:     scopeMode,
+			AllowedHosts:  allowedHosts,
+			MaxPages:      maxPages,
+			MaxDepth:      maxDepth,
+			RenderMode:    renderMode,
+			RespectRobots: &respectRobots,
+			DryRun:        dryRun,
+		})
 	}
 
 	if s.db == nil {
@@ -514,20 +524,25 @@ func (s *Server) handleCancelCrawl(ctx context.Context, req gomcp.CallToolReques
 // server a thin client, forwarding crawl requests to the cloud instance.
 func (s *Server) crawlSiteViaHTTP(
 	ctx context.Context,
-	rawURL string,
-	maxPages int,
-	renderMode string,
-	additionalURLs []string,
+	args crawlSiteArgs,
 ) (*gomcp.CallToolResult, error) {
 	httpAPI := os.Getenv("SEO_CRAWLER_HTTP_API")
 
 	body := map[string]any{
-		"url":        rawURL,
-		"maxPages":   maxPages,
-		"renderMode": renderMode,
+		"url":           args.URL,
+		"scopeMode":     args.ScopeMode,
+		"allowedHosts":  args.AllowedHosts,
+		"maxPages":      args.MaxPages,
+		"maxDepth":      args.MaxDepth,
+		"renderMode":    args.RenderMode,
+		"respectRobots": true,
+		"dryRun":        args.DryRun,
 	}
-	if len(additionalURLs) > 0 {
-		body["urls"] = additionalURLs
+	if args.RespectRobots != nil {
+		body["respectRobots"] = *args.RespectRobots
+	}
+	if len(args.URLs) > 0 {
+		body["urls"] = args.URLs
 	}
 
 	bodyBytes, err := json.Marshal(body)

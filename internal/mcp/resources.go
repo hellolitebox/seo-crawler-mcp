@@ -51,6 +51,9 @@ func (s *Server) handleJobListResource(
 	ctx context.Context,
 	req gomcp.ReadResourceRequest,
 ) ([]gomcp.ResourceContents, error) {
+	if s.db == nil {
+		return nil, fmt.Errorf("server not configured: database unavailable")
+	}
 	jobs, err := s.db.ListJobs()
 	if err != nil {
 		return nil, fmt.Errorf("listing jobs: %w", err)
@@ -88,9 +91,9 @@ func extractJobID(uri string) (string, error) {
 
 // jobDetailPayload is the JSON structure for the job detail resource.
 type jobDetailPayload struct {
-	Job            any            `json:"job"`
-	URLsByStatus   map[string]int `json:"urlsByStatus"`
-	IssuesByType   map[string]int `json:"issuesByType"`
+	Job          any            `json:"job"`
+	URLsByStatus map[string]int `json:"urlsByStatus"`
+	IssuesByType map[string]int `json:"issuesByType"`
 }
 
 // handleJobDetailResource returns full job detail with counters.
@@ -98,6 +101,9 @@ func (s *Server) handleJobDetailResource(
 	ctx context.Context,
 	req gomcp.ReadResourceRequest,
 ) ([]gomcp.ResourceContents, error) {
+	if s.db == nil {
+		return nil, fmt.Errorf("server not configured: database unavailable")
+	}
 	jobID, err := extractJobID(req.Params.URI)
 	if err != nil {
 		return nil, err
@@ -143,6 +149,9 @@ func (s *Server) handleJobSummaryResource(
 	ctx context.Context,
 	req gomcp.ReadResourceRequest,
 ) ([]gomcp.ResourceContents, error) {
+	if s.db == nil {
+		return nil, fmt.Errorf("server not configured: database unavailable")
+	}
 	jobID, err := extractJobID(req.Params.URI)
 	if err != nil {
 		return nil, err
@@ -172,6 +181,9 @@ func (s *Server) handleJobEventsResource(
 	ctx context.Context,
 	req gomcp.ReadResourceRequest,
 ) ([]gomcp.ResourceContents, error) {
+	if s.db == nil {
+		return nil, fmt.Errorf("server not configured: database unavailable")
+	}
 	jobID, err := extractJobID(req.Params.URI)
 	if err != nil {
 		return nil, err
@@ -232,6 +244,9 @@ func (s *Server) handlePageDetailResource(
 	ctx context.Context,
 	req gomcp.ReadResourceRequest,
 ) ([]gomcp.ResourceContents, error) {
+	if s.db == nil {
+		return nil, fmt.Errorf("server not configured: database unavailable")
+	}
 	jobID, urlID, err := extractURLID(req.Params.URI)
 	if err != nil {
 		return nil, err

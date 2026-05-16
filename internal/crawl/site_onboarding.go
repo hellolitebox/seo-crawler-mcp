@@ -211,7 +211,7 @@ func (h *HostOnboarder) discoverSitemaps(ctx context.Context, jobID, host, schem
 		if remaining <= 0 {
 			break
 		}
-		entries, _, err := sitemap.FetchAndParseContext(ctx, sitemapURL, remaining, h.httpClient)
+		entries, _, err := sitemap.FetchAndParseContextWithUserAgent(ctx, sitemapURL, remaining, h.httpClient, h.userAgent)
 		if err != nil {
 			info.Events = append(info.Events, fmt.Sprintf("sitemap fetch/parse error for %q: %v", sitemapURL, err))
 			continue
