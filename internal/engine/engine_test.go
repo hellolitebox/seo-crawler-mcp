@@ -584,3 +584,24 @@ func TestPersistItemDoesNotDoNetworkHEADInsideTransaction(t *testing.T) {
 	default:
 	}
 }
+
+func TestHasURLFragment(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want bool
+	}{
+		{name: "absolute fragment", raw: "https://example.com/#products", want: true},
+		{name: "relative fragment", raw: "#products", want: true},
+		{name: "plain url", raw: "https://example.com/products", want: false},
+		{name: "query hash character escaped", raw: "https://example.com/search?q=%23products", want: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := hasURLFragment(tc.raw); got != tc.want {
+				t.Fatalf("hasURLFragment(%q) = %v, want %v", tc.raw, got, tc.want)
+			}
+		})
+	}
+}

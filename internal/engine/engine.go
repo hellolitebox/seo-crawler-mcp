@@ -1537,6 +1537,9 @@ func (e *Engine) sitemapGapEscalation(ctx context.Context, jobID string) int {
 
 		// Also check Playwright-collected links directly (covers menus that close after click)
 		for _, pwLink := range playwrightLinks {
+			if hasURLFragment(pwLink) {
+				continue
+			}
 			norm, normErr := urlutil.Normalize(pwLink)
 			if normErr != nil || norm == "" {
 				continue
@@ -1593,6 +1596,11 @@ func (e *Engine) sitemapGapEscalation(ctx context.Context, jobID string) int {
 	e.db.InsertEvent(jobID, "sitemap_gap_escalation", &detailsJSON, nil)
 
 	return newURLsDiscovered
+}
+
+func hasURLFragment(rawURL string) bool {
+	parsed, err := url.Parse(rawURL)
+	return err == nil && parsed.Fragment != ""
 }
 
 // maxAssetHeadChecks bounds the number of unique asset URLs we HEAD-check
