@@ -33,3 +33,12 @@ func TestNewSSRFGuardHonorsDisabledProtection(t *testing.T) {
 		t.Fatal("expected nil guard when SSRFProtection=false")
 	}
 }
+
+func TestRendererPoolEnabledForPerJobRenderModeOverrides(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.RenderMode = config.RenderModeStatic
+
+	if !shouldCreateRendererPool(&cfg) {
+		t.Fatal("expected renderer pool even when process default is static; crawl requests can override renderMode")
+	}
+}

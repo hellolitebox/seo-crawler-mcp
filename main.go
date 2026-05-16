@@ -105,9 +105,11 @@ func main() {
 		SSRFGuard:           guard,
 	})
 
-	// Renderer pool (only for non-static modes).
+	// Renderer pool is cheap until a render starts, and requests can override
+	// renderMode per job. Keep it available even when process config defaults
+	// to static so accepted browser/hybrid jobs can actually render.
 	var renderPool *renderer.Pool
-	if cfg.RenderMode != config.RenderModeStatic {
+	if shouldCreateRendererPool(cfg) {
 		renderPool = renderer.NewPool(renderer.Options{
 			MaxSlots:      cfg.MaxBrowserInstances,
 			RenderWaitMs:  cfg.RenderWaitMs,
@@ -182,6 +184,10 @@ func main() {
 		fmt.Fprintf(os.Stderr, "server error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func shouldCreateRendererPool(_ *config.Config) bool {
+	return true
 }
 
 func newSSRFGuard(cfg *config.Config) *ssrf.Guard {
