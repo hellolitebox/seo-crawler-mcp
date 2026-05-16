@@ -3,6 +3,7 @@ package crawl
 
 import (
 	"encoding/json"
+	"net/url"
 	"strings"
 
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/parser"
@@ -44,6 +45,9 @@ func BuildEdges(
 
 	// 1. Links
 	for _, link := range result.Links {
+		if hasFragment(link.URL) {
+			continue
+		}
 		edge := buildEdge(sourceURLID, link.URL, sourceKind, "link", discoveryMode, scope)
 		if edge == nil {
 			continue
@@ -96,6 +100,11 @@ func BuildEdges(
 	}
 
 	return edges
+}
+
+func hasFragment(rawURL string) bool {
+	parsed, err := url.Parse(rawURL)
+	return err == nil && parsed.Fragment != ""
 }
 
 // buildEdge creates a single edge, returning nil if the URL should be dropped.

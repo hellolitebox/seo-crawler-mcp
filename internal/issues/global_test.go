@@ -157,6 +157,9 @@ func TestDetectJSOnlyNavigation(t *testing.T) {
 	// Edge 5: same-page section link — should NOT trigger
 	seedEdge(t, db, jobID, u1, "https://example.com/#productos", "link", true, "browser")
 
+	// Edge 6: cross-page section link — should NOT trigger
+	seedEdge(t, db, jobID, u1, "https://example.com/about#team", "link", true, "browser")
+
 	cfg := DefaultGlobalConfig()
 	n, err := detectJSOnlyNavigation(db, jobID, cfg)
 	if err != nil {

@@ -126,13 +126,14 @@ func TestBuildEdges_DropsSamePageLinks(t *testing.T) {
 		Links: []parser.DiscoveredLink{
 			{URL: "https://example.com/#productos", AnchorText: "Productos"},
 			{URL: "https://example.com/", AnchorText: "Home"},
-			{URL: "https://example.com/about#team", AnchorText: "Team"},
+			{URL: "https://example.com/about", AnchorText: "About"},
+			{URL: "https://example.com/contact#team", AnchorText: "Team"},
 		},
 	}
 
 	edges := BuildEdges(1, "https://example.com/", result, scope, "browser")
 	if len(edges) != 1 {
-		t.Fatalf("expected only the cross-page anchor edge, got %d: %#v", len(edges), edges)
+		t.Fatalf("expected only the non-fragment cross-page edge, got %d: %#v", len(edges), edges)
 	}
 	if edges[0].NormalizedTargetURL != "https://example.com/about" {
 		t.Errorf("expected /about edge, got %q", edges[0].NormalizedTargetURL)

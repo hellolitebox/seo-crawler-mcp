@@ -948,6 +948,9 @@ func detectJSOnlyNavigation(db *storage.DB, jobID string, _ GlobalConfig) (int, 
 	}
 
 	for _, link := range links {
+		if strings.Contains(link.targetURL, "#") {
+			continue
+		}
 		normalizedTarget, normErr := urlutil.Normalize(link.targetURL)
 		if normErr == nil && normalizedTarget == link.sourceURL {
 			continue
