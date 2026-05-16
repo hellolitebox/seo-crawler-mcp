@@ -329,7 +329,7 @@ func ParseHTML(body []byte, pageURL string, responseHeaders http.Header) (*Parse
 
 	// Assets: link elements (stylesheets, preloads, icons)
 	doc.Find("link").Each(func(_ int, s *goquery.Selection) {
-		rel := strings.ToLower(strings.TrimSpace(s.AttrOr("rel", "")))
+		rel := s.AttrOr("rel", "")
 		href, hrefExists := s.Attr("href")
 		if !hrefExists {
 			return
@@ -341,11 +341,11 @@ func ParseHTML(body []byte, pageURL string, responseHeaders http.Header) (*Parse
 
 		var assetType string
 		switch {
-		case rel == "stylesheet":
+		case hasRelToken(rel, "stylesheet"):
 			assetType = "stylesheet"
-		case rel == "icon" || rel == "shortcut icon" || rel == "apple-touch-icon":
+		case hasRelToken(rel, "icon") || hasRelToken(rel, "apple-touch-icon") || hasRelToken(rel, "apple-touch-icon-precomposed"):
 			assetType = "icon"
-		case rel == "preload":
+		case hasRelToken(rel, "preload"):
 			as := strings.ToLower(strings.TrimSpace(s.AttrOr("as", "")))
 			switch as {
 			case "font":
@@ -353,7 +353,7 @@ func ParseHTML(body []byte, pageURL string, responseHeaders http.Header) (*Parse
 			default:
 				assetType = "preload"
 			}
-		case rel == "preconnect" || rel == "dns-prefetch":
+		case hasRelToken(rel, "preconnect") || hasRelToken(rel, "dns-prefetch"):
 			return // skip, no URL to check
 		default:
 			return // skip other link types (canonical, alternate, etc.)

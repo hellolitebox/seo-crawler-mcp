@@ -10,25 +10,26 @@ import (
 // cleanPage returns a well-formed PageContext that should produce no error/warning issues.
 func cleanPage() PageContext {
 	return PageContext{
-		StatusCode:       200,
-		RedirectHopCount: 0,
-		TTFBMS:           500,
-		ContentType:      "text/html",
-		Title:            "A Good SEO Title That Is Just Right",
-		TitleLength:      36,
-		MetaDescription:  "This is a well-crafted meta description that provides enough detail for search engines.",
-		DescriptionLength: 88,
-		CanonicalType:    "self",
-		H1Count:          1,
-		OGTitle:          "OG Title",
-		OGDescription:    "OG Description",
-		OGImage:          "https://example.com/og.png",
-		JSONLDBlocks:     1,
-		WordCount:        500,
+		StatusCode:           200,
+		RedirectHopCount:     0,
+		TTFBMS:               500,
+		ContentType:          "text/html",
+		Title:                "A Good SEO Title That Is Just Right",
+		TitleLength:          36,
+		MetaDescription:      "This is a well-crafted meta description that provides enough detail for search engines.",
+		DescriptionLength:    88,
+		CanonicalType:        "self",
+		HasFavicon:           true,
+		H1Count:              1,
+		OGTitle:              "OG Title",
+		OGDescription:        "OG Description",
+		OGImage:              "https://example.com/og.png",
+		JSONLDBlocks:         1,
+		WordCount:            500,
 		MainContentWordCount: 400,
-		PageURL:          "https://example.com/page",
-		HeadTagCount:     1,
-		BodyTagCount:     1,
+		PageURL:              "https://example.com/page",
+		HeadTagCount:         1,
+		BodyTagCount:         1,
 		ResponseHeaders: map[string][]string{
 			"Strict-Transport-Security": {"max-age=31536000"},
 			"X-Content-Type-Options":    {"nosniff"},
@@ -227,6 +228,17 @@ func TestDetectPageLocalIssues(t *testing.T) {
 			wantTypes:  []string{"missing_canonical"},
 		},
 		{
+			name: "missing favicon",
+			ctx: func() PageContext {
+				p := cleanPage()
+				p.HasFavicon = false
+				return p
+			}(),
+			thresholds: defaultThresholds(),
+			depth:      1,
+			wantTypes:  []string{"missing_favicon"},
+		},
+		{
 			name: "no H1",
 			ctx: func() PageContext {
 				p := cleanPage()
@@ -351,7 +363,7 @@ func TestDetectPageLocalIssues(t *testing.T) {
 			wantTypes:  []string{"very_slow_response", "slow_response"},
 		},
 		{
-			name: "deep page (depth 5)",
+			name:       "deep page (depth 5)",
 			ctx:        cleanPage(),
 			thresholds: defaultThresholds(),
 			depth:      5,
@@ -650,9 +662,9 @@ func TestInternalNofollowOutlink(t *testing.T) {
 
 func TestDetectURLIssues(t *testing.T) {
 	tests := []struct {
-		name      string
-		url       string
-		wantTypes []string
+		name       string
+		url        string
+		wantTypes  []string
 		wantAbsent []string
 	}{
 		{
@@ -697,9 +709,9 @@ func TestDetectURLIssues(t *testing.T) {
 			wantTypes: []string{"url_repetitive_path"},
 		},
 		{
-			name:       "empty URL returns no issues",
-			url:        "",
-			wantTypes:  []string{},
+			name:      "empty URL returns no issues",
+			url:       "",
+			wantTypes: []string{},
 		},
 	}
 

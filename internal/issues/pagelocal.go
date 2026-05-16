@@ -30,36 +30,37 @@ type PageContext struct {
 	ContentType          string
 
 	// From parser
-	Title                string
-	TitleLength          int
-	MetaDescription      string
-	DescriptionLength    int
-	MetaRobots           string
-	XRobotsTag           string
-	CanonicalType        string // self, cross, absent
-	H1Count              int
-	OGTitle              string
-	OGDescription        string
-	OGImage              string
-	OGUrl                string
-	OGType               string
-	TwitterCard          string
-	TwitterTitle         string
-	TwitterDescription   string
-	TwitterImage         string
-	JSONLDBlocks         int
-	MalformedJSONLD      bool
-	JSONLDRaw            string
-	WordCount            int
-	MainContentWordCount int
-	ImagesWithoutAlt     int
-	ImagesWithEmptyAlt   int
-	MixedContent           bool
-	JSSuspect              bool
-	ScriptCount            int
-	HasSPARoot             bool
-	TitleOutsideHead       bool
-	MetaRobotsOutsideHead  bool
+	Title                 string
+	TitleLength           int
+	MetaDescription       string
+	DescriptionLength     int
+	MetaRobots            string
+	XRobotsTag            string
+	CanonicalType         string // self, cross, absent
+	HasFavicon            bool
+	H1Count               int
+	OGTitle               string
+	OGDescription         string
+	OGImage               string
+	OGUrl                 string
+	OGType                string
+	TwitterCard           string
+	TwitterTitle          string
+	TwitterDescription    string
+	TwitterImage          string
+	JSONLDBlocks          int
+	MalformedJSONLD       bool
+	JSONLDRaw             string
+	WordCount             int
+	MainContentWordCount  int
+	ImagesWithoutAlt      int
+	ImagesWithEmptyAlt    int
+	MixedContent          bool
+	JSSuspect             bool
+	ScriptCount           int
+	HasSPARoot            bool
+	TitleOutsideHead      bool
+	MetaRobotsOutsideHead bool
 
 	// Batch A: title/meta, headings, canonicals
 	H1s                        []string // all H1 texts
@@ -86,16 +87,16 @@ type PageContext struct {
 	PageURL string
 
 	// Medium-priority detectors
-	ResponseHeaders           map[string][]string // HTTP response headers
-	Hreflangs                 []parser.HreflangEntry
-	FormInsecureActions       []string
-	ProtocolRelativeCount     int
-	HreflangOutsideHead       bool
-	InvalidHTMLInHead         []string
-	HeadTagCount              int
-	BodyTagCount              int
-	BodySize                  int64 // response body size in bytes
-	TextContent               string // extracted visible text for content checks
+	ResponseHeaders       map[string][]string // HTTP response headers
+	Hreflangs             []parser.HreflangEntry
+	FormInsecureActions   []string
+	ProtocolRelativeCount int
+	HreflangOutsideHead   bool
+	InvalidHTMLInHead     []string
+	HeadTagCount          int
+	BodyTagCount          int
+	BodySize              int64  // response body size in bytes
+	TextContent           string // extracted visible text for content checks
 
 	// Edge data for unsafe cross-origin links
 	UnsafeCrossOriginCount    int
@@ -203,6 +204,11 @@ func DetectPageLocalIssues(ctx PageContext, thresholds Thresholds, depth int) []
 	// Canonical
 	if ctx.CanonicalType == "absent" {
 		issues = append(issues, newIssue("missing_canonical", "warning", map[string]any{}))
+	}
+
+	// Site metadata
+	if !ctx.HasFavicon {
+		issues = append(issues, newIssue("missing_favicon", "info", map[string]any{}))
 	}
 
 	// Headings
@@ -830,13 +836,13 @@ func getHeader(headers map[string][]string, key string) string {
 // isSecureReferrerPolicy checks if the referrer policy is a secure value.
 func isSecureReferrerPolicy(policy string) bool {
 	secure := map[string]bool{
-		"no-referrer":                   true,
-		"no-referrer-when-downgrade":    true,
-		"strict-origin":                 true,
+		"no-referrer":                     true,
+		"no-referrer-when-downgrade":      true,
+		"strict-origin":                   true,
 		"strict-origin-when-cross-origin": true,
-		"same-origin":                   true,
-		"origin":                        true,
-		"origin-when-cross-origin":      true,
+		"same-origin":                     true,
+		"origin":                          true,
+		"origin-when-cross-origin":        true,
 	}
 	return secure[strings.TrimSpace(strings.ToLower(policy))]
 }

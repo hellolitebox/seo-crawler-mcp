@@ -419,6 +419,7 @@ func TestAssetExtraction(t *testing.T) {
 <link rel="preload" href="/fonts/roboto.woff2" as="font">
 <link rel="preload" href="/js/chunk.js" as="script">
 <link rel="icon" href="/favicon.ico">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 </head>
 <body>
@@ -451,8 +452,8 @@ func TestAssetExtraction(t *testing.T) {
 	if counts["preload"] != 1 {
 		t.Errorf("preloads = %d, want 1", counts["preload"])
 	}
-	if counts["icon"] != 1 {
-		t.Errorf("icons = %d, want 1", counts["icon"])
+	if counts["icon"] != 2 {
+		t.Errorf("icons = %d, want 2", counts["icon"])
 	}
 	if counts["video"] != 1 {
 		t.Errorf("videos = %d, want 1", counts["video"])

@@ -1059,6 +1059,7 @@ func (e *Engine) processParseResult(
 		MetaRobots:                   page.MetaRobots,
 		XRobotsTag:                   page.XRobotsTag,
 		CanonicalType:                page.CanonicalType,
+		HasFavicon:                   hasFaviconAsset(page.Assets),
 		H1Count:                      len(page.Headings.H1),
 		OGTitle:                      page.OpenGraph.Title,
 		OGDescription:                page.OpenGraph.Description,
@@ -2949,6 +2950,15 @@ func countImagesWithEmptyAlt(images []parser.DiscoveredImage) int {
 		}
 	}
 	return count
+}
+
+func hasFaviconAsset(assets []parser.DiscoveredAsset) bool {
+	for _, asset := range assets {
+		if asset.Type == "icon" {
+			return true
+		}
+	}
+	return false
 }
 
 // recalculatePageLinkCounts refreshes stored graph counters after post-crawl

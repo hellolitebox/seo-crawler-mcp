@@ -54,6 +54,12 @@ var Explanations = map[string]IssueExplanation{
 		Impact:      "Without a canonical tag, search engines may split ranking signals across duplicate or similar URLs, diluting page authority.",
 		Fix:         "Add <link rel=\"canonical\" href=\"...\"> pointing to the preferred URL for this content.",
 	},
+	"missing_favicon": {
+		Title:       "Missing Favicon",
+		Description: "This page does not declare a favicon or app icon in the HTML head.",
+		Impact:      "A favicon improves brand recognition in browser tabs, bookmarks, search result surfaces, and crawled metadata displays.",
+		Fix:         "Add a favicon link such as <link rel=\"icon\" href=\"/favicon.ico\"> in the document head.",
+	},
 	"missing_h1": {
 		Title:       "Missing H1 Heading",
 		Description: "This page has no <h1> tag.",

@@ -22,6 +22,7 @@ var allKnownIssueTypes = []string{
 	"description_too_long",
 	"description_too_short",
 	"missing_canonical",
+	"missing_favicon",
 	"missing_h1",
 	"multiple_h1",
 	"missing_og_title",

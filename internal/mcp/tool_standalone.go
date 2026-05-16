@@ -138,6 +138,7 @@ func (s *Server) handleAnalyzeURL(ctx context.Context, req gomcp.CallToolRequest
 		MetaRobots:           parseResult.MetaRobots,
 		XRobotsTag:           parseResult.XRobotsTag,
 		CanonicalType:        parseResult.CanonicalType,
+		HasFavicon:           hasStandaloneFaviconAsset(parseResult.Assets),
 		H1Count:              len(parseResult.Headings.H1),
 		OGTitle:              parseResult.OpenGraph.Title,
 		OGDescription:        parseResult.OpenGraph.Description,
@@ -440,4 +441,13 @@ func marshalJSONLDBlocksForStandalone(blocks []parser.JSONLDBlock) string {
 		return ""
 	}
 	return string(raw)
+}
+
+func hasStandaloneFaviconAsset(assets []parser.DiscoveredAsset) bool {
+	for _, asset := range assets {
+		if asset.Type == "icon" {
+			return true
+		}
+	}
+	return false
 }
