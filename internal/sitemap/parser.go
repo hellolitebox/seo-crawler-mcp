@@ -109,13 +109,22 @@ func FetchAndParseContextWithUserAgent(ctx context.Context, sitemapURL string, m
 		}
 		visited[current] = true
 
-		data, err := fetchSitemapContent(ctx, current, client, userAgent)
+		data, finalURL, err := fetchSitemapContent(ctx, current, client, userAgent)
 		if err != nil {
 			if current == sitemapURL {
 				return entries, sitemapCount, err
 			}
 			slog.Warn("sitemap: skipping unreadable", "url", current, "err", err)
 			continue
+		}
+		if finalURL == "" {
+			finalURL = current
+		}
+		if finalURL != current {
+			if visited[finalURL] {
+				continue
+			}
+			visited[finalURL] = true
 		}
 
 		sitemapCount++
@@ -146,7 +155,7 @@ func FetchAndParseContextWithUserAgent(ctx context.Context, sitemapURL string, m
 		}
 
 		for i := range parsed {
-			parsed[i].SourceURL = current
+			parsed[i].SourceURL = finalURL
 		}
 		entries = append(entries, parsed...)
 	}
@@ -157,22 +166,26 @@ func FetchAndParseContextWithUserAgent(ctx context.Context, sitemapURL string, m
 // fetchSitemapContent fetches a URL and returns the raw body bytes,
 // handling gzip decompression when needed.
 
-func fetchSitemapContent(ctx context.Context, rawURL string, client *http.Client, userAgent string) ([]byte, error) {
+func fetchSitemapContent(ctx context.Context, rawURL string, client *http.Client, userAgent string) ([]byte, string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
-		return nil, fmt.Errorf("creating request for %q: %w", rawURL, err)
+		return nil, "", fmt.Errorf("creating request for %q: %w", rawURL, err)
 	}
 	if userAgent != "" {
 		req.Header.Set("User-Agent", userAgent)
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("fetching %q: %w", rawURL, err)
+		return nil, "", fmt.Errorf("fetching %q: %w", rawURL, err)
 	}
 	defer resp.Body.Close()
+	finalURL := rawURL
+	if resp.Request != nil && resp.Request.URL != nil {
+		finalURL = resp.Request.URL.String()
+	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("fetching %q: status %d", rawURL, resp.StatusCode)
+		return nil, finalURL, fmt.Errorf("fetching %q: status %d", rawURL, resp.StatusCode)
 	}
 
 	var reader io.Reader = io.LimitReader(resp.Body, maxBodySize)
@@ -180,11 +193,11 @@ func fetchSitemapContent(ctx context.Context, rawURL string, client *http.Client
 	// Go's HTTP transport auto-decompresses Content-Encoding: gzip and sets
 	// resp.Uncompressed=true. We only need manual decompression for .gz files
 	// served as raw bytes (no Content-Encoding header).
-	needsGunzip := strings.HasSuffix(rawURL, ".gz") && !resp.Uncompressed
+	needsGunzip := strings.HasSuffix(finalURL, ".gz") && !resp.Uncompressed
 	if needsGunzip {
 		gr, err := gzip.NewReader(reader)
 		if err != nil {
-			return nil, fmt.Errorf("creating gzip reader for %q: %w", rawURL, err)
+			return nil, finalURL, fmt.Errorf("creating gzip reader for %q: %w", rawURL, err)
 		}
 		defer gr.Close()
 		reader = io.LimitReader(gr, maxBodySize)
@@ -192,7 +205,7 @@ func fetchSitemapContent(ctx context.Context, rawURL string, client *http.Client
 
 	data, err := io.ReadAll(reader)
 	if err != nil {
-		return nil, fmt.Errorf("reading body from %q: %w", rawURL, err)
+		return nil, finalURL, fmt.Errorf("reading body from %q: %w", rawURL, err)
 	}
-	return data, nil
+	return data, finalURL, nil
 }

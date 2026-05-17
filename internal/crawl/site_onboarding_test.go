@@ -268,6 +268,57 @@ func TestOnboardHost_DiscoversSupplementalDocsSitemap(t *testing.T) {
 	}
 }
 
+func TestOnboardHost_DeduplicatesRedirectedSitemapSources(t *testing.T) {
+	var serverURL string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/robots.txt", func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprintf(w, "User-agent: *\nAllow: /\nSitemap: %s/sitemap-alias.xml\n", serverURL)
+	})
+	mux.HandleFunc("/sitemap-alias.xml", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/sitemap.xml", http.StatusMovedPermanently)
+	})
+	mux.HandleFunc("/sitemap.xml", func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprintf(w, `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>%s/page</loc></url>
+</urlset>`, serverURL)
+	})
+	mux.HandleFunc("/sitemap_index.xml", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(404)
+	})
+	mux.HandleFunc("/llms.txt", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(404)
+	})
+
+	ts := httptest.NewServer(mux)
+	serverURL = ts.URL
+	defer ts.Close()
+
+	db := setupDB(t, "job-redirected-sitemap")
+	f := setupFetcher()
+	onboarder := NewHostOnboarder(f, db, 1000, testUserAgent)
+
+	host := strings.TrimPrefix(ts.URL, "http://")
+	info, err := onboarder.OnboardHost(context.Background(), "job-redirected-sitemap", host, "http")
+	if err != nil {
+		t.Fatalf("OnboardHost failed: %v", err)
+	}
+	if len(info.SitemapEntries) != 1 {
+		t.Fatalf("expected one deduplicated sitemap entry, got %d", len(info.SitemapEntries))
+	}
+
+	var rowCount int
+	if err := db.QueryRow("SELECT COUNT(*) FROM sitemap_entries WHERE job_id = ?", "job-redirected-sitemap").Scan(&rowCount); err != nil {
+		t.Fatalf("counting sitemap entries: %v", err)
+	}
+	if rowCount != 1 {
+		t.Fatalf("stored sitemap entries = %d, want 1", rowCount)
+	}
+	if info.SitemapEntries[0].SourceURL != serverURL+"/sitemap.xml" {
+		t.Fatalf("SourceURL = %q, want final sitemap URL", info.SitemapEntries[0].SourceURL)
+	}
+}
+
 func TestOnboardHost_SendsUserAgentWhenFetchingSitemaps(t *testing.T) {
 	var serverURL string
 	mux := http.NewServeMux()

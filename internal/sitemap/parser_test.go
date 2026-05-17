@@ -316,6 +316,41 @@ func TestFetchAndParse_MaxEntriesCap(t *testing.T) {
 	}
 }
 
+func TestFetchAndParse_UsesFinalRedirectURLAsSource(t *testing.T) {
+	xml := `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://example.com/final</loc></url>
+</urlset>`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/alias.xml":
+			http.Redirect(w, r, "/sitemap.xml", http.StatusMovedPermanently)
+		case "/sitemap.xml":
+			w.Header().Set("Content-Type", "application/xml")
+			w.Write([]byte(xml))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	entries, count, err := sitemap.FetchAndParse(srv.URL+"/alias.xml", 1000, srv.Client())
+	if err != nil {
+		t.Fatalf("FetchAndParse() error: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("sitemapCount = %d, want 1", count)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("entries = %d, want 1", len(entries))
+	}
+	wantSource := srv.URL + "/sitemap.xml"
+	if entries[0].SourceURL != wantSource {
+		t.Fatalf("SourceURL = %q, want final URL %q", entries[0].SourceURL, wantSource)
+	}
+}
+
 func TestFetchAndParse_GzipSitemap(t *testing.T) {
 	xml := `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">

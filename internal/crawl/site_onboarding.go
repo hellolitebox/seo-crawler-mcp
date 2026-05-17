@@ -201,6 +201,7 @@ func (h *HostOnboarder) discoverSitemaps(ctx context.Context, jobID, host, schem
 	info.SitemapURLs = sitemapCandidates(host, scheme, info.SitemapURLs)
 
 	allEntries := make([]sitemap.Entry, 0)
+	seenSitemapSources := map[string]bool{}
 
 	for _, sitemapURL := range info.SitemapURLs {
 		if ctx.Err() != nil {
@@ -216,7 +217,23 @@ func (h *HostOnboarder) discoverSitemaps(ctx context.Context, jobID, host, schem
 			info.Events = append(info.Events, fmt.Sprintf("sitemap fetch/parse error for %q: %v", sitemapURL, err))
 			continue
 		}
-		allEntries = append(allEntries, entries...)
+		newEntries := entries[:0]
+		for _, entry := range entries {
+			source := entry.SourceURL
+			if source == "" {
+				source = sitemapURL
+			}
+			if seenSitemapSources[source] {
+				continue
+			}
+			newEntries = append(newEntries, entry)
+		}
+		for _, entry := range newEntries {
+			if entry.SourceURL != "" {
+				seenSitemapSources[entry.SourceURL] = true
+			}
+		}
+		allEntries = append(allEntries, newEntries...)
 		if len(allEntries) >= h.sitemapMax {
 			break
 		}
