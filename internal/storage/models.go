@@ -168,6 +168,26 @@ type LlmsFinding struct {
 	ReferencedURLsJSON sql.NullString `json:"referencedUrlsJson,omitempty"`
 }
 
+// AgentReadinessCheck represents one site-level agent-readiness audit result.
+type AgentReadinessCheck struct {
+	ID                  int64          `json:"id"`
+	JobID               string         `json:"jobId"`
+	Category            string         `json:"category"`
+	CheckKey            string         `json:"checkKey"`
+	Status              string         `json:"status"`
+	Score               int64          `json:"score"`
+	TargetURL           string         `json:"targetUrl"`
+	Endpoint            string         `json:"endpoint"`
+	Method              string         `json:"method"`
+	RequestHeadersJSON  sql.NullString `json:"requestHeadersJson,omitempty"`
+	ResponseStatus      sql.NullInt64  `json:"responseStatus,omitempty"`
+	ResponseHeadersJSON sql.NullString `json:"responseHeadersJson,omitempty"`
+	EvidenceJSON        string         `json:"evidenceJson"`
+	Recommendation      sql.NullString `json:"recommendation,omitempty"`
+	ResourcesJSON       string         `json:"resourcesJson"`
+	CheckedAt           string         `json:"checkedAt"`
+}
+
 // Asset represents an external resource (CSS, JS, image, font).
 type Asset struct {
 	ID              int64          `json:"id"`

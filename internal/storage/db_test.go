@@ -19,6 +19,7 @@ var expectedTables = []string{
 	"sitemap_entries",
 	"robots_directives",
 	"llms_findings",
+	"agent_readiness_checks",
 	"assets",
 	"asset_references",
 	"issues",

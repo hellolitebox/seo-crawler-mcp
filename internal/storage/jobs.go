@@ -227,6 +227,7 @@ var purgeTables = []string{
 	"axe_audits",
 	"crawl_events",
 	"global_issues",
+	"agent_readiness_checks",
 	"llms_findings",
 	"markdown_negotiation",
 	"psi_audits",

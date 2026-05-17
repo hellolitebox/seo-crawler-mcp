@@ -36,6 +36,7 @@ func loadReportExtras(ctx context.Context, db *storage.DB, jobID string) map[str
 		"psi_audits":           []any{},
 		"axe_audits":           []any{},
 		"security":             []any{},
+		"agent_readiness":      []any{},
 		"markdown_negotiation": []any{},
 		"url_clusters":         []any{},
 		"url_variant_issues":   []any{},
@@ -100,6 +101,11 @@ func loadReportExtras(ctx context.Context, db *storage.DB, jobID string) map[str
 		log.Printf("report_extras: security: %v", err)
 	} else {
 		out["security"] = v
+	}
+	if v, err := loadAgentReadiness(ctx, db, jobID); err != nil {
+		log.Printf("report_extras: agent_readiness: %v", err)
+	} else {
+		out["agent_readiness"] = v
 	}
 	if clusters, issues, err := loadURLClusters(ctx, db, jobID); err != nil {
 		log.Printf("report_extras: url_clusters: %v", err)
@@ -200,6 +206,61 @@ func loadRobotsDirectives(ctx context.Context, db *storage.DB, jobID string) ([]
 			"rule_type":    rt,
 			"path_pattern": pp,
 			"source_url":   srcURL,
+		})
+	}
+	return out, rows.Err()
+}
+
+func loadAgentReadiness(ctx context.Context, db *storage.DB, jobID string) ([]map[string]any, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT id, job_id, category, check_key, status, score, target_url,
+		       endpoint, method, request_headers_json, response_status,
+		       response_headers_json, evidence_json, recommendation,
+		       resources_json, checked_at
+		FROM agent_readiness_checks
+		WHERE job_id = ?
+		ORDER BY category ASC, check_key ASC, target_url ASC
+		LIMIT ?`, jobID, reportExtrasLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []map[string]any{}
+	for rows.Next() {
+		var (
+			id                                              int64
+			score                                           int64
+			jid, category, checkKey, status, targetURL      string
+			endpoint, method, evidenceJSON, resourcesJSON   string
+			checkedAt                                       string
+			requestHeaders, responseHeaders, recommendation sql.NullString
+			responseStatus                                  sql.NullInt64
+		)
+		if err := rows.Scan(
+			&id, &jid, &category, &checkKey, &status, &score, &targetURL,
+			&endpoint, &method, &requestHeaders, &responseStatus,
+			&responseHeaders, &evidenceJSON, &recommendation, &resourcesJSON, &checkedAt,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, map[string]any{
+			"id":                    id,
+			"job_id":                jid,
+			"category":              category,
+			"check_key":             checkKey,
+			"status":                status,
+			"score":                 score,
+			"target_url":            targetURL,
+			"endpoint":              endpoint,
+			"method":                method,
+			"request_headers_json":  nullString(requestHeaders),
+			"response_status":       nullInt64(responseStatus),
+			"response_headers_json": nullString(responseHeaders),
+			"evidence_json":         evidenceJSON,
+			"recommendation":        nullString(recommendation),
+			"resources_json":        resourcesJSON,
+			"checked_at":            checkedAt,
 		})
 	}
 	return out, rows.Err()

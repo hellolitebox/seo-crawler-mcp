@@ -72,6 +72,7 @@ func (s *Server) handleJobPageBundle(w http.ResponseWriter, r *http.Request, job
 	responseCodes := loadPageResponseCodes(ctx, s.db, jobID, urlRow.ID)
 	security := loadPageSecurityHeaders(ctx, s.db, jobID, urlRow.ID)
 	mdNeg := loadPageMarkdownNegotiation(ctx, s.db, jobID, urlRow.NormalizedURL)
+	agentReadiness := loadPageAgentReadiness(ctx, s.db, jobID, urlRow.Host, urlRow.NormalizedURL)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"url":                  urlRow.NormalizedURL,
@@ -90,7 +91,49 @@ func (s *Server) handleJobPageBundle(w http.ResponseWriter, r *http.Request, job
 		"response_codes":       responseCodes,
 		"security":             security,
 		"markdown_negotiation": mdNeg,
+		"agent_readiness":      agentReadiness,
 	})
+}
+
+func loadPageAgentReadiness(ctx context.Context, db *storage.DB, jobID, host, pageURL string) []map[string]any {
+	rows, err := db.QueryContext(ctx, `
+		SELECT id, category, check_key, status, score, target_url, endpoint,
+		       evidence_json, recommendation, resources_json
+		FROM agent_readiness_checks
+		WHERE job_id = ? AND (target_url LIKE ? OR target_url = ?)
+		ORDER BY category ASC, check_key ASC
+		LIMIT 100`, jobID, "%"+host+"%", pageURL)
+	if err != nil {
+		return []map[string]any{}
+	}
+	defer rows.Close()
+
+	out := []map[string]any{}
+	for rows.Next() {
+		var (
+			id                                              int64
+			score                                           int64
+			category, checkKey, status, targetURL, endpoint string
+			evidenceJSON, resourcesJSON                     string
+			recommendation                                  sql.NullString
+		)
+		if err := rows.Scan(&id, &category, &checkKey, &status, &score, &targetURL, &endpoint, &evidenceJSON, &recommendation, &resourcesJSON); err != nil {
+			return []map[string]any{}
+		}
+		out = append(out, map[string]any{
+			"id":             id,
+			"category":       category,
+			"check_key":      checkKey,
+			"status":         status,
+			"score":          score,
+			"target_url":     targetURL,
+			"endpoint":       endpoint,
+			"evidence_json":  evidenceJSON,
+			"recommendation": nullString(recommendation),
+			"resources_json": resourcesJSON,
+		})
+	}
+	return out
 }
 
 // loadPageMarkdownNegotiation pulls the per-page entry from the

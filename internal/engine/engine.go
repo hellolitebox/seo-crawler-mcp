@@ -18,6 +18,7 @@ import (
 
 	"net/http"
 
+	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/agentreadiness"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/config"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/crawl"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/fetcher"
@@ -1100,6 +1101,12 @@ func (e *Engine) runPostCrawlPhases(ctx context.Context, jobID string, counters 
 	e.emitPhase(jobID, "markdown_negotiation", "checking which pages support text/markdown")
 	e.checkMarkdownNegotiation(ctx, jobID)
 
+	// Agent-readiness discovery checks.
+	e.emitPhase(jobID, "agent_readiness", "checking agent discovery and protocol metadata")
+	if err := e.runAgentReadinessChecks(ctx, jobID); err != nil {
+		slog.Warn("engine: agent readiness checks failed", "err", err, "job_id", jobID)
+	}
+
 	// Text quality via LanguageTool.
 	if e.config.LanguageToolURL != "" {
 		e.runTextQualityChecks(ctx, jobID)
@@ -1142,6 +1149,27 @@ func (e *Engine) runPostCrawlPhases(ctx context.Context, jobID string, counters 
 	if scanErr := e.db.QueryRow(`SELECT COUNT(*) FROM issues WHERE job_id = ?`, jobID).Scan(&actual); scanErr == nil {
 		counters.issuesFound.Store(int64(actual))
 	}
+}
+
+func (e *Engine) runAgentReadinessChecks(ctx context.Context, jobID string) error {
+	job, err := e.db.GetJob(jobID)
+	if err != nil {
+		return fmt.Errorf("loading job seed URLs: %w", err)
+	}
+	var seedURLs []string
+	if err := json.Unmarshal([]byte(job.SeedURLs), &seedURLs); err != nil {
+		return fmt.Errorf("parsing job seed URLs: %w", err)
+	}
+	userAgent := ""
+	if e.config != nil {
+		userAgent = e.config.UserAgent
+	}
+	runner := &agentreadiness.Runner{
+		Fetcher:   e.fetcher,
+		DB:        e.db,
+		UserAgent: userAgent,
+	}
+	return runner.Run(ctx, jobID, seedURLs)
 }
 
 func (e *Engine) auditHTTPToHTTPSRedirects(ctx context.Context, jobID string) {
