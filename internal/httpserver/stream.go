@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/storage"
@@ -51,7 +52,7 @@ func newStreamSession(w http.ResponseWriter, r *http.Request, db *storage.DB, jo
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
 
-	return &streamSession{
+	session := &streamSession{
 		w:                w,
 		flusher:          flusher,
 		ctx:              r.Context(),
@@ -60,6 +61,13 @@ func newStreamSession(w http.ResponseWriter, r *http.Request, db *storage.DB, jo
 		urlsCountStale:   true,
 		issuesCountStale: true,
 	}
+	if sinceFetchID, err := strconv.ParseInt(r.URL.Query().Get("sinceFetchId"), 10, 64); err == nil && sinceFetchID > 0 {
+		session.lastFetchID = sinceFetchID
+	}
+	if sinceEventID, err := strconv.ParseInt(r.URL.Query().Get("sinceEventId"), 10, 64); err == nil && sinceEventID > 0 {
+		session.lastEventID = sinceEventID
+	}
+	return session
 }
 
 // send writes a single SSE event. Returns false if the underlying writer fails
@@ -201,6 +209,7 @@ func (s *streamSession) sendActivityDelta() {
 		for _, f := range fetches {
 			row := map[string]any{
 				"kind":       "fetch",
+				"id":         f.ID,
 				"url":        f.URL,
 				"statusCode": f.StatusCode,
 				"ttfbMs":     f.TTFBMs,
@@ -224,6 +233,7 @@ func (s *streamSession) sendActivityDelta() {
 		for _, ev := range events {
 			row := map[string]any{
 				"kind":      "phase",
+				"id":        ev.ID,
 				"fetchedAt": ev.Timestamp,
 			}
 			if ev.DetailsJSON.Valid {

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -714,7 +715,7 @@ func (s *Server) handleJobActivity(w http.ResponseWriter, r *http.Request, jobID
 	}
 
 	rows, err := s.db.Query(`
-		SELECT u.normalized_url, f.status_code, f.ttfb_ms, f.fetched_at, f.render_mode, f.error
+		SELECT f.id, u.normalized_url, f.status_code, f.ttfb_ms, f.fetched_at, f.render_mode, f.error
 		FROM fetches f
 		JOIN urls u ON u.id = f.requested_url_id
 		WHERE f.job_id = ?
@@ -729,6 +730,7 @@ func (s *Server) handleJobActivity(w http.ResponseWriter, r *http.Request, jobID
 
 	type activityRow struct {
 		Kind       string  `json:"kind"`
+		ID         int64   `json:"id,omitempty"`
 		URL        string  `json:"url,omitempty"`
 		StatusCode int     `json:"statusCode,omitempty"`
 		TTFBMs     int64   `json:"ttfbMs,omitempty"`
@@ -740,12 +742,14 @@ func (s *Server) handleJobActivity(w http.ResponseWriter, r *http.Request, jobID
 	}
 
 	out := []activityRow{}
+	var latestFetchID int64
+	var latestEventID int64
 	for rows.Next() {
 		var ar activityRow
 		ar.Kind = "fetch"
 		var errStr sql.NullString
 		var renderMode sql.NullString
-		if scanErr := rows.Scan(&ar.URL, &ar.StatusCode, &ar.TTFBMs, &ar.FetchedAt, &renderMode, &errStr); scanErr != nil {
+		if scanErr := rows.Scan(&ar.ID, &ar.URL, &ar.StatusCode, &ar.TTFBMs, &ar.FetchedAt, &renderMode, &errStr); scanErr != nil {
 			continue
 		}
 		if errStr.Valid {
@@ -755,26 +759,33 @@ func (s *Server) handleJobActivity(w http.ResponseWriter, r *http.Request, jobID
 		if renderMode.Valid {
 			ar.RenderMode = renderMode.String
 		}
+		if ar.ID > latestFetchID {
+			latestFetchID = ar.ID
+		}
 		out = append(out, ar)
 	}
 
 	// Also include phase events (post-crawl markers so the log doesn't look stuck)
 	eventRows, eventErr := s.db.Query(`
-		SELECT timestamp, details_json
+		SELECT id, timestamp, details_json
 		FROM crawl_events
 		WHERE job_id = ? AND event_type = 'phase'
 		ORDER BY id DESC
-		LIMIT 30
-	`, jobID)
+		LIMIT ?
+	`, jobID, limit)
 	if eventErr == nil {
 		defer eventRows.Close()
 		for eventRows.Next() {
+			var id int64
 			var ts string
 			var detailsJSON sql.NullString
-			if scanErr := eventRows.Scan(&ts, &detailsJSON); scanErr != nil {
+			if scanErr := eventRows.Scan(&id, &ts, &detailsJSON); scanErr != nil {
 				continue
 			}
-			row := activityRow{Kind: "phase", FetchedAt: ts}
+			row := activityRow{Kind: "phase", ID: id, FetchedAt: ts}
+			if row.ID > latestEventID {
+				latestEventID = row.ID
+			}
 			if detailsJSON.Valid {
 				var d struct {
 					Phase   string `json:"phase"`
@@ -787,9 +798,23 @@ func (s *Server) handleJobActivity(w http.ResponseWriter, r *http.Request, jobID
 			out = append(out, row)
 		}
 	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].FetchedAt == out[j].FetchedAt {
+			if out[i].Kind == out[j].Kind {
+				return out[i].ID > out[j].ID
+			}
+			return out[i].Kind < out[j].Kind
+		}
+		return out[i].FetchedAt > out[j].FetchedAt
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"activity": out,
+		"activity":      out,
+		"latestFetchId": latestFetchID,
+		"latestEventId": latestEventID,
 	})
 }
 

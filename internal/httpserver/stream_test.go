@@ -196,6 +196,21 @@ func TestStream_ActivityIncludesPhaseEvents(t *testing.T) {
 	}
 }
 
+func TestNewStreamSession_RespectsActivityWatermarks(t *testing.T) {
+	srvObj, _ := newTestServer(t)
+	seedJob(t, srvObj.db, "stream-watermark", "https://example.com", "running")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/jobs/stream-watermark/stream?sinceFetchId=123&sinceEventId=45", nil)
+	rr := httptest.NewRecorder()
+	session := newStreamSession(rr, req, srvObj.db, "stream-watermark")
+	if session == nil {
+		t.Fatal("expected stream session")
+	}
+	if session.lastFetchID != 123 || session.lastEventID != 45 {
+		t.Fatalf("expected watermarks fetch=123 event=45, got fetch=%d event=%d", session.lastFetchID, session.lastEventID)
+	}
+}
+
 func TestStream_PerIPCap(t *testing.T) {
 	s := &Server{streamCount: map[string]int{}}
 

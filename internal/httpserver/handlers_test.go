@@ -790,6 +790,99 @@ func TestJobActivity_Empty(t *testing.T) {
 	}
 }
 
+func TestJobActivity_MergesSortsAndTrims(t *testing.T) {
+	srv, h := newTestServer(t)
+	seedJob(t, srv.db, "job-act-order", "https://example.com", "running")
+
+	insertURL := func(raw string) int64 {
+		res, err := srv.db.Exec(`
+			INSERT INTO urls (job_id, normalized_url, host, status, is_internal, discovered_via)
+			VALUES ('job-act-order', ?, 'example.com', 'fetched', 1, 'test')
+		`, raw)
+		if err != nil {
+			t.Fatalf("inserting url %s: %v", raw, err)
+		}
+		id, err := res.LastInsertId()
+		if err != nil {
+			t.Fatalf("getting url id: %v", err)
+		}
+		return id
+	}
+
+	urlID1 := insertURL("https://example.com/old")
+	fetchID1, err := srv.db.InsertFetch(storage.FetchInput{
+		JobID:          "job-act-order",
+		FetchSeq:       1,
+		RequestedURLID: urlID1,
+		StatusCode:     200,
+		TTFBMs:         40,
+	})
+	if err != nil {
+		t.Fatalf("inserting older fetch: %v", err)
+	}
+	if _, err := srv.db.Exec(`UPDATE fetches SET fetched_at = '2026-05-17T10:00:00.000Z' WHERE id = ?`, fetchID1); err != nil {
+		t.Fatalf("dating older fetch: %v", err)
+	}
+
+	urlID2 := insertURL("https://example.com/new")
+	fetchID2, err := srv.db.InsertFetch(storage.FetchInput{
+		JobID:          "job-act-order",
+		FetchSeq:       2,
+		RequestedURLID: urlID2,
+		StatusCode:     204,
+		TTFBMs:         20,
+	})
+	if err != nil {
+		t.Fatalf("inserting newer fetch: %v", err)
+	}
+	if _, err := srv.db.Exec(`UPDATE fetches SET fetched_at = '2026-05-17T10:02:00.000Z' WHERE id = ?`, fetchID2); err != nil {
+		t.Fatalf("dating newer fetch: %v", err)
+	}
+
+	details := `{"phase":"asset_checks","message":"Checking assets"}`
+	eventID, err := srv.db.InsertEvent("job-act-order", "phase", &details, nil)
+	if err != nil {
+		t.Fatalf("inserting phase: %v", err)
+	}
+	if _, err := srv.db.Exec(`UPDATE crawl_events SET timestamp = '2026-05-17T10:03:00.000Z' WHERE id = ?`, eventID); err != nil {
+		t.Fatalf("dating phase: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/jobs/job-act-order/activity?limit=2", nil)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body=%s", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		Activity []struct {
+			Kind      string `json:"kind"`
+			ID        int64  `json:"id"`
+			URL       string `json:"url"`
+			FetchedAt string `json:"fetchedAt"`
+			Phase     string `json:"phase"`
+		} `json:"activity"`
+		LatestFetchID int64 `json:"latestFetchId"`
+		LatestEventID int64 `json:"latestEventId"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if len(resp.Activity) != 2 {
+		t.Fatalf("expected 2 activity rows, got %d: %+v", len(resp.Activity), resp.Activity)
+	}
+	if resp.Activity[0].Kind != "phase" || resp.Activity[0].ID != eventID || resp.Activity[0].Phase != "asset_checks" {
+		t.Fatalf("expected newest phase first, got %+v", resp.Activity[0])
+	}
+	if resp.Activity[1].Kind != "fetch" || resp.Activity[1].ID != fetchID2 || resp.Activity[1].URL != "https://example.com/new" {
+		t.Fatalf("expected newest fetch second, got %+v", resp.Activity[1])
+	}
+	if resp.LatestFetchID != fetchID2 || resp.LatestEventID != eventID {
+		t.Fatalf("expected latest watermarks fetch=%d event=%d, got fetch=%d event=%d", fetchID2, eventID, resp.LatestFetchID, resp.LatestEventID)
+	}
+}
+
 func TestCORS_AllowedOrigin(t *testing.T) {
 	_, h := newTestServer(t)
 
