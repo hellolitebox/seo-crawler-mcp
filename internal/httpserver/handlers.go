@@ -1072,9 +1072,9 @@ func sitemapURLLookupKeys(raw string) []string {
 	keySet := map[string]bool{}
 	trimmed := strings.TrimSpace(raw)
 	if trimmed != "" {
-		keySet[trimmed] = true
+		addSitemapURLLookupKey(keySet, trimmed)
 		if pageKey, err := urlutil.PageIdentityKey(trimmed); err == nil && pageKey != "" {
-			keySet[pageKey] = true
+			addSitemapURLLookupKey(keySet, pageKey)
 		}
 	}
 	keys := make([]string, 0, len(keySet))
@@ -1082,6 +1082,21 @@ func sitemapURLLookupKeys(raw string) []string {
 		keys = append(keys, key)
 	}
 	return keys
+}
+
+func addSitemapURLLookupKey(keySet map[string]bool, key string) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return
+	}
+	keySet[key] = true
+	lower := strings.ToLower(key)
+	switch {
+	case strings.HasPrefix(lower, "https://"):
+		keySet[lower[len("https://"):]] = true
+	case strings.HasPrefix(lower, "http://"):
+		keySet[lower[len("http://"):]] = true
+	}
 }
 
 // handleJobActivity returns recent fetch activity for a job (live log feed).

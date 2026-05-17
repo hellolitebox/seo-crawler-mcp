@@ -552,6 +552,11 @@ func TestGetCrawlSummary(t *testing.T) {
 	); err != nil {
 		t.Fatalf("inserting sitemap entry 2: %v", err)
 	}
+	if _, err := db.Exec(`INSERT INTO sitemap_entries (job_id, url, source_sitemap_url, source_host) VALUES (?, ?, ?, ?)`,
+		jobID, "http://www.example.com/page-3/", "https://example.com/sitemap.xml", "example.com",
+	); err != nil {
+		t.Fatalf("inserting sitemap entry 3: %v", err)
+	}
 
 	summary, err := db.GetCrawlSummary(jobID)
 	if err != nil {
@@ -589,8 +594,8 @@ func TestGetCrawlSummary(t *testing.T) {
 	if summary.PagesWithIssues != 4 {
 		t.Errorf("PagesWithIssues: expected 4, got %d", summary.PagesWithIssues)
 	}
-	if summary.PagesInSitemap != 2 {
-		t.Errorf("PagesInSitemap: expected 2, got %d", summary.PagesInSitemap)
+	if summary.PagesInSitemap != 3 {
+		t.Errorf("PagesInSitemap: expected 3, got %d", summary.PagesInSitemap)
 	}
 
 	// Status code distribution: 200 x3, 301 x1, 404 x1
@@ -689,6 +694,14 @@ func TestQuerySitemapEntriesOffsetDeduplicatesURLRows(t *testing.T) {
 			t.Fatalf("InsertSitemapEntry(%q): %v", source, err)
 		}
 	}
+	if _, err := db.InsertSitemapEntry(SitemapEntryInput{
+		JobID:            jobID,
+		URL:              "http://www.example.com/page-1/",
+		SourceSitemapURL: "http://www.example.com/sitemap.xml",
+		SourceHost:       "example.com",
+	}); err != nil {
+		t.Fatalf("InsertSitemapEntry(variant): %v", err)
+	}
 
 	result, err := db.QuerySitemapEntriesOffset(jobID, QueryFilter{}, 100, 0)
 	if err != nil {
@@ -702,6 +715,9 @@ func TestQuerySitemapEntriesOffsetDeduplicatesURLRows(t *testing.T) {
 	}
 	if result.Results[0].URL != "https://example.com/page-1" {
 		t.Fatalf("URL = %q", result.Results[0].URL)
+	}
+	if result.Results[0].ReconciliationStatus != "in_crawl" {
+		t.Fatalf("ReconciliationStatus = %q, want in_crawl", result.Results[0].ReconciliationStatus)
 	}
 }
 

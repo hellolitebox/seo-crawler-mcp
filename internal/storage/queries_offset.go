@@ -110,12 +110,14 @@ func (db *DB) QueryPagesOffset(
 		p.text_preview,
 		p.js_suspect, p.url_group, p.outbound_edge_count, p.inbound_edge_count,
 		p.inbound_linking_pages`
+	sitemapMatchSort := "EXISTS (SELECT 1 FROM sitemap_entries se WHERE se.job_id = p.job_id AND " +
+		SitemapComparableURLSQL("se.url") + " = " + SitemapComparableURLSQL("u.normalized_url") + ")"
 
 	pageSorts := map[string]string{
 		"url":      "u.normalized_url",
 		"title":    "p.title",
 		"status":   "f.status_code",
-		"sitemap":  "EXISTS (SELECT 1 FROM sitemap_entries se WHERE se.job_id = p.job_id AND se.url = u.normalized_url)",
+		"sitemap":  sitemapMatchSort,
 		"depth":    "p.depth",
 		"words":    "p.word_count",
 		"issues":   "(SELECT COUNT(*) FROM issues i WHERE i.job_id = p.job_id AND i.url_id = p.url_id)",
@@ -436,39 +438,48 @@ func (db *DB) QuerySitemapEntriesOffset(
 ) (*PagedResult[SitemapEntry], error) {
 	var filterClause strings.Builder
 	filterArgs := []any{}
+	sitemapKeyExpr := SitemapComparableURLSQL("s.url")
+	sitemapMatchExpr := "EXISTS (SELECT 1 FROM pages p JOIN urls u ON u.id = p.url_id " +
+		"WHERE p.job_id = s.job_id AND " + sitemapKeyExpr + " = " + SitemapComparableURLSQL("u.normalized_url") + ")"
 	if filter.URLPattern != "" {
 		filterClause.WriteString(" AND (s.url LIKE ? OR s.source_sitemap_url LIKE ?)")
 		like := "%" + filter.URLPattern + "%"
 		filterArgs = append(filterArgs, like, like)
 	}
 	if filter.StatusCodeFamily != "" {
-		filterClause.WriteString(" AND s.reconciliation_status = ?")
-		filterArgs = append(filterArgs, filter.StatusCodeFamily)
+		if filter.StatusCodeFamily == "matched" || filter.StatusCodeFamily == "in_crawl" {
+			filterClause.WriteString(" AND " + sitemapMatchExpr)
+		} else if filter.StatusCodeFamily == "not_in_crawl" || filter.StatusCodeFamily == "orphan" {
+			filterClause.WriteString(" AND NOT " + sitemapMatchExpr)
+		} else {
+			filterClause.WriteString(" AND s.reconciliation_status = ?")
+			filterArgs = append(filterArgs, filter.StatusCodeFamily)
+		}
 	}
 
 	countArgs := append([]any{jobID}, filterArgs...)
-	countSQL := "SELECT COUNT(DISTINCT s.url) FROM sitemap_entries s WHERE s.job_id = ?" + filterClause.String()
+	countSQL := "SELECT COUNT(DISTINCT " + sitemapKeyExpr + ") FROM sitemap_entries s WHERE s.job_id = ?" + filterClause.String()
 	var totalCount int
 	if err := db.QueryRow(countSQL, countArgs...).Scan(&totalCount); err != nil {
 		return nil, fmt.Errorf("counting sitemap entries for job %q: %w", jobID, err)
 	}
 	sitemapSorts := map[string]string{
-		"url":      "s.url",
+		"url":      "MAX(s.url)",
 		"source":   "MAX(s.source_sitemap_url)",
 		"lastmod":  "MAX(s.lastmod)",
 		"priority": "MAX(s.priority)",
-		"status":   "MAX(s.reconciliation_status)",
+		"status":   sitemapMatchExpr,
 	}
 	selectSQL := `
-		SELECT MIN(s.id), s.job_id, s.url, MAX(s.source_sitemap_url), MAX(s.source_host),
+		SELECT MIN(s.id), s.job_id, MAX(s.url), MAX(s.source_sitemap_url), MAX(s.source_host),
 		       MAX(s.lastmod), MAX(s.changefreq), MAX(s.priority),
 		       CASE
-		         WHEN COALESCE(SUM(CASE WHEN s.reconciliation_status IN ('in_crawl', 'matched') THEN 1 ELSE 0 END), 0) > 0 THEN 'in_crawl'
-		         WHEN COALESCE(SUM(CASE WHEN s.reconciliation_status IN ('not_in_crawl', 'orphan') THEN 1 ELSE 0 END), 0) > 0 THEN 'not_in_crawl'
+		         WHEN ` + sitemapMatchExpr + ` THEN 'in_crawl'
+		         WHEN NOT ` + sitemapMatchExpr + ` THEN 'not_in_crawl'
 		         ELSE MAX(s.reconciliation_status)
 		       END AS reconciliation_status
 		FROM sitemap_entries s WHERE s.job_id = ?` + filterClause.String() +
-		" GROUP BY s.job_id, s.url" +
+		" GROUP BY s.job_id, " + sitemapKeyExpr +
 		orderClause(filter.SortBy, filter.SortDir, sitemapSorts, "MIN(s.id)") + ", MIN(s.id) ASC LIMIT ? OFFSET ?"
 	queryArgs := append(append([]any{jobID}, filterArgs...), limit, offset)
 	rows, err := db.Query(selectSQL, queryArgs...)

@@ -201,22 +201,25 @@ func loadSitemapEntries(ctx context.Context, db *storage.DB, jobID string) ([]ma
 
 func loadSitemapSummary(ctx context.Context, db *storage.DB, jobID string) (map[string]any, error) {
 	var total, inCrawl, notInCrawl int
+	sitemapKeyExpr := storage.SitemapComparableURLSQL("s.url")
+	sitemapMatchExpr := "EXISTS (SELECT 1 FROM pages p JOIN urls u ON u.id = p.url_id " +
+		"WHERE p.job_id = s.job_id AND " + sitemapKeyExpr + " = " + storage.SitemapComparableURLSQL("u.normalized_url") + ")"
 	if err := db.QueryRowContext(ctx, `
-		SELECT COUNT(DISTINCT url),
-		       COUNT(DISTINCT CASE WHEN reconciliation_status IN ('in_crawl', 'matched') THEN url END),
-		       COUNT(DISTINCT CASE WHEN reconciliation_status IN ('not_in_crawl', 'orphan') THEN url END)
-		FROM sitemap_entries WHERE job_id = ?`, jobID).Scan(&total, &inCrawl, &notInCrawl); err != nil {
+		SELECT COUNT(DISTINCT `+sitemapKeyExpr+`),
+		       COUNT(DISTINCT CASE WHEN `+sitemapMatchExpr+` THEN `+sitemapKeyExpr+` END),
+		       COUNT(DISTINCT CASE WHEN NOT `+sitemapMatchExpr+` THEN `+sitemapKeyExpr+` END)
+		FROM sitemap_entries s WHERE s.job_id = ?`, jobID).Scan(&total, &inCrawl, &notInCrawl); err != nil {
 		return nil, err
 	}
 
 	rows, err := db.QueryContext(ctx, `
 		SELECT source_sitemap_url,
-		       COUNT(*) AS entries,
-		       COALESCE(SUM(CASE WHEN reconciliation_status IN ('in_crawl', 'matched') THEN 1 ELSE 0 END), 0) AS in_crawl,
-		       COALESCE(SUM(CASE WHEN reconciliation_status IN ('not_in_crawl', 'orphan') THEN 1 ELSE 0 END), 0) AS not_in_crawl,
+		       COUNT(DISTINCT `+sitemapKeyExpr+`) AS entries,
+		       COUNT(DISTINCT CASE WHEN `+sitemapMatchExpr+` THEN `+sitemapKeyExpr+` END) AS in_crawl,
+		       COUNT(DISTINCT CASE WHEN NOT `+sitemapMatchExpr+` THEN `+sitemapKeyExpr+` END) AS not_in_crawl,
 		       MAX(lastmod) AS latest_lastmod
-		FROM sitemap_entries
-		WHERE job_id = ?
+		FROM sitemap_entries s
+		WHERE s.job_id = ?
 		GROUP BY source_sitemap_url
 		ORDER BY source_sitemap_url ASC`, jobID)
 	if err != nil {

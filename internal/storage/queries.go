@@ -79,6 +79,18 @@ type TopIssue struct {
 // thinContentThreshold is the word count below which a page is "thin".
 const thinContentThreshold = 200
 
+// SitemapComparableURLSQL returns a SQLite expression for matching crawled
+// pages to sitemap declarations across common redirect variants.
+func SitemapComparableURLSQL(expr string) string {
+	return fmt.Sprintf(`rtrim(CASE
+		WHEN lower(%[1]s) LIKE 'https://www.%%' THEN substr(lower(%[1]s), 13)
+		WHEN lower(%[1]s) LIKE 'http://www.%%' THEN substr(lower(%[1]s), 12)
+		WHEN lower(%[1]s) LIKE 'https://%%' THEN substr(lower(%[1]s), 9)
+		WHEN lower(%[1]s) LIKE 'http://%%' THEN substr(lower(%[1]s), 8)
+		ELSE lower(%[1]s)
+	END, '/')`, expr)
+}
+
 // encodeCursor encodes an ID as a base64 cursor string.
 func encodeCursor(id int64) string {
 	return base64.StdEncoding.EncodeToString([]byte(strconv.FormatInt(id, 10)))
@@ -834,13 +846,17 @@ func (db *DB) GetCrawlSummary(jobID string) (*CrawlSummary, error) {
 	}
 
 	// Pages in sitemap, counted across the full page inventory.
-	err = db.QueryRow(`
+	pageSitemapSQL := fmt.Sprintf(`
 		SELECT COUNT(DISTINCT p.id)
 		FROM pages p
 		JOIN urls u ON u.id = p.url_id
 		JOIN sitemap_entries se ON se.job_id = p.job_id
 		WHERE p.job_id = ?
-		  AND (se.url = u.normalized_url OR rtrim(se.url, '/') = rtrim(u.normalized_url, '/'))`,
+		  AND %s = %s`,
+		SitemapComparableURLSQL("se.url"),
+		SitemapComparableURLSQL("u.normalized_url"),
+	)
+	err = db.QueryRow(pageSitemapSQL,
 		jobID,
 	).Scan(&s.PagesInSitemap)
 	if err != nil {
