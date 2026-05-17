@@ -30,6 +30,21 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }
 
+func writePagedOffsetJSON[T any](w http.ResponseWriter, results []T, totalCount, limit, offset int) {
+	var nextOffset *int
+	if offset+len(results) < totalCount {
+		n := offset + len(results)
+		nextOffset = &n
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"results":    results,
+		"totalCount": totalCount,
+		"nextOffset": nextOffset,
+		"limit":      limit,
+		"offset":     offset,
+	})
+}
+
 func normalizeCrawlURL(rawURL string) (string, *url.URL, error) {
 	trimmed := strings.TrimSpace(rawURL)
 	if trimmed == "" {
@@ -361,6 +376,18 @@ func (s *Server) handleJobPagesV2(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleJobIssuesV2(w http.ResponseWriter, r *http.Request) {
 	s.handleJobIssues(w, r, r.PathValue("id"))
 }
+func (s *Server) handleJobEdgesV2(w http.ResponseWriter, r *http.Request) {
+	s.handleJobEdges(w, r, r.PathValue("id"))
+}
+func (s *Server) handleJobResponseCodesV2(w http.ResponseWriter, r *http.Request) {
+	s.handleJobResponseCodes(w, r, r.PathValue("id"))
+}
+func (s *Server) handleJobAssetsV2(w http.ResponseWriter, r *http.Request) {
+	s.handleJobAssets(w, r, r.PathValue("id"))
+}
+func (s *Server) handleJobSitemapEntriesV2(w http.ResponseWriter, r *http.Request) {
+	s.handleJobSitemapEntries(w, r, r.PathValue("id"))
+}
 
 // handleJobStatus handles GET /api/jobs/:jobId.
 func (s *Server) handleJobStatus(w http.ResponseWriter, r *http.Request, jobID string) {
@@ -625,6 +652,10 @@ func (s *Server) handleJobPages(w http.ResponseWriter, r *http.Request, jobID st
 		URLPattern:       r.URL.Query().Get("url_pattern"),
 		URLGroup:         r.URL.Query().Get("url_group"),
 		StatusCodeFamily: statusCodeFamily,
+		Indexability:     r.URL.Query().Get("indexability"),
+		IssuePresence:    r.URL.Query().Get("issue_presence"),
+		SortBy:           r.URL.Query().Get("sort_by"),
+		SortDir:          r.URL.Query().Get("sort_dir"),
 	}
 
 	result, err := s.db.QueryPagesOffset(jobID, filter, limit, offset)
@@ -673,6 +704,8 @@ func (s *Server) handleJobIssues(w http.ResponseWriter, r *http.Request, jobID s
 		IssueType:  r.URL.Query().Get("issue_type"),
 		Severity:   r.URL.Query().Get("severity"),
 		URLPattern: r.URL.Query().Get("url_pattern"),
+		SortBy:     r.URL.Query().Get("sort_by"),
+		SortDir:    r.URL.Query().Get("sort_dir"),
 	}
 
 	result, err := s.db.QueryIssuesOffset(jobID, filter, limit, offset)
@@ -700,6 +733,162 @@ func (s *Server) handleJobIssues(w http.ResponseWriter, r *http.Request, jobID s
 		"limit":      limit,
 		"offset":     offset,
 	})
+}
+
+// handleJobEdges handles GET /api/jobs/:jobId/edges.
+func (s *Server) handleJobEdges(w http.ResponseWriter, r *http.Request, jobID string) {
+	if s.db == nil {
+		writeError(w, http.StatusInternalServerError, "database unavailable")
+		return
+	}
+	_, err := s.db.GetJob(jobID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, fmt.Sprintf("job %q not found", jobID))
+		return
+	}
+	limit := parsePaginationParam(r, "limit", 100, 500)
+	offset := parseOffsetParam(r, "offset")
+	filter := storage.QueryFilter{
+		RelationType: r.URL.Query().Get("relation_type"),
+		URLPattern:   r.URL.Query().Get("url_pattern"),
+		TargetDomain: r.URL.Query().Get("target_domain"),
+		SortBy:       r.URL.Query().Get("sort_by"),
+		SortDir:      r.URL.Query().Get("sort_dir"),
+	}
+	if raw := r.URL.Query().Get("internal"); raw != "" {
+		isInternal := raw == "1" || strings.EqualFold(raw, "true")
+		filter.IsInternal = &isInternal
+	}
+	result, err := s.db.QueryEdgesOffset(jobID, filter, limit, offset)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("querying edges: %v", err))
+		return
+	}
+	lookup := s.urlLookup()
+	edgeDTOs := make([]dto.EdgeDTO, 0, len(result.Results))
+	for _, edge := range result.Results {
+		edgeDTOs = append(edgeDTOs, dto.EdgeFromStorage(edge, lookup))
+	}
+	writePagedOffsetJSON(w, edgeDTOs, result.TotalCount, limit, offset)
+}
+
+// handleJobResponseCodes handles GET /api/jobs/:jobId/response-codes.
+func (s *Server) handleJobResponseCodes(w http.ResponseWriter, r *http.Request, jobID string) {
+	if s.db == nil {
+		writeError(w, http.StatusInternalServerError, "database unavailable")
+		return
+	}
+	_, err := s.db.GetJob(jobID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, fmt.Sprintf("job %q not found", jobID))
+		return
+	}
+	limit := parsePaginationParam(r, "limit", 100, 500)
+	offset := parseOffsetParam(r, "offset")
+	filter := storage.QueryFilter{
+		StatusCodeFamily: r.URL.Query().Get("status_code_family"),
+		ContentType:      r.URL.Query().Get("content_type"),
+		URLPattern:       r.URL.Query().Get("url_pattern"),
+		SortBy:           r.URL.Query().Get("sort_by"),
+		SortDir:          r.URL.Query().Get("sort_dir"),
+	}
+	result, err := s.db.QueryResponseCodesOffset(jobID, filter, limit, offset)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("querying response codes: %v", err))
+		return
+	}
+	lookup := s.urlLookup()
+	fetchDTOs := make([]dto.FetchDTO, 0, len(result.Results))
+	for _, fetch := range result.Results {
+		fetchDTOs = append(fetchDTOs, dto.FetchFromStorage(fetch, lookup))
+	}
+	writePagedOffsetJSON(w, fetchDTOs, result.TotalCount, limit, offset)
+}
+
+// handleJobAssets handles GET /api/jobs/:jobId/assets.
+func (s *Server) handleJobAssets(w http.ResponseWriter, r *http.Request, jobID string) {
+	if s.db == nil {
+		writeError(w, http.StatusInternalServerError, "database unavailable")
+		return
+	}
+	_, err := s.db.GetJob(jobID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, fmt.Sprintf("job %q not found", jobID))
+		return
+	}
+	limit := parsePaginationParam(r, "limit", 100, 500)
+	offset := parseOffsetParam(r, "offset")
+	filter := storage.QueryFilter{
+		URLPattern:       r.URL.Query().Get("url_pattern"),
+		ContentType:      r.URL.Query().Get("content_type"),
+		StatusCodeFamily: r.URL.Query().Get("status_code_family"),
+		SortBy:           r.URL.Query().Get("sort_by"),
+		SortDir:          r.URL.Query().Get("sort_dir"),
+	}
+	result, err := s.db.QueryAssetsOffset(jobID, filter, limit, offset)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("querying assets: %v", err))
+		return
+	}
+	lookup := s.urlLookup()
+	assetRows := make([]map[string]any, 0, len(result.Results))
+	for _, asset := range result.Results {
+		assetRows = append(assetRows, map[string]any{
+			"id":              asset.ID,
+			"jobId":           asset.JobID,
+			"urlId":           asset.URLID,
+			"url":             lookup(asset.URLID),
+			"contentType":     nullString(asset.ContentType),
+			"contentEncoding": nullString(asset.ContentEncoding),
+			"cacheControl":    nullString(asset.CacheControl),
+			"transferSize":    nullInt64(asset.TransferSize),
+			"decodedSize":     nullInt64(asset.DecodedSize),
+			"statusCode":      nullInt64(asset.StatusCode),
+			"contentLength":   nullInt64(asset.ContentLength),
+		})
+	}
+	writePagedOffsetJSON(w, assetRows, result.TotalCount, limit, offset)
+}
+
+// handleJobSitemapEntries handles GET /api/jobs/:jobId/sitemap-entries.
+func (s *Server) handleJobSitemapEntries(w http.ResponseWriter, r *http.Request, jobID string) {
+	if s.db == nil {
+		writeError(w, http.StatusInternalServerError, "database unavailable")
+		return
+	}
+	_, err := s.db.GetJob(jobID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, fmt.Sprintf("job %q not found", jobID))
+		return
+	}
+	limit := parsePaginationParam(r, "limit", 100, 500)
+	offset := parseOffsetParam(r, "offset")
+	filter := storage.QueryFilter{
+		URLPattern:       r.URL.Query().Get("url_pattern"),
+		StatusCodeFamily: r.URL.Query().Get("status"),
+		SortBy:           r.URL.Query().Get("sort_by"),
+		SortDir:          r.URL.Query().Get("sort_dir"),
+	}
+	result, err := s.db.QuerySitemapEntriesOffset(jobID, filter, limit, offset)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("querying sitemap entries: %v", err))
+		return
+	}
+	rows := make([]map[string]any, 0, len(result.Results))
+	for _, entry := range result.Results {
+		rows = append(rows, map[string]any{
+			"id":                   entry.ID,
+			"jobId":                entry.JobID,
+			"url":                  entry.URL,
+			"sourceSitemapUrl":     entry.SourceSitemapURL,
+			"sourceHost":           entry.SourceHost,
+			"lastmod":              nullString(entry.Lastmod),
+			"changefreq":           nullString(entry.Changefreq),
+			"priority":             nullFloat64(entry.Priority),
+			"reconciliationStatus": entry.ReconciliationStatus,
+		})
+	}
+	writePagedOffsetJSON(w, rows, result.TotalCount, limit, offset)
 }
 
 // handleJobActivity returns recent fetch activity for a job (live log feed).

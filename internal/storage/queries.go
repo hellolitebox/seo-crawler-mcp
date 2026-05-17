@@ -14,6 +14,8 @@ type QueryFilter struct {
 	StatusCodeFamily string `json:"statusCodeFamily,omitempty"` // "2xx", "3xx", "4xx", "5xx"
 	URLPattern       string `json:"urlPattern,omitempty"`
 	URLGroup         string `json:"urlGroup,omitempty"`
+	Indexability     string `json:"indexability,omitempty"`
+	IssuePresence    string `json:"issuePresence,omitempty"`
 	MinDepth         *int   `json:"minDepth,omitempty"`
 	MaxDepth         *int   `json:"maxDepth,omitempty"`
 	IsInternal       *bool  `json:"isInternal,omitempty"`
@@ -21,6 +23,8 @@ type QueryFilter struct {
 	ContentType      string `json:"contentType,omitempty"`
 	ClusterType      string `json:"clusterType,omitempty"`
 	TargetDomain     string `json:"targetDomain,omitempty"`
+	SortBy           string `json:"sortBy,omitempty"`
+	SortDir          string `json:"sortDir,omitempty"`
 }
 
 // PagedResult holds a page of results with cursor info.
