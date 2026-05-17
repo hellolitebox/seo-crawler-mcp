@@ -15,6 +15,8 @@ import (
 // Sites with more than this need to query the dedicated endpoints.
 const reportExtrasLimit = 50000
 const reportEdgePreviewLimit = 100
+const reportAssetReferencePreviewLimit = 500
+const reportResponseCodePreviewLimit = 200
 
 // loadReportExtras populates the auxiliary arrays the report UI consumes
 // (sitemap_entries, robots_directives, crawl_events, urls, edges, etc.).
@@ -537,7 +539,7 @@ func loadAssetReferences(ctx context.Context, db *storage.DB, jobID string) ([]m
 		FROM asset_references ar
 		JOIN urls au ON au.id = ar.asset_url_id
 		JOIN urls pu ON pu.id = ar.source_page_url_id
-		WHERE ar.job_id = ? LIMIT ?`, jobID, reportExtrasLimit)
+		WHERE ar.job_id = ? ORDER BY ar.id ASC LIMIT ?`, jobID, reportAssetReferencePreviewLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -741,7 +743,7 @@ func loadResponseCodes(ctx context.Context, db *storage.DB, jobID string) ([]map
 		       f.ttfb_ms, f.response_body_size, f.content_type, f.content_encoding,
 		       f.response_headers_json, f.http_method, f.fetch_kind, f.render_mode, f.fetched_at
 		FROM fetches f JOIN urls u ON u.id = f.requested_url_id
-		WHERE f.job_id = ? ORDER BY f.id ASC LIMIT ?`, jobID, reportExtrasLimit)
+		WHERE f.job_id = ? ORDER BY f.id ASC LIMIT ?`, jobID, reportResponseCodePreviewLimit)
 	if err != nil {
 		return nil, err
 	}
