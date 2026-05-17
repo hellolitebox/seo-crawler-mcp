@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -59,6 +60,8 @@ func DetectGlobalIssues(db *storage.DB, jobID string, cfg GlobalConfig) (int, er
 		detectBrokenPaginationChain,
 		detectPaginationCanonicalMismatch,
 		detectSitemapNon200,
+		detectSitemapRedirectHostMismatch,
+		detectSitemapExternalHost,
 		detectCrawledNotInSitemap,
 		detectInSitemapNotCrawled,
 		detectInSitemapRobotsBlocked,
@@ -743,10 +746,11 @@ func detectPaginationCanonicalMismatch(db *storage.DB, jobID string, _ GlobalCon
 }
 
 func detectSitemapNon200(db *storage.DB, jobID string, _ GlobalConfig) (int, error) {
+	sitemapMatch := "rtrim(u.normalized_url, '/') = rtrim(se.url, '/')"
 	rows, err := db.Query(`
 		SELECT se.url, f.status_code, u.id
 		FROM sitemap_entries se
-		JOIN urls u ON u.job_id = se.job_id AND u.normalized_url = se.url
+		JOIN urls u ON u.job_id = se.job_id AND `+sitemapMatch+`
 		JOIN (
 			SELECT job_id, requested_url_id, MAX(fetch_seq) AS latest_fetch_seq
 			FROM fetches
@@ -792,12 +796,167 @@ func detectSitemapNon200(db *storage.DB, jobID string, _ GlobalConfig) (int, err
 	return len(issues), nil
 }
 
+func detectSitemapRedirectHostMismatch(db *storage.DB, jobID string, _ GlobalConfig) (int, error) {
+	rows, err := db.Query(`
+		SELECT se.url, req.id, req.normalized_url, req.host, final.normalized_url, final.host
+		FROM sitemap_entries se
+		JOIN urls req ON req.job_id = se.job_id
+			AND rtrim(req.normalized_url, '/') = rtrim(se.url, '/')
+		JOIN (
+			SELECT job_id, requested_url_id, MAX(fetch_seq) AS latest_fetch_seq
+			FROM fetches
+			WHERE job_id = ?
+			GROUP BY job_id, requested_url_id
+		) latest ON latest.job_id = se.job_id AND latest.requested_url_id = req.id
+		JOIN fetches f ON f.job_id = latest.job_id
+			AND f.requested_url_id = latest.requested_url_id
+			AND f.fetch_seq = latest.latest_fetch_seq
+		JOIN urls final ON final.id = f.final_url_id
+		WHERE se.job_id = ?
+		  AND lower(req.host) != lower(final.host)
+		GROUP BY se.url, req.id, req.normalized_url, req.host, final.normalized_url, final.host
+	`, jobID, jobID)
+	if err != nil {
+		return 0, fmt.Errorf("querying sitemap_url_redirect_host_mismatch: %w", err)
+	}
+	defer rows.Close()
+
+	type mismatch struct {
+		sitemapURL  string
+		urlID       int64
+		requestURL  string
+		requestHost string
+		finalURL    string
+		finalHost   string
+	}
+	mismatches := []mismatch{}
+	for rows.Next() {
+		var m mismatch
+		if err := rows.Scan(&m.sitemapURL, &m.urlID, &m.requestURL, &m.requestHost, &m.finalURL, &m.finalHost); err != nil {
+			return 0, fmt.Errorf("scanning sitemap_url_redirect_host_mismatch: %w", err)
+		}
+		mismatches = append(mismatches, m)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("iterating sitemap_url_redirect_host_mismatch: %w", err)
+	}
+
+	for _, m := range mismatches {
+		if err := insertGlobalIssue(db, jobID, &m.urlID, "sitemap_url_redirect_host_mismatch", "warning", map[string]any{
+			"sitemapUrl":    m.sitemapURL,
+			"requestedUrl":  m.requestURL,
+			"requestedHost": m.requestHost,
+			"finalUrl":      m.finalURL,
+			"finalHost":     m.finalHost,
+		}); err != nil {
+			return 0, err
+		}
+	}
+	return len(mismatches), nil
+}
+
+func detectSitemapExternalHost(db *storage.DB, jobID string, _ GlobalConfig) (int, error) {
+	job, err := db.GetJob(jobID)
+	if err != nil {
+		return 0, err
+	}
+	checkers, err := sitemapScopeCheckers(job)
+	if err != nil {
+		return 0, err
+	}
+	if len(checkers) == 0 {
+		return 0, nil
+	}
+
+	rows, err := db.Query(`
+		SELECT se.url, MAX(se.source_sitemap_url)
+		FROM sitemap_entries se
+		WHERE se.job_id = ?
+		GROUP BY `+storage.SitemapComparableURLSQL("se.url")+`
+	`, jobID)
+	if err != nil {
+		return 0, fmt.Errorf("querying sitemap_url_external_host: %w", err)
+	}
+	defer rows.Close()
+
+	type externalURL struct {
+		sitemapURL       string
+		sourceSitemapURL string
+		declaredHost     string
+	}
+	externalURLs := []externalURL{}
+	for rows.Next() {
+		var item externalURL
+		if err := rows.Scan(&item.sitemapURL, &item.sourceSitemapURL); err != nil {
+			return 0, fmt.Errorf("scanning sitemap_url_external_host: %w", err)
+		}
+		parsed, parseErr := url.Parse(item.sitemapURL)
+		if parseErr != nil || parsed.Hostname() == "" {
+			continue
+		}
+		inScope := false
+		for _, checker := range checkers {
+			if checker.IsInScope(item.sitemapURL) {
+				inScope = true
+				break
+			}
+		}
+		if !inScope {
+			item.declaredHost = parsed.Hostname()
+			externalURLs = append(externalURLs, item)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("iterating sitemap_url_external_host: %w", err)
+	}
+
+	for _, item := range externalURLs {
+		if err := insertGlobalIssue(db, jobID, nil, "sitemap_url_external_host", "warning", map[string]any{
+			"url":              item.sitemapURL,
+			"declaredHost":     item.declaredHost,
+			"sourceSitemapUrl": item.sourceSitemapURL,
+		}); err != nil {
+			return 0, err
+		}
+	}
+	return len(externalURLs), nil
+}
+
+func sitemapScopeCheckers(job *storage.CrawlJob) ([]*urlutil.ScopeChecker, error) {
+	var seeds []string
+	if err := json.Unmarshal([]byte(job.SeedURLs), &seeds); err != nil {
+		return nil, fmt.Errorf("parsing seed URLs for sitemap scope: %w", err)
+	}
+	var cfg struct {
+		ScopeMode    string   `json:"scopeMode"`
+		AllowedHosts []string `json:"allowedHosts"`
+	}
+	_ = json.Unmarshal([]byte(job.ConfigJSON), &cfg)
+	if cfg.ScopeMode == "" {
+		cfg.ScopeMode = "registrable_domain"
+	}
+	checkers := make([]*urlutil.ScopeChecker, 0, len(seeds))
+	for _, seed := range seeds {
+		parsed, err := url.Parse(seed)
+		if err != nil || parsed.Hostname() == "" {
+			continue
+		}
+		checker, err := urlutil.NewScopeChecker(cfg.ScopeMode, parsed.Hostname(), cfg.AllowedHosts)
+		if err != nil {
+			return nil, err
+		}
+		checkers = append(checkers, checker)
+	}
+	return checkers, nil
+}
+
 func detectCrawledNotInSitemap(db *storage.DB, jobID string, _ GlobalConfig) (int, error) {
+	pageSitemapMatch := storage.SitemapComparableURLSQL("se.url") + " = " + storage.SitemapComparableURLSQL("u.normalized_url")
 	rows, err := db.Query(`
 		SELECT p.url_id, u.normalized_url
 		FROM pages p
 		JOIN urls u ON u.id = p.url_id AND u.job_id = p.job_id
-		LEFT JOIN sitemap_entries se ON se.job_id = p.job_id AND se.url = u.normalized_url
+		LEFT JOIN sitemap_entries se ON se.job_id = p.job_id AND `+pageSitemapMatch+`
 		WHERE p.job_id = ? AND p.indexability_state = 'indexable' AND se.id IS NULL
 	`, jobID)
 	if err != nil {
@@ -833,10 +992,11 @@ func detectCrawledNotInSitemap(db *storage.DB, jobID string, _ GlobalConfig) (in
 }
 
 func detectInSitemapNotCrawled(db *storage.DB, jobID string, _ GlobalConfig) (int, error) {
+	sitemapMatch := storage.SitemapComparableURLSQL("se.url") + " = " + storage.SitemapComparableURLSQL("u.normalized_url")
 	rows, err := db.Query(`
 		SELECT se.url
 		FROM sitemap_entries se
-		LEFT JOIN urls u ON u.job_id = se.job_id AND u.normalized_url = se.url
+		LEFT JOIN urls u ON u.job_id = se.job_id AND `+sitemapMatch+`
 		WHERE se.job_id = ? AND (u.id IS NULL OR u.status = 'pending')
 	`, jobID)
 	if err != nil {
@@ -868,10 +1028,11 @@ func detectInSitemapNotCrawled(db *storage.DB, jobID string, _ GlobalConfig) (in
 }
 
 func detectInSitemapRobotsBlocked(db *storage.DB, jobID string, _ GlobalConfig) (int, error) {
+	sitemapMatch := storage.SitemapComparableURLSQL("se.url") + " = " + storage.SitemapComparableURLSQL("u.normalized_url")
 	rows, err := db.Query(`
 		SELECT se.url, u.id
 		FROM sitemap_entries se
-		JOIN urls u ON u.job_id = se.job_id AND u.normalized_url = se.url
+		JOIN urls u ON u.job_id = se.job_id AND `+sitemapMatch+`
 		WHERE se.job_id = ? AND u.status = 'robots_blocked'
 	`, jobID)
 	if err != nil {
@@ -1292,10 +1453,11 @@ func detectNonIndexableCanonical(db *storage.DB, jobID string, _ GlobalConfig) (
 
 // detectNonIndexableInSitemap finds URLs in sitemap that are not indexable.
 func detectNonIndexableInSitemap(db *storage.DB, jobID string, _ GlobalConfig) (int, error) {
+	sitemapMatch := storage.SitemapComparableURLSQL("se.url") + " = " + storage.SitemapComparableURLSQL("u.normalized_url")
 	rows, err := db.Query(`
 		SELECT se.url, p.indexability_state, u.id
 		FROM sitemap_entries se
-		JOIN urls u ON u.job_id = se.job_id AND u.normalized_url = se.url
+		JOIN urls u ON u.job_id = se.job_id AND `+sitemapMatch+`
 		JOIN pages p ON p.job_id = se.job_id AND p.url_id = u.id
 		WHERE se.job_id = ? AND p.indexability_state != 'indexable'
 	`, jobID)
@@ -1334,11 +1496,12 @@ func detectNonIndexableInSitemap(db *storage.DB, jobID string, _ GlobalConfig) (
 
 // detectURLInMultipleSitemaps finds URLs that appear in more than one sitemap file.
 func detectURLInMultipleSitemaps(db *storage.DB, jobID string, _ GlobalConfig) (int, error) {
+	sitemapKey := storage.SitemapComparableURLSQL("se.url")
 	rows, err := db.Query(`
-		SELECT se.url, COUNT(DISTINCT se.source_sitemap_url) as sitemap_count
+		SELECT MIN(se.url), COUNT(DISTINCT se.source_sitemap_url) as sitemap_count
 		FROM sitemap_entries se
 		WHERE se.job_id = ?
-		GROUP BY se.url
+		GROUP BY `+sitemapKey+`
 		HAVING sitemap_count > 1
 	`, jobID)
 	if err != nil {

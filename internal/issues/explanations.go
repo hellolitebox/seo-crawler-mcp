@@ -417,6 +417,18 @@ var Explanations = map[string]IssueExplanation{
 		Impact:      "Non-200 URLs in the sitemap waste crawl budget and signal poor site maintenance to search engines.",
 		Fix:         "Remove non-200 URLs from the sitemap, or fix the underlying pages.",
 	},
+	"sitemap_url_redirect_host_mismatch": {
+		Title:       "Sitemap URL Redirects to Different Host",
+		Description: "A URL listed in the sitemap redirects to a different hostname.",
+		Impact:      "Sitemaps should declare the canonical URL directly. Host redirects create noisy sitemap signals and can hide www/non-www or alias mistakes.",
+		Fix:         "Update the sitemap to list the final canonical host and URL instead of the redirecting variant.",
+	},
+	"sitemap_url_external_host": {
+		Title:       "Sitemap URL Uses External Host",
+		Description: "A URL listed in the sitemap is outside the crawl's root-domain scope.",
+		Impact:      "This usually means the sitemap is exposing a staging, preview, CDN, or vendor alias instead of the public canonical domain.",
+		Fix:         "Replace the sitemap URL with the public canonical URL on the expected root domain or subdomain.",
+	},
 	"crawled_not_in_sitemap": {
 		Title:       "Crawled Page Not in Sitemap",
 		Description: "This indexable page was found by crawling but is not listed in the sitemap.",

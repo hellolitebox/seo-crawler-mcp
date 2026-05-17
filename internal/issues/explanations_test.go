@@ -98,6 +98,8 @@ var allKnownIssueTypes = []string{
 	"broken_pagination_chain",
 	"pagination_canonical_mismatch",
 	"sitemap_non_200",
+	"sitemap_url_redirect_host_mismatch",
+	"sitemap_url_external_host",
 	"crawled_not_in_sitemap",
 	"in_sitemap_not_crawled",
 	"in_sitemap_robots_blocked",

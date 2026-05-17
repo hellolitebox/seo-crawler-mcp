@@ -53,6 +53,17 @@ func seedFetch(t *testing.T, db *storage.DB, jobID string, fetchSeq int, request
 	return id
 }
 
+func seedFetchWithFinal(t *testing.T, db *storage.DB, jobID string, fetchSeq int, requestedURLID, finalURLID int64, statusCode int) int64 {
+	t.Helper()
+	result, err := db.Exec(`INSERT INTO fetches (job_id, fetch_seq, requested_url_id, final_url_id, status_code) VALUES (?, ?, ?, ?, ?)`,
+		jobID, fetchSeq, requestedURLID, finalURLID, statusCode)
+	if err != nil {
+		t.Fatalf("seeding fetch with final URL: %v", err)
+	}
+	id, _ := result.LastInsertId()
+	return id
+}
+
 func seedPage(t *testing.T, db *storage.DB, jobID string, urlID, fetchID int64, opts map[string]any) int64 {
 	t.Helper()
 	title, _ := opts["title"].(string)
@@ -403,6 +414,39 @@ func TestDetectSitemapNon200UsesLatestFetch(t *testing.T) {
 	}
 	if n != 0 {
 		t.Fatalf("detectSitemapNon200 inserted %d issues for a URL whose latest fetch is 200", n)
+	}
+}
+
+func TestDetectSitemapHostWarnings(t *testing.T) {
+	db := testDB(t)
+	jobID := "job-sitemap-host-warnings"
+	seedJob(t, db, jobID)
+
+	requested := seedURL(t, db, jobID, "https://example.com/page", "example.com", "fetched", "sitemap")
+	final := seedURL(t, db, jobID, "https://www.example.com/page", "www.example.com", "fetched", "redirect")
+	seedFetchWithFinal(t, db, jobID, 1, requested, final, 200)
+	if _, err := db.Exec(`INSERT INTO sitemap_entries (job_id, url, source_sitemap_url, source_host) VALUES (?, ?, ?, ?)`,
+		jobID, "https://example.com/page", "https://example.com/sitemap.xml", "example.com"); err != nil {
+		t.Fatalf("seeding redirect sitemap entry: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO sitemap_entries (job_id, url, source_sitemap_url, source_host) VALUES (?, ?, ?, ?)`,
+		jobID, "https://preview-vercel-app.vercel.app/docs", "https://docs.example.com/sitemap.xml", "docs.example.com"); err != nil {
+		t.Fatalf("seeding external sitemap entry: %v", err)
+	}
+
+	redirects, err := detectSitemapRedirectHostMismatch(db, jobID, DefaultGlobalConfig())
+	if err != nil {
+		t.Fatalf("detectSitemapRedirectHostMismatch: %v", err)
+	}
+	if redirects != 1 {
+		t.Fatalf("redirect host mismatch issues = %d, want 1", redirects)
+	}
+	externals, err := detectSitemapExternalHost(db, jobID, DefaultGlobalConfig())
+	if err != nil {
+		t.Fatalf("detectSitemapExternalHost: %v", err)
+	}
+	if externals != 1 {
+		t.Fatalf("external host issues = %d, want 1", externals)
 	}
 }
 
