@@ -56,6 +56,7 @@ type CrawlSummary struct {
 	AvgWordCount             float64        `json:"avgWordCount"`
 	PagesWithStructuredData  int            `json:"pagesWithStructuredData"`
 	PagesWithIssues          int            `json:"pagesWithIssues"`
+	PagesInSitemap           int            `json:"pagesInSitemap"`
 	OrphanPageCount          int            `json:"orphanPageCount"`
 	DuplicateContentCount    int            `json:"duplicateContentCount"`
 	ThinContentCount         int            `json:"thinContentCount"`
@@ -826,6 +827,20 @@ func (db *DB) GetCrawlSummary(jobID string) (*CrawlSummary, error) {
 	).Scan(&s.PagesWithIssues)
 	if err != nil {
 		return nil, fmt.Errorf("counting pages with issues for job %q: %w", jobID, err)
+	}
+
+	// Pages in sitemap, counted across the full page inventory.
+	err = db.QueryRow(`
+		SELECT COUNT(DISTINCT p.id)
+		FROM pages p
+		JOIN urls u ON u.id = p.url_id
+		JOIN sitemap_entries se ON se.job_id = p.job_id
+		WHERE p.job_id = ?
+		  AND (se.url = u.normalized_url OR rtrim(se.url, '/') = rtrim(u.normalized_url, '/'))`,
+		jobID,
+	).Scan(&s.PagesInSitemap)
+	if err != nil {
+		return nil, fmt.Errorf("counting pages in sitemap for job %q: %w", jobID, err)
 	}
 
 	// Orphan pages (inbound_edge_count = 0)

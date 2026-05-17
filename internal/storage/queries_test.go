@@ -542,6 +542,16 @@ func TestGetCrawlSummary(t *testing.T) {
 	); err != nil {
 		t.Fatalf("updating indexability state: %v", err)
 	}
+	if _, err := db.Exec(`INSERT INTO sitemap_entries (job_id, url, source_sitemap_url, source_host) VALUES (?, ?, ?, ?)`,
+		jobID, "https://example.com/page-1/", "https://example.com/sitemap.xml", "example.com",
+	); err != nil {
+		t.Fatalf("inserting sitemap entry 1: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO sitemap_entries (job_id, url, source_sitemap_url, source_host) VALUES (?, ?, ?, ?)`,
+		jobID, "https://example.com/page-2", "https://example.com/sitemap.xml", "example.com",
+	); err != nil {
+		t.Fatalf("inserting sitemap entry 2: %v", err)
+	}
 
 	summary, err := db.GetCrawlSummary(jobID)
 	if err != nil {
@@ -578,6 +588,9 @@ func TestGetCrawlSummary(t *testing.T) {
 	}
 	if summary.PagesWithIssues != 4 {
 		t.Errorf("PagesWithIssues: expected 4, got %d", summary.PagesWithIssues)
+	}
+	if summary.PagesInSitemap != 2 {
+		t.Errorf("PagesInSitemap: expected 2, got %d", summary.PagesInSitemap)
 	}
 
 	// Status code distribution: 200 x3, 301 x1, 404 x1
