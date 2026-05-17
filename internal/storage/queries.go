@@ -42,24 +42,26 @@ func normalizeCursorLimit(limit int) int {
 
 // CrawlSummary aggregates crawl statistics.
 type CrawlSummary struct {
-	TotalPages              int            `json:"totalPages"`
-	TotalURLs               int            `json:"totalUrls"`
-	TotalIssues             int            `json:"totalIssues"`
-	IssuesByType            map[string]int `json:"issuesByType"`
-	IssuesBySeverity        map[string]int `json:"issuesBySeverity"`
-	StatusCodeDistribution  map[int]int    `json:"statusCodeDistribution"`
-	DepthDistribution       map[int]int    `json:"depthDistribution"`
-	AvgTTFB                 float64        `json:"avgTtfb"`
-	MedianTTFB              float64        `json:"medianTtfb"`
-	P95TTFB                 float64        `json:"p95Ttfb"`
-	AvgWordCount            float64        `json:"avgWordCount"`
-	PagesWithStructuredData int            `json:"pagesWithStructuredData"`
-	OrphanPageCount         int            `json:"orphanPageCount"`
-	DuplicateContentCount   int            `json:"duplicateContentCount"`
-	ThinContentCount        int            `json:"thinContentCount"`
-	CrawlDuration           float64        `json:"crawlDuration"`
-	PagesPerSecond          float64        `json:"pagesPerSecond"`
-	TopIssues               []TopIssue     `json:"topIssues"`
+	TotalPages               int            `json:"totalPages"`
+	TotalURLs                int            `json:"totalUrls"`
+	TotalIssues              int            `json:"totalIssues"`
+	IssuesByType             map[string]int `json:"issuesByType"`
+	IssuesBySeverity         map[string]int `json:"issuesBySeverity"`
+	IndexabilityDistribution map[string]int `json:"indexabilityDistribution"`
+	StatusCodeDistribution   map[int]int    `json:"statusCodeDistribution"`
+	DepthDistribution        map[int]int    `json:"depthDistribution"`
+	AvgTTFB                  float64        `json:"avgTtfb"`
+	MedianTTFB               float64        `json:"medianTtfb"`
+	P95TTFB                  float64        `json:"p95Ttfb"`
+	AvgWordCount             float64        `json:"avgWordCount"`
+	PagesWithStructuredData  int            `json:"pagesWithStructuredData"`
+	PagesWithIssues          int            `json:"pagesWithIssues"`
+	OrphanPageCount          int            `json:"orphanPageCount"`
+	DuplicateContentCount    int            `json:"duplicateContentCount"`
+	ThinContentCount         int            `json:"thinContentCount"`
+	CrawlDuration            float64        `json:"crawlDuration"`
+	PagesPerSecond           float64        `json:"pagesPerSecond"`
+	TopIssues                []TopIssue     `json:"topIssues"`
 }
 
 // TopIssue represents a frequent issue type with an example.
@@ -618,11 +620,12 @@ func (db *DB) QueryResponseCodes(
 // GetCrawlSummary computes aggregate statistics for a crawl job.
 func (db *DB) GetCrawlSummary(jobID string) (*CrawlSummary, error) {
 	s := &CrawlSummary{
-		IssuesByType:           map[string]int{},
-		IssuesBySeverity:       map[string]int{},
-		StatusCodeDistribution: map[int]int{},
-		DepthDistribution:      map[int]int{},
-		TopIssues:              []TopIssue{},
+		IssuesByType:             map[string]int{},
+		IssuesBySeverity:         map[string]int{},
+		IndexabilityDistribution: map[string]int{},
+		StatusCodeDistribution:   map[int]int{},
+		DepthDistribution:        map[int]int{},
+		TopIssues:                []TopIssue{},
 	}
 
 	// Total pages
@@ -682,6 +685,30 @@ func (db *DB) GetCrawlSummary(jobID string) (*CrawlSummary, error) {
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterating issue severities: %w", err)
+	}
+	rows.Close()
+
+	// Indexability distribution across the full page inventory.
+	rows, err = db.Query(`
+		SELECT COALESCE(NULLIF(indexability_state, ''), 'unknown'), COUNT(*)
+		FROM pages
+		WHERE job_id = ?
+		GROUP BY COALESCE(NULLIF(indexability_state, ''), 'unknown')`, jobID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("querying indexability distribution for job %q: %w", jobID, err)
+	}
+	for rows.Next() {
+		var state string
+		var c int
+		if scanErr := rows.Scan(&state, &c); scanErr != nil {
+			rows.Close()
+			return nil, fmt.Errorf("scanning indexability distribution: %w", scanErr)
+		}
+		s.IndexabilityDistribution[state] = c
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating indexability distribution: %w", err)
 	}
 	rows.Close()
 
@@ -787,6 +814,18 @@ func (db *DB) GetCrawlSummary(jobID string) (*CrawlSummary, error) {
 	).Scan(&s.PagesWithStructuredData)
 	if err != nil {
 		return nil, fmt.Errorf("counting structured data for job %q: %w", jobID, err)
+	}
+
+	// Pages with issues, counted across the full page inventory.
+	err = db.QueryRow(`
+		SELECT COUNT(DISTINCT p.id)
+		FROM pages p
+		JOIN issues i ON i.job_id = p.job_id AND i.url_id = p.url_id
+		WHERE p.job_id = ? AND i.url_id IS NOT NULL`,
+		jobID,
+	).Scan(&s.PagesWithIssues)
+	if err != nil {
+		return nil, fmt.Errorf("counting pages with issues for job %q: %w", jobID, err)
 	}
 
 	// Orphan pages (inbound_edge_count = 0)

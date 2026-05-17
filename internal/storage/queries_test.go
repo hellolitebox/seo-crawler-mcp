@@ -534,6 +534,15 @@ func TestGetCrawlSummary(t *testing.T) {
 		jobID, "exact", "abc123", firstURL.ID, 2,
 	)
 
+	if _, err := db.Exec(`
+		UPDATE pages
+		SET indexability_state = 'noindex_meta'
+		WHERE url_id = (SELECT id FROM urls WHERE job_id = ? AND normalized_url = ?)`,
+		jobID, "https://example.com/page-5",
+	); err != nil {
+		t.Fatalf("updating indexability state: %v", err)
+	}
+
 	summary, err := db.GetCrawlSummary(jobID)
 	if err != nil {
 		t.Fatalf("GetCrawlSummary: %v", err)
@@ -560,6 +569,15 @@ func TestGetCrawlSummary(t *testing.T) {
 	// Issues by severity
 	if summary.IssuesBySeverity["error"] != 3 {
 		t.Errorf("IssuesBySeverity[error]: expected 3, got %d", summary.IssuesBySeverity["error"])
+	}
+	if summary.IndexabilityDistribution["indexable"] != 4 {
+		t.Errorf("IndexabilityDistribution[indexable]: expected 4, got %d", summary.IndexabilityDistribution["indexable"])
+	}
+	if summary.IndexabilityDistribution["noindex_meta"] != 1 {
+		t.Errorf("IndexabilityDistribution[noindex_meta]: expected 1, got %d", summary.IndexabilityDistribution["noindex_meta"])
+	}
+	if summary.PagesWithIssues != 4 {
+		t.Errorf("PagesWithIssues: expected 4, got %d", summary.PagesWithIssues)
 	}
 
 	// Status code distribution: 200 x3, 301 x1, 404 x1
@@ -620,6 +638,9 @@ func TestGetCrawlSummary(t *testing.T) {
 	}
 	if summary.IssuesBySeverity == nil {
 		t.Error("IssuesBySeverity must not be nil")
+	}
+	if summary.IndexabilityDistribution == nil {
+		t.Error("IndexabilityDistribution must not be nil")
 	}
 	if summary.StatusCodeDistribution == nil {
 		t.Error("StatusCodeDistribution must not be nil")
