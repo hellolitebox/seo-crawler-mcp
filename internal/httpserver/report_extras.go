@@ -14,6 +14,7 @@ import (
 // reportExtrasLimit caps the number of rows returned per array in /report.
 // Sites with more than this need to query the dedicated endpoints.
 const reportExtrasLimit = 50000
+const reportEdgePreviewLimit = 100
 
 // loadReportExtras populates the auxiliary arrays the report UI consumes
 // (sitemap_entries, robots_directives, crawl_events, urls, edges, etc.).
@@ -67,11 +68,13 @@ func loadReportExtras(ctx context.Context, db *storage.DB, jobID string) map[str
 	} else {
 		out["asset_references"] = v
 	}
-	if internalEdges, externalLinks, err := loadEdges(ctx, db, jobID); err != nil {
+	if internalEdges, externalLinks, internalTotal, externalTotal, err := loadEdges(ctx, db, jobID); err != nil {
 		log.Printf("report_extras: edges: %v", err)
 	} else {
 		out["internal_edges"] = internalEdges
 		out["external_links"] = externalLinks
+		out["internal_edges_total_count"] = internalTotal
+		out["external_links_total_count"] = externalTotal
 	}
 	if v, err := loadRedirectHops(ctx, db, jobID); err != nil {
 		log.Printf("report_extras: redirect_hops: %v", err)
@@ -571,7 +574,19 @@ func loadAssetReferences(ctx context.Context, db *storage.DB, jobID string) ([]m
 // loadEdges returns (internalEdges, externalLinks, error).
 // internal_edges uses snake_case (raw shape); external_links uses camelCase
 // (legacy DTO shape) — this matches what the UI expects in each section.
-func loadEdges(ctx context.Context, db *storage.DB, jobID string) ([]map[string]any, []map[string]any, error) {
+func loadEdges(ctx context.Context, db *storage.DB, jobID string) ([]map[string]any, []map[string]any, int, int, error) {
+	var internalTotal, externalTotal int
+	if err := db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM edges
+		WHERE job_id = ? AND is_internal = 1 AND relation_type = 'link'`, jobID).Scan(&internalTotal); err != nil {
+		return nil, nil, 0, 0, err
+	}
+	if err := db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM edges
+		WHERE job_id = ? AND is_internal = 0 AND relation_type = 'link'`, jobID).Scan(&externalTotal); err != nil {
+		return nil, nil, 0, 0, err
+	}
+
 	rows, err := db.QueryContext(ctx, `
 		SELECT e.id, e.job_id, e.source_url_id, e.normalized_target_url_id,
 		       e.source_kind, e.relation_type, e.rel_flags_json, e.discovery_mode,
@@ -585,9 +600,10 @@ func loadEdges(ctx context.Context, db *storage.DB, jobID string) ([]map[string]
 		       )) AS target_status_code,
 		       su.normalized_url AS source_url
 		FROM edges e JOIN urls su ON su.id = e.source_url_id
-		WHERE e.job_id = ? LIMIT ?`, jobID, reportExtrasLimit)
+		WHERE e.job_id = ? AND e.relation_type = 'link'
+		ORDER BY e.id ASC LIMIT ?`, jobID, reportEdgePreviewLimit)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, 0, 0, err
 	}
 	defer rows.Close()
 
@@ -604,7 +620,7 @@ func loadEdges(ctx context.Context, db *storage.DB, jobID string) ([]map[string]
 		)
 		if err := rows.Scan(&id, &jid, &srcURLID, &normTargetID, &sk, &rt, &relFlags, &dm,
 			&anchor, &isInternal, &declared, &finalTargetID, &targetStatus, &srcURL); err != nil {
-			return nil, nil, err
+			return nil, nil, 0, 0, err
 		}
 		if isInternal == 1 {
 			internal = append(internal, map[string]any{
@@ -639,7 +655,7 @@ func loadEdges(ctx context.Context, db *storage.DB, jobID string) ([]map[string]
 			})
 		}
 	}
-	return internal, external, rows.Err()
+	return internal, external, internalTotal, externalTotal, rows.Err()
 }
 
 func loadRedirectHops(ctx context.Context, db *storage.DB, jobID string) ([]map[string]any, error) {
