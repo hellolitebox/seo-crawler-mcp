@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"log"
+	"sort"
 	"strings"
 
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/storage"
@@ -14,9 +16,13 @@ import (
 // reportExtrasLimit caps the number of rows returned per array in /report.
 // Sites with more than this need to query the dedicated endpoints.
 const reportExtrasLimit = 50000
+const reportURLPreviewLimit = 200
+const reportSitemapPreviewLimit = 100
 const reportEdgePreviewLimit = 100
 const reportAssetReferencePreviewLimit = 500
-const reportResponseCodePreviewLimit = 200
+const reportResponseCodePreviewLimit = 50
+const reportSecurityPreviewLimit = 100
+const reportURLClusterPreviewLimit = 50
 
 // loadReportExtras populates the auxiliary arrays the report UI consumes
 // (sitemap_entries, robots_directives, crawl_events, urls, edges, etc.).
@@ -45,20 +51,22 @@ func loadReportExtras(ctx context.Context, db *storage.DB, jobID string) map[str
 		"url_variant_issues":   []any{},
 	}
 
-	if v, err := loadSitemapEntries(ctx, db, jobID); err != nil {
+	if entries, summary, err := loadSitemapEntries(ctx, db, jobID); err != nil {
 		log.Printf("report_extras: sitemap_entries: %v", err)
 	} else {
-		out["sitemap_entries"] = v
+		out["sitemap_entries"] = entries
+		out["sitemap_summary"] = summary
 	}
 	if v, err := loadRobotsDirectives(ctx, db, jobID); err != nil {
 		log.Printf("report_extras: robots_directives: %v", err)
 	} else {
 		out["robots_directives"] = v
 	}
-	if v, err := loadURLs(ctx, db, jobID); err != nil {
+	if urls, total, err := loadURLs(ctx, db, jobID); err != nil {
 		log.Printf("report_extras: urls: %v", err)
 	} else {
-		out["urls"] = v
+		out["urls"] = urls
+		out["urls_total_count"] = total
 	}
 	if v, err := loadAssets(ctx, db, jobID); err != nil {
 		log.Printf("report_extras: assets: %v", err)
@@ -102,21 +110,23 @@ func loadReportExtras(ctx context.Context, db *storage.DB, jobID string) map[str
 		out["axe_audits"] = axe
 		out["markdown_negotiation"] = markdownNegotiation
 	}
-	if v, err := loadSecurityHeaders(ctx, db, jobID); err != nil {
+	if security, summary, err := loadSecurityHeaders(ctx, db, jobID); err != nil {
 		log.Printf("report_extras: security: %v", err)
 	} else {
-		out["security"] = v
+		out["security"] = security
+		out["security_summary"] = summary
 	}
 	if v, err := loadAgentReadiness(ctx, db, jobID); err != nil {
 		log.Printf("report_extras: agent_readiness: %v", err)
 	} else {
 		out["agent_readiness"] = v
 	}
-	if clusters, issues, err := loadURLClusters(ctx, db, jobID); err != nil {
+	if clusters, issues, summary, err := loadURLClusters(ctx, db, jobID); err != nil {
 		log.Printf("report_extras: url_clusters: %v", err)
 	} else {
 		out["url_clusters"] = clusters
 		out["url_variant_issues"] = issues
+		out["url_cluster_summary"] = summary
 	}
 
 	return out
@@ -149,13 +159,17 @@ func nullFloat64(n sql.NullFloat64) *float64 {
 	return &v
 }
 
-func loadSitemapEntries(ctx context.Context, db *storage.DB, jobID string) ([]map[string]any, error) {
+func loadSitemapEntries(ctx context.Context, db *storage.DB, jobID string) ([]map[string]any, map[string]any, error) {
+	summary, err := loadSitemapSummary(ctx, db, jobID)
+	if err != nil {
+		return nil, nil, err
+	}
 	rows, err := db.QueryContext(ctx, `
 		SELECT id, job_id, url, source_sitemap_url, source_host,
 		       lastmod, changefreq, priority, reconciliation_status
-		FROM sitemap_entries WHERE job_id = ? LIMIT ?`, jobID, reportExtrasLimit)
+		FROM sitemap_entries WHERE job_id = ? ORDER BY id ASC LIMIT ?`, jobID, reportSitemapPreviewLimit)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer rows.Close()
 
@@ -168,7 +182,7 @@ func loadSitemapEntries(ctx context.Context, db *storage.DB, jobID string) ([]ma
 			priority             sql.NullFloat64
 		)
 		if err := rows.Scan(&id, &jid, &u, &ssu, &sh, &lastmod, &changefreq, &priority, &rec); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		out = append(out, map[string]any{
 			"id":                    id,
@@ -182,7 +196,59 @@ func loadSitemapEntries(ctx context.Context, db *storage.DB, jobID string) ([]ma
 			"reconciliation_status": rec,
 		})
 	}
-	return out, rows.Err()
+	return out, summary, rows.Err()
+}
+
+func loadSitemapSummary(ctx context.Context, db *storage.DB, jobID string) (map[string]any, error) {
+	var total, inCrawl, notInCrawl int
+	if err := db.QueryRowContext(ctx, `
+		SELECT COUNT(*),
+		       COALESCE(SUM(CASE WHEN reconciliation_status IN ('in_crawl', 'matched') THEN 1 ELSE 0 END), 0),
+		       COALESCE(SUM(CASE WHEN reconciliation_status IN ('not_in_crawl', 'orphan') THEN 1 ELSE 0 END), 0)
+		FROM sitemap_entries WHERE job_id = ?`, jobID).Scan(&total, &inCrawl, &notInCrawl); err != nil {
+		return nil, err
+	}
+
+	rows, err := db.QueryContext(ctx, `
+		SELECT source_sitemap_url,
+		       COUNT(*) AS entries,
+		       COALESCE(SUM(CASE WHEN reconciliation_status IN ('in_crawl', 'matched') THEN 1 ELSE 0 END), 0) AS in_crawl,
+		       COALESCE(SUM(CASE WHEN reconciliation_status IN ('not_in_crawl', 'orphan') THEN 1 ELSE 0 END), 0) AS not_in_crawl,
+		       MAX(lastmod) AS latest_lastmod
+		FROM sitemap_entries
+		WHERE job_id = ?
+		GROUP BY source_sitemap_url
+		ORDER BY source_sitemap_url ASC`, jobID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	sources := []map[string]any{}
+	for rows.Next() {
+		var source string
+		var entries, sourceInCrawl, sourceNotInCrawl int
+		var latest sql.NullString
+		if err := rows.Scan(&source, &entries, &sourceInCrawl, &sourceNotInCrawl, &latest); err != nil {
+			return nil, err
+		}
+		sources = append(sources, map[string]any{
+			"url":           source,
+			"entries":       entries,
+			"inCrawl":       sourceInCrawl,
+			"notInCrawl":    sourceNotInCrawl,
+			"latestLastmod": nullString(latest),
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"totalEntries": total,
+		"inCrawl":      inCrawl,
+		"notInCrawl":   notInCrawl,
+		"sources":      sources,
+	}, nil
 }
 
 func loadRobotsDirectives(ctx context.Context, db *storage.DB, jobID string) ([]map[string]any, error) {
@@ -271,12 +337,16 @@ func loadAgentReadiness(ctx context.Context, db *storage.DB, jobID string) ([]ma
 	return out, rows.Err()
 }
 
-func loadURLs(ctx context.Context, db *storage.DB, jobID string) ([]map[string]any, error) {
+func loadURLs(ctx context.Context, db *storage.DB, jobID string) ([]map[string]any, int, error) {
+	var total int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM urls WHERE job_id = ?`, jobID).Scan(&total); err != nil {
+		return nil, 0, err
+	}
 	rows, err := db.QueryContext(ctx, `
 		SELECT id, job_id, normalized_url, host, status, is_internal, discovered_via, created_at
-		FROM urls WHERE job_id = ? LIMIT ?`, jobID, reportExtrasLimit)
+		FROM urls WHERE job_id = ? ORDER BY id ASC LIMIT ?`, jobID, reportURLPreviewLimit)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer rows.Close()
 
@@ -288,7 +358,7 @@ func loadURLs(ctx context.Context, db *storage.DB, jobID string) ([]map[string]a
 			isInternal                    int64
 		)
 		if err := rows.Scan(&id, &jid, &nu, &host, &status, &isInternal, &dv, &ca); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		out = append(out, map[string]any{
 			"id":             id,
@@ -301,7 +371,7 @@ func loadURLs(ctx context.Context, db *storage.DB, jobID string) ([]map[string]a
 			"created_at":     ca,
 		})
 	}
-	return out, rows.Err()
+	return out, total, rows.Err()
 }
 
 type urlVariantCluster struct {
@@ -315,7 +385,7 @@ type urlVariantCluster struct {
 	Variants      map[string]map[string]any
 }
 
-func loadURLClusters(ctx context.Context, db *storage.DB, jobID string) ([]map[string]any, []map[string]any, error) {
+func loadURLClusters(ctx context.Context, db *storage.DB, jobID string) ([]map[string]any, []map[string]any, map[string]any, error) {
 	query := "SELECT p.id, u.normalized_url, ru.normalized_url, fu.normalized_url, p.canonical_url, p.content_hash, p.indexability_state, f.status_code " +
 		"FROM pages p " +
 		"JOIN urls u ON u.id = p.url_id " +
@@ -325,7 +395,7 @@ func loadURLClusters(ctx context.Context, db *storage.DB, jobID string) ([]map[s
 		"WHERE p.job_id = ? ORDER BY p.id ASC LIMIT ?"
 	rows, err := db.QueryContext(ctx, query, jobID, reportExtrasLimit)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	defer rows.Close()
 
@@ -339,7 +409,7 @@ func loadURLClusters(ctx context.Context, db *storage.DB, jobID string) ([]map[s
 			statusCode                sql.NullInt64
 		)
 		if err := rows.Scan(&pageID, &pageURL, &requestedURL, &finalURL, &canonicalURL, &contentHash, &indexability, &statusCode); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 
 		identityURL := pageURL
@@ -396,14 +466,22 @@ func loadURLClusters(ctx context.Context, db *storage.DB, jobID string) ([]map[s
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	clusters := make([]map[string]any, 0, len(clustersByKey))
 	issues := []map[string]any{}
+	variantClusterCount := 0
+	issueClusterCount := 0
 	for _, cluster := range clustersByKey {
 		clusterType, severity := classifyURLVariantCluster(cluster)
 		hasIssue := severity != ""
+		if len(cluster.Variants) > 1 {
+			variantClusterCount++
+		}
+		if hasIssue {
+			issueClusterCount++
+		}
 		variants := make([]map[string]any, 0, len(cluster.Variants))
 		for _, v := range cluster.Variants {
 			variants = append(variants, v)
@@ -436,7 +514,34 @@ func loadURLClusters(ctx context.Context, db *storage.DB, jobID string) ([]map[s
 			})
 		}
 	}
-	return clusters, issues, nil
+	sort.Slice(clusters, func(i, j int) bool {
+		iIssue, _ := clusters[i]["hasIssue"].(bool)
+		jIssue, _ := clusters[j]["hasIssue"].(bool)
+		if iIssue != jIssue {
+			return iIssue
+		}
+		iVariants, _ := clusters[i]["variantCount"].(int)
+		jVariants, _ := clusters[j]["variantCount"].(int)
+		if iVariants != jVariants {
+			return iVariants > jVariants
+		}
+		return strings.Compare(fmtAnyString(clusters[i]["primaryUrl"]), fmtAnyString(clusters[j]["primaryUrl"])) < 0
+	})
+	if len(clusters) > reportURLClusterPreviewLimit {
+		clusters = clusters[:reportURLClusterPreviewLimit]
+	}
+	return clusters, issues, map[string]any{
+		"totalClusters":        len(clustersByKey),
+		"variantClusters":      variantClusterCount,
+		"variantIssueClusters": issueClusterCount,
+	}, nil
+}
+
+func fmtAnyString(value any) string {
+	if value == nil {
+		return ""
+	}
+	return fmt.Sprint(value)
 }
 
 func pageIdentityKey(rawURL string) string {
@@ -600,8 +705,13 @@ func loadEdges(ctx context.Context, db *storage.DB, jobID string) ([]map[string]
 		           AND f.requested_url_id = COALESCE(e.final_target_url_id, e.normalized_target_url_id)
 		         ORDER BY f.id DESC LIMIT 1
 		       )) AS target_status_code,
-		       su.normalized_url AS source_url
-		FROM edges e JOIN urls su ON su.id = e.source_url_id
+		       su.normalized_url AS source_url,
+		       tu.normalized_url AS normalized_target_url,
+		       fu.normalized_url AS final_target_url
+		FROM edges e
+		JOIN urls su ON su.id = e.source_url_id
+		LEFT JOIN urls tu ON tu.id = e.normalized_target_url_id
+		LEFT JOIN urls fu ON fu.id = e.final_target_url_id
 		WHERE e.job_id = ? AND e.relation_type = 'link'
 		ORDER BY e.id ASC LIMIT ?`, jobID, reportEdgePreviewLimit)
 	if err != nil {
@@ -615,13 +725,14 @@ func loadEdges(ctx context.Context, db *storage.DB, jobID string) ([]map[string]
 		var (
 			id, srcURLID                      int64
 			jid, sk, rt, dm, declared, srcURL string
+			targetURL, finalURL               sql.NullString
 			normTargetID, finalTargetID       sql.NullInt64
 			relFlags, anchor                  sql.NullString
 			isInternal                        int64
 			targetStatus                      sql.NullInt64
 		)
 		if err := rows.Scan(&id, &jid, &srcURLID, &normTargetID, &sk, &rt, &relFlags, &dm,
-			&anchor, &isInternal, &declared, &finalTargetID, &targetStatus, &srcURL); err != nil {
+			&anchor, &isInternal, &declared, &finalTargetID, &targetStatus, &srcURL, &targetURL, &finalURL); err != nil {
 			return nil, nil, 0, 0, err
 		}
 		if isInternal == 1 {
@@ -640,6 +751,8 @@ func loadEdges(ctx context.Context, db *storage.DB, jobID string) ([]map[string]
 				"final_target_url_id":      nullInt64(finalTargetID),
 				"target_status_code":       nullInt64(targetStatus),
 				"source_url":               srcURL,
+				"target_url":               nullString(targetURL),
+				"final_target_url":         nullString(finalURL),
 			})
 		} else {
 			// camelCase shape — matches the legacy DTO the Links section was built against.
@@ -793,14 +906,18 @@ var securityHeaderNames = []string{
 	"permissions-policy",
 }
 
-func loadSecurityHeaders(ctx context.Context, db *storage.DB, jobID string) ([]map[string]any, error) {
+func loadSecurityHeaders(ctx context.Context, db *storage.DB, jobID string) ([]map[string]any, map[string]any, error) {
+	summary, err := loadSecurityHeadersSummary(ctx, db, jobID)
+	if err != nil {
+		return nil, nil, err
+	}
 	rows, err := db.QueryContext(ctx, `
 		SELECT u.normalized_url, f.status_code, f.response_headers_json
 		FROM fetches f JOIN urls u ON u.id = f.requested_url_id
 		WHERE f.job_id = ?
-		ORDER BY f.id ASC LIMIT ?`, jobID, reportExtrasLimit)
+		ORDER BY f.id ASC LIMIT ?`, jobID, reportSecurityPreviewLimit)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer rows.Close()
 
@@ -812,7 +929,7 @@ func loadSecurityHeaders(ctx context.Context, db *storage.DB, jobID string) ([]m
 			headersJSON sql.NullString
 		)
 		if err := rows.Scan(&urlValue, &statusCode, &headersJSON); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		headers := buildSecurityHeaderSnapshot(headersJSON)
 		out = append(out, map[string]any{
@@ -821,7 +938,62 @@ func loadSecurityHeaders(ctx context.Context, db *storage.DB, jobID string) ([]m
 			"headers":    headers,
 		})
 	}
-	return out, rows.Err()
+	return out, summary, rows.Err()
+}
+
+func loadSecurityHeadersSummary(ctx context.Context, db *storage.DB, jobID string) (map[string]any, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT u.normalized_url, f.response_headers_json
+		FROM fetches f JOIN urls u ON u.id = f.requested_url_id
+		WHERE f.job_id = ?`, jobID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	type securityCounts struct {
+		present int
+		missing int
+	}
+	worstByURL := map[string]securityCounts{}
+	for rows.Next() {
+		var urlValue string
+		var headersJSON sql.NullString
+		if err := rows.Scan(&urlValue, &headersJSON); err != nil {
+			return nil, err
+		}
+		headers := buildSecurityHeaderSnapshot(headersJSON)
+		counts := securityCounts{}
+		for _, name := range securityHeaderNames {
+			if present, _ := headers[name]["present"].(bool); present {
+				counts.present++
+			} else {
+				counts.missing++
+			}
+		}
+		if existing, ok := worstByURL[urlValue]; !ok || counts.missing > existing.missing {
+			worstByURL[urlValue] = counts
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	totalPresent := 0
+	totalMissing := 0
+	pagesWithIssues := 0
+	for _, counts := range worstByURL {
+		totalPresent += counts.present
+		totalMissing += counts.missing
+		if counts.missing > 0 {
+			pagesWithIssues++
+		}
+	}
+	return map[string]any{
+		"rows":            len(worstByURL),
+		"headersPresent":  totalPresent,
+		"headersMissing":  totalMissing,
+		"pagesWithIssues": pagesWithIssues,
+	}, nil
 }
 
 func buildSecurityHeaderSnapshot(headersJSON sql.NullString) map[string]map[string]any {

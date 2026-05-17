@@ -97,6 +97,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/jobs/{id}/response-codes", s.handleJobResponseCodesV2)
 	mux.HandleFunc("GET /api/jobs/{id}/assets", s.handleJobAssetsV2)
 	mux.HandleFunc("GET /api/jobs/{id}/sitemap-entries", s.handleJobSitemapEntriesV2)
+	mux.HandleFunc("GET /api/jobs/{id}/security", s.handleJobSecurityV2)
 	mux.HandleFunc("GET /api/jobs/{id}/activity", s.handleJobActivityV2)
 	mux.HandleFunc("GET /api/jobs/{id}/stream", s.handleJobStreamV2)
 

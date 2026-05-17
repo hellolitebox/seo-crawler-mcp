@@ -16,6 +16,7 @@ func PageFromStorage(p storage.Page, lookup URLLookup) PageDTO {
 	pageKey, _ := urlutil.PageIdentityKey(pageURL)
 	dto := PageDTO{
 		ID:                  p.ID,
+		URLID:               p.URLID,
 		URL:                 pageURL,
 		NormalizedPageKey:   pageKey,
 		Depth:               int(p.Depth),

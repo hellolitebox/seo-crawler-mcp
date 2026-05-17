@@ -16,6 +16,7 @@ import (
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/dto"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/ssrf"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/storage"
+	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/urlutil"
 )
 
 // writeJSON encodes v as JSON and writes it with the given status code.
@@ -388,6 +389,9 @@ func (s *Server) handleJobAssetsV2(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleJobSitemapEntriesV2(w http.ResponseWriter, r *http.Request) {
 	s.handleJobSitemapEntries(w, r, r.PathValue("id"))
 }
+func (s *Server) handleJobSecurityV2(w http.ResponseWriter, r *http.Request) {
+	s.handleJobSecurity(w, r, r.PathValue("id"))
+}
 
 // handleJobStatus handles GET /api/jobs/:jobId.
 func (s *Server) handleJobStatus(w http.ResponseWriter, r *http.Request, jobID string) {
@@ -565,6 +569,7 @@ func (s *Server) handleJobReport(w http.ResponseWriter, r *http.Request, jobID s
 	issuesOffset := parseOffsetParam(r, "issues_offset")
 
 	lookup := s.urlLookup()
+	sitemapKeys := loadSitemapURLKeys(r.Context(), s.db, jobID)
 
 	// Pages are an SEO content inventory. Error/redirect responses are still
 	// reported through fetches, response codes, links, and issues, but their HTML
@@ -576,7 +581,9 @@ func (s *Server) handleJobReport(w http.ResponseWriter, r *http.Request, jobID s
 		pagesTotalCount = pagesResult.TotalCount
 		pageDTOs = make([]dto.PageDTO, 0, len(pagesResult.Results))
 		for _, p := range pagesResult.Results {
-			pageDTOs = append(pageDTOs, dto.PageFromStorage(p, lookup))
+			pageDTO := dto.PageFromStorage(p, lookup)
+			pageDTO.InSitemap = urlIsInSitemap(pageDTO.URL, sitemapKeys)
+			pageDTOs = append(pageDTOs, pageDTO)
 		}
 	} else {
 		pageDTOs = []dto.PageDTO{}
@@ -665,9 +672,12 @@ func (s *Server) handleJobPages(w http.ResponseWriter, r *http.Request, jobID st
 	}
 
 	lookup := s.urlLookup()
+	sitemapKeys := loadSitemapURLKeys(r.Context(), s.db, jobID)
 	pageDTOs := make([]dto.PageDTO, 0, len(result.Results))
 	for _, p := range result.Results {
-		pageDTOs = append(pageDTOs, dto.PageFromStorage(p, lookup))
+		pageDTO := dto.PageFromStorage(p, lookup)
+		pageDTO.InSitemap = urlIsInSitemap(pageDTO.URL, sitemapKeys)
+		pageDTOs = append(pageDTOs, pageDTO)
 	}
 
 	var nextOffset *int
@@ -889,6 +899,189 @@ func (s *Server) handleJobSitemapEntries(w http.ResponseWriter, r *http.Request,
 		})
 	}
 	writePagedOffsetJSON(w, rows, result.TotalCount, limit, offset)
+}
+
+// handleJobSecurity handles GET /api/jobs/:jobId/security.
+func (s *Server) handleJobSecurity(w http.ResponseWriter, r *http.Request, jobID string) {
+	if s.db == nil {
+		writeError(w, http.StatusInternalServerError, "database unavailable")
+		return
+	}
+	_, err := s.db.GetJob(jobID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, fmt.Sprintf("job %q not found", jobID))
+		return
+	}
+
+	limit := parsePaginationParam(r, "limit", 100, 500)
+	offset := parseOffsetParam(r, "offset")
+	rows, total, err := querySecurityHeadersOffset(
+		r.Context(),
+		s.db,
+		jobID,
+		r.URL.Query().Get("url_pattern"),
+		r.URL.Query().Get("status_code_family"),
+		r.URL.Query().Get("sort_by"),
+		r.URL.Query().Get("sort_dir"),
+		limit,
+		offset,
+	)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("querying security headers: %v", err))
+		return
+	}
+	writePagedOffsetJSON(w, rows, total, limit, offset)
+}
+
+func querySecurityHeadersOffset(
+	ctx context.Context,
+	db *storage.DB,
+	jobID string,
+	urlPattern string,
+	statusCodeFamily string,
+	sortBy string,
+	sortDir string,
+	limit int,
+	offset int,
+) ([]map[string]any, int, error) {
+	var filterClause strings.Builder
+	filterArgs := []any{}
+	if urlPattern != "" {
+		filterClause.WriteString(" AND u.normalized_url LIKE ?")
+		filterArgs = append(filterArgs, "%"+urlPattern+"%")
+	}
+	if statusCodeFamily != "" {
+		lo, hi, err := httpStatusFamilyRange(statusCodeFamily)
+		if err != nil {
+			return nil, 0, err
+		}
+		filterClause.WriteString(" AND f.status_code >= ? AND f.status_code <= ?")
+		filterArgs = append(filterArgs, lo, hi)
+	}
+
+	countArgs := append([]any{jobID}, filterArgs...)
+	countSQL := "SELECT COUNT(*) FROM fetches f JOIN urls u ON u.id = f.requested_url_id WHERE f.job_id = ?" + filterClause.String()
+	var totalCount int
+	if err := db.QueryRowContext(ctx, countSQL, countArgs...).Scan(&totalCount); err != nil {
+		return nil, 0, err
+	}
+
+	orderExpr := "f.id"
+	switch strings.ToLower(strings.TrimSpace(sortBy)) {
+	case "url":
+		orderExpr = "u.normalized_url"
+	case "status":
+		orderExpr = "f.status_code"
+	case "missing":
+		orderExpr = "missing_count"
+	}
+	direction := "ASC"
+	if strings.EqualFold(sortDir, "desc") {
+		direction = "DESC"
+	}
+
+	selectSQL := `
+		SELECT u.normalized_url, f.status_code, f.response_headers_json,
+		       ((CASE WHEN lower(COALESCE(f.response_headers_json, '')) LIKE '%strict-transport-security%' THEN 0 ELSE 1 END) +
+		        (CASE WHEN lower(COALESCE(f.response_headers_json, '')) LIKE '%content-security-policy%' THEN 0 ELSE 1 END) +
+		        (CASE WHEN lower(COALESCE(f.response_headers_json, '')) LIKE '%x-content-type-options%' THEN 0 ELSE 1 END) +
+		        (CASE WHEN lower(COALESCE(f.response_headers_json, '')) LIKE '%x-frame-options%' THEN 0 ELSE 1 END) +
+		        (CASE WHEN lower(COALESCE(f.response_headers_json, '')) LIKE '%referrer-policy%' THEN 0 ELSE 1 END) +
+		        (CASE WHEN lower(COALESCE(f.response_headers_json, '')) LIKE '%x-xss-protection%' THEN 0 ELSE 1 END) +
+		        (CASE WHEN lower(COALESCE(f.response_headers_json, '')) LIKE '%permissions-policy%' THEN 0 ELSE 1 END)) AS missing_count
+		FROM fetches f JOIN urls u ON u.id = f.requested_url_id
+		WHERE f.job_id = ?` + filterClause.String() +
+		" ORDER BY " + orderExpr + " " + direction + ", f.id ASC LIMIT ? OFFSET ?"
+	queryArgs := append(append([]any{jobID}, filterArgs...), limit, offset)
+	queryRows, err := db.QueryContext(ctx, selectSQL, queryArgs...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer queryRows.Close()
+
+	results := []map[string]any{}
+	for queryRows.Next() {
+		var (
+			urlValue    string
+			statusCode  sql.NullInt64
+			headersJSON sql.NullString
+			missing     int
+		)
+		if err := queryRows.Scan(&urlValue, &statusCode, &headersJSON, &missing); err != nil {
+			return nil, 0, err
+		}
+		results = append(results, map[string]any{
+			"url":          urlValue,
+			"statusCode":   nullInt64(statusCode),
+			"headers":      buildSecurityHeaderSnapshot(headersJSON),
+			"missingCount": missing,
+		})
+	}
+	if err := queryRows.Err(); err != nil {
+		return nil, 0, err
+	}
+	return results, totalCount, nil
+}
+
+func httpStatusFamilyRange(family string) (int, int, error) {
+	switch strings.ToLower(strings.TrimSpace(family)) {
+	case "", "all":
+		return 0, 999, nil
+	case "2xx":
+		return 200, 299, nil
+	case "3xx":
+		return 300, 399, nil
+	case "4xx":
+		return 400, 499, nil
+	case "5xx":
+		return 500, 599, nil
+	default:
+		return 0, 0, fmt.Errorf("invalid status_code_family %q", family)
+	}
+}
+
+func loadSitemapURLKeys(ctx context.Context, db *storage.DB, jobID string) map[string]bool {
+	keys := map[string]bool{}
+	rows, err := db.QueryContext(ctx, `SELECT url FROM sitemap_entries WHERE job_id = ?`, jobID)
+	if err != nil {
+		return keys
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			continue
+		}
+		for _, key := range sitemapURLLookupKeys(raw) {
+			keys[key] = true
+		}
+	}
+	return keys
+}
+
+func urlIsInSitemap(raw string, keys map[string]bool) bool {
+	for _, key := range sitemapURLLookupKeys(raw) {
+		if keys[key] {
+			return true
+		}
+	}
+	return false
+}
+
+func sitemapURLLookupKeys(raw string) []string {
+	keySet := map[string]bool{}
+	trimmed := strings.TrimSpace(raw)
+	if trimmed != "" {
+		keySet[trimmed] = true
+		if pageKey, err := urlutil.PageIdentityKey(trimmed); err == nil && pageKey != "" {
+			keySet[pageKey] = true
+		}
+	}
+	keys := make([]string, 0, len(keySet))
+	for key := range keySet {
+		keys = append(keys, key)
+	}
+	return keys
 }
 
 // handleJobActivity returns recent fetch activity for a job (live log feed).

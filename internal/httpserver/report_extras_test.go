@@ -60,6 +60,7 @@ func TestLoadReportExtrasExposesSecurityAndMarkdownNegotiation(t *testing.T) {
 		"internal_edges", "assets", "asset_references", "redirect_hops", "llms_findings",
 		"crawl_events", "metrics", "psi_audits", "axe_audits", "security",
 		"markdown_negotiation", "url_clusters", "url_variant_issues",
+		"sitemap_summary", "security_summary", "url_cluster_summary", "urls_total_count",
 	} {
 		if _, ok := extras[key]; !ok {
 			t.Fatalf("report extras missing contract key %q", key)
@@ -175,9 +176,12 @@ func TestLoadURLClustersFlagsDuplicateWWWVariants(t *testing.T) {
 	insertPageForClusterTest(t, db, jobID, apexURLID, apexFetchID, "same-content")
 	insertPageForClusterTest(t, db, jobID, wwwURLID, wwwFetchID, "same-content")
 
-	clusters, issues, err := loadURLClusters(context.Background(), db, jobID)
+	clusters, issues, summary, err := loadURLClusters(context.Background(), db, jobID)
 	if err != nil {
 		t.Fatalf("loadURLClusters() error: %v", err)
+	}
+	if summary["variantIssueClusters"] != 1 {
+		t.Fatalf("expected variant issue summary, got %#v", summary)
 	}
 	if len(clusters) != 1 {
 		t.Fatalf("expected 1 cluster, got %#v", clusters)

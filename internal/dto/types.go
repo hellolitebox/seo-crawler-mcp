@@ -4,7 +4,9 @@ package dto
 // PageDTO is the JSON-friendly representation of a crawled page.
 type PageDTO struct {
 	ID                    int64   `json:"id"`
+	URLID                 int64   `json:"urlId"`
 	URL                   string  `json:"url"`
+	InSitemap             bool    `json:"inSitemap"`
 	NormalizedPageKey     string  `json:"normalizedPageKey,omitempty"`
 	Depth                 int     `json:"depth"`
 	StatusCode            *int    `json:"statusCode,omitempty"`
