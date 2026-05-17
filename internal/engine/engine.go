@@ -437,7 +437,7 @@ func (e *Engine) seedFrontier(jobID string, job *storage.CrawlJob) (*frontier.Qu
 
 	q := frontier.New()
 	for _, seedURL := range seeds {
-		normalized, err := urlutil.Normalize(seedURL)
+		normalized, err := e.normalizeCrawlableURL(seedURL)
 		if err != nil {
 			slog.Warn("engine: skipping invalid seed URL", "url", seedURL, "err", err)
 			continue
@@ -467,6 +467,13 @@ func (e *Engine) seedFrontier(jobID string, job *storage.CrawlJob) (*frontier.Qu
 		return nil, nil, e.failJob(jobID, err)
 	}
 	return q, seeds, nil
+}
+
+func (e *Engine) normalizeCrawlableURL(rawURL string) (string, error) {
+	if e != nil && e.config != nil && len(e.config.IgnoreParams) > 0 {
+		return urlutil.FrontierKey(rawURL, e.config.IgnoreParams)
+	}
+	return urlutil.Normalize(rawURL)
 }
 
 // ensureScopeChecker constructs e.scopeChecker from the first frontier
@@ -666,7 +673,7 @@ func (e *Engine) enqueueSitemapEntry(ctx context.Context, jobID string, entry si
 	if ctx.Err() != nil {
 		return
 	}
-	normalized, normErr := urlutil.Normalize(entry.Loc)
+	normalized, normErr := e.normalizeCrawlableURL(entry.Loc)
 	if normErr != nil {
 		return
 	}
@@ -1631,6 +1638,12 @@ func (e *Engine) processParseResult(
 	// crawl budget guards are also omitted from persisted edge rows so a trap
 	// page cannot flood the URL table before the fetcher has a chance to stop.
 	keptEdges := make([]crawl.DiscoveredEdge, 0, len(pr.edges))
+	sourceNormalized := fr.url
+	if fr.result != nil && fr.result.FinalURL != "" {
+		if normalized, err := e.normalizeCrawlableURL(fr.result.FinalURL); err == nil {
+			sourceNormalized = normalized
+		}
+	}
 	for _, edge := range pr.edges {
 		if edge.RelationType != "link" {
 			keptEdges = append(keptEdges, edge)
@@ -1644,6 +1657,15 @@ func (e *Engine) processParseResult(
 		normalized := edge.NormalizedTargetURL
 		if normalized == "" {
 			continue
+		}
+		var normErr error
+		normalized, normErr = e.normalizeCrawlableURL(normalized)
+		if normErr != nil || normalized == sourceNormalized {
+			continue
+		}
+		edge.NormalizedTargetURL = normalized
+		if e.scopeChecker != nil {
+			edge.IsInternal = e.scopeChecker.IsInScope(normalized)
 		}
 
 		// MaxDepth check
@@ -2259,7 +2281,7 @@ func (e *Engine) persistItem(ctx context.Context, jobID string, item persistItem
 	// --- Resolve final URL ID (may upsert) ---
 	var finalURLID *int64
 	if fr.result != nil && fr.result.FinalURL != fr.url {
-		finalNormalized, normErr := urlutil.Normalize(fr.result.FinalURL)
+		finalNormalized, normErr := e.normalizeCrawlableURL(fr.result.FinalURL)
 		parsed, parseErr := url.Parse(finalNormalized)
 		if normErr == nil && parseErr == nil {
 			finalInScope := e.scopeChecker.IsInScope(finalNormalized)

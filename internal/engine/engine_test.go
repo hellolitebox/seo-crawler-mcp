@@ -333,6 +333,93 @@ func TestRunCrawlSkipsPageAnalysisForNon2xxHTML(t *testing.T) {
 	}
 }
 
+func TestRunCrawlStripsTrackingParamsFromInternalPages(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		switch r.URL.Path {
+		case "/":
+			fmt.Fprint(w, `<!DOCTYPE html><html><head><title>Home Page For Tracking Param Test</title><meta name="description" content="Home page with links that should not create tracking URL duplicate pages."></head><body><h1>Home</h1><p>This page has enough text for the crawler test and links to a tracked variant.</p><a href="/landing?utm_source=eyebrow&utm_campaign=launch">Tracked landing</a></body></html>`)
+		case "/landing":
+			fmt.Fprint(w, `<!DOCTYPE html><html><head><title>Landing Page Without Tracking Params</title><meta name="description" content="Landing page that should be fetched without tracking query parameters."></head><body><h1>Landing</h1><p>This landing page should be stored and fetched at the clean URL, not as a UTM duplicate.</p></body></html>`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+
+	dbPath := filepath.Join(t.TempDir(), "tracking.db")
+	db, err := storage.Open(dbPath)
+	if err != nil {
+		t.Fatalf("opening database: %v", err)
+	}
+	defer db.Close()
+
+	cfg := config.DefaultConfig()
+	cfg.GlobalConcurrency = 1
+	cfg.MaxPages = 10
+	cfg.MaxDepth = 3
+	cfg.RequestTimeout = 5 * time.Second
+	cfg.AllowPrivateNetworks = true
+	cfg.SSRFProtection = false
+	cfg.ThinContentThreshold = 10
+
+	f := fetcher.New(fetcher.Options{
+		UserAgent:           "test-crawler/1.0",
+		Timeout:             5 * time.Second,
+		MaxResponseBody:     5 * 1024 * 1024,
+		MaxDecompressedBody: 20 * 1024 * 1024,
+		MaxRedirectHops:     10,
+		SSRFGuard:           nil,
+	})
+	rl := fetcher.NewRateLimiter(cfg.PerHostConcurrency)
+	tsURL, _ := url.Parse(ts.URL)
+	sc, err := urlutil.NewScopeChecker("exact_host", tsURL.Hostname(), nil)
+	if err != nil {
+		t.Fatalf("creating scope checker: %v", err)
+	}
+
+	seedURLs, _ := json.Marshal([]string{ts.URL + "/?utm_source=seed"})
+	job, err := db.CreateJob("crawl", "{}", string(seedURLs))
+	if err != nil {
+		t.Fatalf("creating job: %v", err)
+	}
+
+	eng := New(EngineConfig{
+		DB:           db,
+		Fetcher:      f,
+		RateLimiter:  rl,
+		ScopeChecker: sc,
+		Config:       &cfg,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := eng.RunCrawl(ctx, job.ID); err != nil {
+		t.Fatalf("RunCrawl: %v", err)
+	}
+
+	cleanRoot, _ := urlutil.Normalize(ts.URL + "/")
+	cleanLanding, _ := urlutil.Normalize(ts.URL + "/landing")
+	trackedLanding, _ := urlutil.Normalize(ts.URL + "/landing?utm_source=eyebrow&utm_campaign=launch")
+
+	for _, cleanURL := range []string{cleanRoot, cleanLanding} {
+		if _, err := db.GetURLByNormalized(job.ID, cleanURL); err != nil {
+			t.Fatalf("expected clean URL %s to be stored: %v", cleanURL, err)
+		}
+	}
+	if _, err := db.GetURLByNormalized(job.ID, trackedLanding); err == nil {
+		t.Fatalf("tracked URL %s should have been collapsed to clean landing URL", trackedLanding)
+	}
+
+	var pageCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pages WHERE job_id = ?`, job.ID).Scan(&pageCount); err != nil {
+		t.Fatalf("counting pages: %v", err)
+	}
+	if pageCount != 2 {
+		t.Fatalf("page count = %d, want 2 clean pages", pageCount)
+	}
+}
+
 func TestAuditHTTPToHTTPSRedirectsChecksEveryDiscoveredHost(t *testing.T) {
 	redirectServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "https://127.0.0.1:1/", http.StatusMovedPermanently)

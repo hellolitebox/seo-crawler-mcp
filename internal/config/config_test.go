@@ -97,8 +97,8 @@ func TestDefaultConfig(t *testing.T) {
 	}
 
 	// URL normalization
-	if len(cfg.IgnoreParams) != 7 {
-		t.Errorf("IgnoreParams has %d items, want 7", len(cfg.IgnoreParams))
+	if len(cfg.IgnoreParams) != 8 {
+		t.Errorf("IgnoreParams has %d items, want 8", len(cfg.IgnoreParams))
 	}
 	if cfg.MaxQueryVariantsPerPath != 50 {
 		t.Errorf("MaxQueryVariantsPerPath = %d, want 50", cfg.MaxQueryVariantsPerPath)

@@ -174,13 +174,14 @@ func DefaultConfig() Config {
 		RobotsUnreachablePolicy: RobotsUnreachablePolicyAllow,
 
 		IgnoreParams: []string{
-			"utm_source",
-			"utm_medium",
-			"utm_campaign",
-			"utm_term",
-			"utm_content",
+			"utm_*",
 			"fbclid",
 			"gclid",
+			"gbraid",
+			"wbraid",
+			"msclkid",
+			"mc_cid",
+			"mc_eid",
 		},
 		MaxQueryVariantsPerPath: 50,
 
