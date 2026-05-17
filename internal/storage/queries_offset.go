@@ -447,20 +447,29 @@ func (db *DB) QuerySitemapEntriesOffset(
 	}
 
 	countArgs := append([]any{jobID}, filterArgs...)
-	countSQL := "SELECT COUNT(*) FROM sitemap_entries s WHERE s.job_id = ?" + filterClause.String()
+	countSQL := "SELECT COUNT(DISTINCT s.url) FROM sitemap_entries s WHERE s.job_id = ?" + filterClause.String()
 	var totalCount int
 	if err := db.QueryRow(countSQL, countArgs...).Scan(&totalCount); err != nil {
 		return nil, fmt.Errorf("counting sitemap entries for job %q: %w", jobID, err)
 	}
 	sitemapSorts := map[string]string{
 		"url":      "s.url",
-		"source":   "s.source_sitemap_url",
-		"lastmod":  "s.lastmod",
-		"priority": "s.priority",
-		"status":   "s.reconciliation_status",
+		"source":   "MAX(s.source_sitemap_url)",
+		"lastmod":  "MAX(s.lastmod)",
+		"priority": "MAX(s.priority)",
+		"status":   "MAX(s.reconciliation_status)",
 	}
-	selectSQL := "SELECT " + sitemapColumns + " FROM sitemap_entries s WHERE s.job_id = ?" + filterClause.String() +
-		orderClause(filter.SortBy, filter.SortDir, sitemapSorts, "s.id") + ", s.id ASC LIMIT ? OFFSET ?"
+	selectSQL := `
+		SELECT MIN(s.id), s.job_id, s.url, MAX(s.source_sitemap_url), MAX(s.source_host),
+		       MAX(s.lastmod), MAX(s.changefreq), MAX(s.priority),
+		       CASE
+		         WHEN COALESCE(SUM(CASE WHEN s.reconciliation_status IN ('in_crawl', 'matched') THEN 1 ELSE 0 END), 0) > 0 THEN 'in_crawl'
+		         WHEN COALESCE(SUM(CASE WHEN s.reconciliation_status IN ('not_in_crawl', 'orphan') THEN 1 ELSE 0 END), 0) > 0 THEN 'not_in_crawl'
+		         ELSE MAX(s.reconciliation_status)
+		       END AS reconciliation_status
+		FROM sitemap_entries s WHERE s.job_id = ?` + filterClause.String() +
+		" GROUP BY s.job_id, s.url" +
+		orderClause(filter.SortBy, filter.SortDir, sitemapSorts, "MIN(s.id)") + ", MIN(s.id) ASC LIMIT ? OFFSET ?"
 	queryArgs := append(append([]any{jobID}, filterArgs...), limit, offset)
 	rows, err := db.Query(selectSQL, queryArgs...)
 	if err != nil {

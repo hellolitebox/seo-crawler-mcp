@@ -202,9 +202,9 @@ func loadSitemapEntries(ctx context.Context, db *storage.DB, jobID string) ([]ma
 func loadSitemapSummary(ctx context.Context, db *storage.DB, jobID string) (map[string]any, error) {
 	var total, inCrawl, notInCrawl int
 	if err := db.QueryRowContext(ctx, `
-		SELECT COUNT(*),
-		       COALESCE(SUM(CASE WHEN reconciliation_status IN ('in_crawl', 'matched') THEN 1 ELSE 0 END), 0),
-		       COALESCE(SUM(CASE WHEN reconciliation_status IN ('not_in_crawl', 'orphan') THEN 1 ELSE 0 END), 0)
+		SELECT COUNT(DISTINCT url),
+		       COUNT(DISTINCT CASE WHEN reconciliation_status IN ('in_crawl', 'matched') THEN url END),
+		       COUNT(DISTINCT CASE WHEN reconciliation_status IN ('not_in_crawl', 'orphan') THEN url END)
 		FROM sitemap_entries WHERE job_id = ?`, jobID).Scan(&total, &inCrawl, &notInCrawl); err != nil {
 		return nil, err
 	}

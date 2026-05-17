@@ -671,6 +671,40 @@ func TestGetCrawlSummary(t *testing.T) {
 	}
 }
 
+func TestQuerySitemapEntriesOffsetDeduplicatesURLRows(t *testing.T) {
+	db := testDB(t)
+	jobID := seedJobWithPages(t, db, 1)
+
+	for _, source := range []string{
+		"http://example.com/sitemap.xml",
+		"https://example.com/sitemap.xml",
+		"https://www.example.com/sitemap.xml",
+	} {
+		if _, err := db.InsertSitemapEntry(SitemapEntryInput{
+			JobID:            jobID,
+			URL:              "https://example.com/page-1",
+			SourceSitemapURL: source,
+			SourceHost:       "example.com",
+		}); err != nil {
+			t.Fatalf("InsertSitemapEntry(%q): %v", source, err)
+		}
+	}
+
+	result, err := db.QuerySitemapEntriesOffset(jobID, QueryFilter{}, 100, 0)
+	if err != nil {
+		t.Fatalf("QuerySitemapEntriesOffset: %v", err)
+	}
+	if result.TotalCount != 1 {
+		t.Fatalf("TotalCount = %d, want 1", result.TotalCount)
+	}
+	if len(result.Results) != 1 {
+		t.Fatalf("len(Results) = %d, want 1", len(result.Results))
+	}
+	if result.Results[0].URL != "https://example.com/page-1" {
+		t.Fatalf("URL = %q", result.Results[0].URL)
+	}
+}
+
 func TestQueryPages_EmptyResult(t *testing.T) {
 	db := testDB(t)
 	job, _ := db.CreateJob("crawl", "{}", "[]")
