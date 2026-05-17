@@ -69,6 +69,7 @@ func New(opts Options) *Fetcher {
 	}
 	baseDialer := &net.Dialer{Timeout: dialTimeout, KeepAlive: 30 * time.Second}
 	transport := &http.Transport{
+		Proxy:               nil,
 		DisableCompression:  true, // We handle decompression manually.
 		MaxIdleConns:        64,
 		MaxIdleConnsPerHost: 16,

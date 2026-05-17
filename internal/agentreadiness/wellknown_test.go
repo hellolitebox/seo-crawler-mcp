@@ -12,4 +12,10 @@ func TestBodyHasFieldsRequiresJSONAndFields(t *testing.T) {
 	if bodyHasFields(`{"ok":true}`, []string{"linkset"}) {
 		t.Fatal("expected missing field to fail")
 	}
+	if bodyHasFields(`{"note":"issuer"}`, []string{"issuer"}) {
+		t.Fatal("expected field name inside a JSON value to fail")
+	}
+	if bodyHasFields(`{"metadata":{"issuer":"https://example.com"}}`, []string{"issuer"}) {
+		t.Fatal("expected nested field to fail top-level lookup")
+	}
 }

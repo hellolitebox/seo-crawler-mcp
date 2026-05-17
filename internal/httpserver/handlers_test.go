@@ -106,6 +106,47 @@ func TestHealth(t *testing.T) {
 	}
 }
 
+func TestJobPageBundlePopulatesInSitemap(t *testing.T) {
+	srv, h := newTestServer(t)
+	jobID := "job-page-sitemap"
+	pageURL := "https://example.com/in-sitemap"
+	seedJob(t, srv.db, jobID, "https://example.com", "completed")
+	result, err := srv.db.Exec("INSERT INTO urls (job_id, normalized_url, host, status, discovered_via) VALUES (?, ?, 'example.com', 'fetched', 'crawl')", jobID, pageURL)
+	if err != nil {
+		t.Fatalf("seeding url: %v", err)
+	}
+	urlID, _ := result.LastInsertId()
+	fetchResult, err := srv.db.Exec("INSERT INTO fetches (job_id, fetch_seq, requested_url_id, status_code, content_type) VALUES (?, 1, ?, 200, 'text/html')", jobID, urlID)
+	if err != nil {
+		t.Fatalf("seeding fetch: %v", err)
+	}
+	fetchID, _ := fetchResult.LastInsertId()
+	if _, err := srv.db.Exec("INSERT INTO pages (job_id, url_id, fetch_id, depth, indexability_state) VALUES (?, ?, ?, 1, 'indexable')", jobID, urlID, fetchID); err != nil {
+		t.Fatalf("seeding page: %v", err)
+	}
+	if _, err := srv.db.Exec("INSERT INTO sitemap_entries (job_id, url, source_sitemap_url, source_host) VALUES (?, ?, 'https://example.com/sitemap.xml', 'example.com')", jobID, pageURL); err != nil {
+		t.Fatalf("seeding sitemap entry: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/jobs/"+jobID+"/page?url="+url.QueryEscape(pageURL), nil)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rr.Code, rr.Body.String())
+	}
+	var payload struct {
+		Page struct {
+			InSitemap bool `json:"inSitemap"`
+		} `json:"page"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&payload); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if !payload.Page.InSitemap {
+		t.Fatal("page.inSitemap = false, want true")
+	}
+}
+
 func TestHandleCrawlWithoutEngine(t *testing.T) {
 	_, handler := newTestServer(t)
 

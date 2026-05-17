@@ -170,3 +170,31 @@ func TestLoadFromFile_InvalidDuration(t *testing.T) {
 		t.Fatal("expected error for invalid duration, got nil")
 	}
 }
+
+func TestLoadConfigRejectsInvalidBooleanEnv(t *testing.T) {
+	t.Setenv("SEO_CRAWLER_SSRF_PROTECTION", "treu")
+
+	if _, err := LoadConfig(""); err == nil {
+		t.Fatal("expected invalid boolean env value to return an error")
+	}
+}
+
+func TestLoadConfigRejectsInvalidRobotsPolicy(t *testing.T) {
+	t.Setenv("SEO_CRAWLER_ROBOTS_UNREACHABLE_POLICY", "disalow")
+
+	if _, err := LoadConfig(""); err == nil {
+		t.Fatal("expected invalid robots policy to return an error")
+	}
+}
+
+func TestLoadFromFileRejectsInvalidForceRenderPattern(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "bad-pattern.toml")
+	if err := os.WriteFile(cfgPath, []byte("force_render_patterns = [\"/app/[\"]"), 0644); err != nil {
+		t.Fatalf("writing config file: %v", err)
+	}
+
+	if _, err := LoadFromFile(cfgPath); err == nil {
+		t.Fatal("expected invalid force_render_patterns entry to return an error")
+	}
+}

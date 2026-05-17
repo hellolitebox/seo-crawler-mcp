@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -82,7 +83,12 @@ func LoadConfig(configPath string) (*Config, error) {
 		cfg = *fileCfg
 	}
 
-	applyEnvOverrides(&cfg)
+	if err := applyEnvOverrides(&cfg); err != nil {
+		return nil, err
+	}
+	if err := validateConfig(&cfg); err != nil {
+		return nil, err
+	}
 	return &cfg, nil
 }
 
@@ -251,12 +257,15 @@ func LoadFromFile(path string) (*Config, error) {
 	if tc.URLGroups != nil {
 		cfg.URLGroups = tc.URLGroups
 	}
+	if err := validateConfig(&cfg); err != nil {
+		return nil, err
+	}
 
 	return &cfg, nil
 }
 
 // applyEnvOverrides reads SEO_CRAWLER_ prefixed env vars and overrides config values.
-func applyEnvOverrides(cfg *Config) {
+func applyEnvOverrides(cfg *Config) error {
 	if v := os.Getenv("SEO_CRAWLER_DB_PATH"); v != "" {
 		cfg.DBPath = v
 	}
@@ -345,19 +354,35 @@ func applyEnvOverrides(cfg *Config) {
 		}
 	}
 	if v := os.Getenv("SEO_CRAWLER_RESPECT_ROBOTS"); v != "" {
-		cfg.RespectRobots = parseBool(v)
+		parsed, err := parseBool(v)
+		if err != nil {
+			return fmt.Errorf("parsing SEO_CRAWLER_RESPECT_ROBOTS: %w", err)
+		}
+		cfg.RespectRobots = parsed
 	}
 	if v := os.Getenv("SEO_CRAWLER_ROBOTS_UNREACHABLE_POLICY"); v != "" {
 		cfg.RobotsUnreachablePolicy = RobotsUnreachablePolicy(v)
 	}
 	if v := os.Getenv("SEO_CRAWLER_ALLOW_INSECURE_TLS"); v != "" {
-		cfg.AllowInsecureTLS = parseBool(v)
+		parsed, err := parseBool(v)
+		if err != nil {
+			return fmt.Errorf("parsing SEO_CRAWLER_ALLOW_INSECURE_TLS: %w", err)
+		}
+		cfg.AllowInsecureTLS = parsed
 	}
 	if v := os.Getenv("SEO_CRAWLER_ALLOW_PRIVATE_NETWORKS"); v != "" {
-		cfg.AllowPrivateNetworks = parseBool(v)
+		parsed, err := parseBool(v)
+		if err != nil {
+			return fmt.Errorf("parsing SEO_CRAWLER_ALLOW_PRIVATE_NETWORKS: %w", err)
+		}
+		cfg.AllowPrivateNetworks = parsed
 	}
 	if v := os.Getenv("SEO_CRAWLER_SSRF_PROTECTION"); v != "" {
-		cfg.SSRFProtection = parseBool(v)
+		parsed, err := parseBool(v)
+		if err != nil {
+			return fmt.Errorf("parsing SEO_CRAWLER_SSRF_PROTECTION: %w", err)
+		}
+		cfg.SSRFProtection = parsed
 	}
 	if v := os.Getenv("SEO_CRAWLER_TITLE_MAX_LENGTH"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
@@ -439,16 +464,36 @@ func applyEnvOverrides(cfg *Config) {
 		cfg.LanguageToolURL = v
 	}
 	if v := os.Getenv("SEO_CRAWLER_PSI_DESKTOP"); v != "" {
-		cfg.PSIDesktop = parseBool(v)
+		parsed, err := parseBool(v)
+		if err != nil {
+			return fmt.Errorf("parsing SEO_CRAWLER_PSI_DESKTOP: %w", err)
+		}
+		cfg.PSIDesktop = parsed
 	}
+	return nil
 }
 
 // parseBool parses common boolean strings.
-func parseBool(s string) bool {
-	switch strings.ToLower(s) {
+func parseBool(s string) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "1", "true", "yes", "on":
-		return true
-	default:
-		return false
+		return true, nil
+	case "0", "false", "no", "off":
+		return false, nil
 	}
+	return false, fmt.Errorf("invalid boolean value %q", s)
+}
+
+func validateConfig(cfg *Config) error {
+	switch cfg.RobotsUnreachablePolicy {
+	case RobotsUnreachablePolicyAllow, RobotsUnreachablePolicyDisallow, RobotsUnreachablePolicyCacheThenAllow:
+	default:
+		return fmt.Errorf("invalid robots_unreachable_policy %q", cfg.RobotsUnreachablePolicy)
+	}
+	for _, pattern := range cfg.ForceRenderPatterns {
+		if _, err := path.Match(pattern, ""); err != nil {
+			return fmt.Errorf("invalid force_render_patterns entry %q: %w", pattern, err)
+		}
+	}
+	return nil
 }

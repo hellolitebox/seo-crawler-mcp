@@ -50,8 +50,11 @@ func (s *Server) handleJobPageBundle(w http.ResponseWriter, r *http.Request, job
 
 	// Page row — may legitimately be missing (URL discovered but never crawled).
 	var pagePayload any
+	var pageDTO *dto.PageDTO
 	if p, err := s.db.GetPageByURL(jobID, urlRow.ID); err == nil {
-		pagePayload = dto.PageFromStorage(*p, lookup)
+		dtoValue := dto.PageFromStorage(*p, lookup)
+		pageDTO = &dtoValue
+		pagePayload = dtoValue
 	}
 
 	issues := []dto.IssueDTO{}
@@ -68,6 +71,10 @@ func (s *Server) handleJobPageBundle(w http.ResponseWriter, r *http.Request, job
 	redirectHops := loadPageRedirectHops(ctx, s.db, jobID, urlRow.NormalizedURL)
 	psi, axe := loadPagePSIAxe(ctx, s.db, jobID, urlRow.NormalizedURL)
 	sitemapEntries := loadPageSitemapEntries(ctx, s.db, jobID, urlRow.NormalizedURL)
+	if pageDTO != nil {
+		pageDTO.InSitemap = len(sitemapEntries) > 0
+		pagePayload = *pageDTO
+	}
 	llms := loadPageLlmsFindings(ctx, s.db, jobID, urlRow.Host)
 	responseCodes := loadPageResponseCodes(ctx, s.db, jobID, urlRow.ID)
 	security := loadPageSecurityHeaders(ctx, s.db, jobID, urlRow.ID)

@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	cdpfetch "github.com/chromedp/cdproto/fetch"
+	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/chromedp"
 )
 
@@ -80,6 +82,9 @@ func NewPool(opts Options) *Pool {
 // Render navigates to rawURL in a headless browser, waits for JS execution,
 // and returns the rendered HTML.
 func (p *Pool) Render(ctx context.Context, rawURL string) (*RenderResult, error) {
+	if !isAllowedRendererURL(rawURL) {
+		return nil, fmt.Errorf("render %q rejected non-public URL", rawURL)
+	}
 	// Check pool not closed.
 	select {
 	case <-p.poolCtx.Done():
@@ -146,6 +151,7 @@ func (p *Pool) Render(ctx context.Context, rawURL string) (*RenderResult, error)
 	// indefinitely on pages with long-polling, WebSockets, or analytics beacons.
 	// WaitReady("body") + Sleep is deterministic and used by most production crawlers.
 	err := chromedp.Run(taskCtx,
+		installRequestGuard(),
 		chromedp.Navigate(rawURL),
 		chromedp.WaitReady("body", chromedp.ByQuery),
 		chromedp.Sleep(time.Duration(p.renderWaitMs)*time.Millisecond),
@@ -185,6 +191,9 @@ type RenderOptions struct {
 // RenderWithOptions is like Render but accepts options that control post-load
 // interactions (e.g. clicking navigation triggers to reveal hidden links).
 func (p *Pool) RenderWithOptions(ctx context.Context, rawURL string, opts RenderOptions) (*RenderResult, error) {
+	if !isAllowedRendererURL(rawURL) {
+		return nil, fmt.Errorf("render %q rejected non-public URL", rawURL)
+	}
 	if !opts.DiscoverMenus {
 		return p.Render(ctx, rawURL)
 	}
@@ -243,6 +252,7 @@ func (p *Pool) RenderWithOptions(ctx context.Context, rawURL string, opts Render
 	// ── 1. Normal page load ─────────────────────────────────────────────
 	var finalURL string
 	err := chromedp.Run(taskCtx,
+		installRequestGuard(),
 		chromedp.Navigate(rawURL),
 		chromedp.WaitReady("body", chromedp.ByQuery),
 		chromedp.Sleep(time.Duration(p.renderWaitMs)*time.Millisecond),
@@ -408,6 +418,25 @@ func clickDiscoveredTriggers(taskCtx context.Context) {
 
 func isAllowedRendererURL(rawURL string) bool {
 	return IsPublicURL(rawURL) || allowPrivateRendererURLsForTest
+}
+
+func installRequestGuard() chromedp.Action {
+	return chromedp.ActionFunc(func(ctx context.Context) error {
+		chromedp.ListenTarget(ctx, func(ev any) {
+			paused, ok := ev.(*cdpfetch.EventRequestPaused)
+			if !ok {
+				return
+			}
+			go func() {
+				if !isAllowedRendererURL(paused.Request.URL) {
+					_ = cdpfetch.FailRequest(paused.RequestID, network.ErrorReasonBlockedByClient).Do(ctx)
+					return
+				}
+				_ = cdpfetch.ContinueRequest(paused.RequestID).Do(ctx)
+			}()
+		})
+		return cdpfetch.Enable().Do(ctx)
+	})
 }
 
 // Close marks the pool as closed and cancels all in-flight renders.

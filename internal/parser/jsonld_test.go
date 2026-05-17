@@ -60,6 +60,31 @@ func TestExtractJSONLD_Graph(t *testing.T) {
 	}
 }
 
+func TestExtractJSONLD_NestedTypedObjects(t *testing.T) {
+	html := `<html><head><script type="application/ld+json">{
+		"@type":"BlogPosting",
+		"publisher":{"@type":"Organization","name":"Org"},
+		"author":{"@type":"Person","name":"A"}
+	}</script></head></html>`
+	blocks := ExtractJSONLD(docFromHTML(html))
+	if len(blocks) != 1 {
+		t.Fatalf("expected 1 block, got %d", len(blocks))
+	}
+	want := []string{"BlogPosting", "Organization", "Person"}
+	if len(blocks[0].Types) != len(want) {
+		t.Fatalf("types = %v, want %v", blocks[0].Types, want)
+	}
+	got := map[string]bool{}
+	for _, typ := range blocks[0].Types {
+		got[typ] = true
+	}
+	for _, typ := range want {
+		if !got[typ] {
+			t.Fatalf("types = %v, want %v", blocks[0].Types, want)
+		}
+	}
+}
+
 func TestExtractJSONLD_Malformed(t *testing.T) {
 	html := `<html><head><script type="application/ld+json">{bad json}</script></head></html>`
 	blocks := ExtractJSONLD(docFromHTML(html))

@@ -134,6 +134,37 @@ func TestFetchUserAgent(t *testing.T) {
 	}
 }
 
+func TestFetchDoesNotUseEnvironmentProxy(t *testing.T) {
+	proxyHit := make(chan struct{}, 1)
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxyHit <- struct{}{}
+		http.Error(w, "proxy should not be used", http.StatusBadGateway)
+	}))
+	defer proxy.Close()
+	t.Setenv("HTTP_PROXY", proxy.URL)
+	t.Setenv("HTTPS_PROXY", proxy.URL)
+	t.Setenv("NO_PROXY", "")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "direct")
+	}))
+	defer srv.Close()
+
+	f := New(defaultOpts())
+	result, err := f.Fetch(srv.URL)
+	if err != nil {
+		t.Fatalf("Fetch error: %v", err)
+	}
+	if string(result.Body) != "direct" {
+		t.Fatalf("body = %q, want direct", result.Body)
+	}
+	select {
+	case <-proxyHit:
+		t.Fatal("fetcher used HTTP_PROXY from environment")
+	default:
+	}
+}
+
 func TestFetchHeadOnly(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodHead {

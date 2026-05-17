@@ -36,6 +36,21 @@ document.getElementById('root').innerHTML = '<h1>Rendered Content</h1><p>This wa
 </body>
 </html>`
 
+func TestRenderRejectsPrivateURLBeforeLaunchingBrowser(t *testing.T) {
+	allowPrivateRendererURLsForTest = false
+	pool := NewPool(Options{MaxSlots: 1, RenderTimeout: time.Second})
+	defer pool.Close()
+
+	start := time.Now()
+	_, err := pool.Render(context.Background(), "http://127.0.0.1:9/")
+	if err == nil {
+		t.Fatal("expected private URL render to be rejected")
+	}
+	if time.Since(start) > 200*time.Millisecond {
+		t.Fatal("private URL rejection was not immediate")
+	}
+}
+
 func TestRender_BasicPage(t *testing.T) {
 	skipIfNoChrome(t)
 

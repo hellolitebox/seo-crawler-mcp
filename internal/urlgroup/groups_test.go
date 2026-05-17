@@ -167,6 +167,35 @@ func TestUserGroupPrefixDoesNotOverrideDifferentSegment(t *testing.T) {
 	}
 }
 
+func TestUserGroupGlobPatternAssignsPages(t *testing.T) {
+	db := testDB(t)
+	jobID := "job-usergroup-glob"
+	seedJob(t, db, jobID)
+
+	for i := 1; i <= 12; i++ {
+		seedPageWithURL(t, db, jobID, fmt.Sprintf("https://example.com/blog/post-%d", i), i)
+	}
+	seedPageWithURL(t, db, jobID, "https://example.com/docs/page", 13)
+
+	userGroups := []config.URLGroupConfig{
+		{Name: "blog-posts", Pattern: "/blog/*"},
+	}
+	if err := DetectGroups(db, jobID, userGroups); err != nil {
+		t.Fatalf("DetectGroups: %v", err)
+	}
+
+	var blogPages int
+	db.QueryRow(`SELECT COUNT(*) FROM pages WHERE job_id = ? AND url_group = 'blog-posts'`, jobID).Scan(&blogPages)
+	if blogPages != 12 {
+		t.Fatalf("blog-post grouped pages = %d, want 12", blogPages)
+	}
+	var autoCount int
+	db.QueryRow(`SELECT COUNT(*) FROM url_pattern_groups WHERE job_id = ? AND source = 'auto' AND pattern = '/blog'`, jobID).Scan(&autoCount)
+	if autoCount != 0 {
+		t.Fatalf("expected glob user group to suppress /blog auto group, got %d", autoCount)
+	}
+}
+
 func TestExtractPattern(t *testing.T) {
 	tests := []struct {
 		url  string

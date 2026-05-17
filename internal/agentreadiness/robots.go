@@ -30,6 +30,12 @@ var knownAIBots = []string{
 	"youbot",
 }
 
+var knownContentSignalKeys = map[string]bool{
+	"ai-input": true,
+	"ai-train": true,
+	"search":   true,
+}
+
 // DetectAIBotRules grades whether robots.txt has explicit AI bot directives.
 func DetectAIBotRules(targetURL string, rules []RobotsRule) CheckResult {
 	explicit := []RobotsRule{}
@@ -129,7 +135,14 @@ func EvaluateContentSignals(targetURL, rawRobots string, responseStatus *int, re
 			{Label: "Content Signals", URL: "https://contentsignals.org/"},
 		},
 	}
-	if len(signals) > 0 {
+	hasKnownSignal := false
+	for _, signal := range signals {
+		if knownContentSignalKeys[signal.Key] {
+			hasKnownSignal = true
+			break
+		}
+	}
+	if hasKnownSignal {
 		result.Status = StatusPass
 		result.Score = 100
 		result.Recommendation = ""

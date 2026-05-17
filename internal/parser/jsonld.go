@@ -75,13 +75,11 @@ func extractTypesFromValue(v interface{}, types []string) []string {
 		types = appendTypes(t, types)
 	}
 
-	// Handle @graph arrays.
-	if graph, exists := obj["@graph"]; exists {
-		if arr, ok := graph.([]interface{}); ok {
-			for _, item := range arr {
-				types = extractTypesFromValue(item, types)
-			}
+	for key, value := range obj {
+		if key == "@type" {
+			continue
 		}
+		types = extractTypesFromValue(value, types)
 	}
 
 	return types

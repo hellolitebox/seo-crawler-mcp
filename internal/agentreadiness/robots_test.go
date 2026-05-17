@@ -23,3 +23,15 @@ func TestParseContentSignals(t *testing.T) {
 		t.Fatalf("unexpected first signal: %+v", signals[0])
 	}
 }
+
+func TestEvaluateContentSignalsRequiresKnownSignal(t *testing.T) {
+	unknown := EvaluateContentSignals("https://example.com/robots.txt", "Content-Signal: foo=bar\n", nil, nil)
+	if unknown.Status == StatusPass {
+		t.Fatalf("unknown content signal returned pass: %+v", unknown)
+	}
+
+	known := EvaluateContentSignals("https://example.com/robots.txt", "Content-Signal: ai-train=no\n", nil, nil)
+	if known.Status != StatusPass || known.Score != 100 {
+		t.Fatalf("known content signal = %+v, want pass/100", known)
+	}
+}

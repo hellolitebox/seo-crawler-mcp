@@ -4,6 +4,7 @@ package urlgroup
 import (
 	"fmt"
 	"net/url"
+	"path"
 	"strings"
 
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/config"
@@ -144,6 +145,12 @@ func DetectGroups(db *storage.DB, jobID string, userGroups []config.URLGroupConf
 }
 
 func patternCoversPattern(pattern, userPattern string) bool {
+	if matchPathPattern(pattern, userPattern) {
+		return true
+	}
+	if globBase := globPatternBase(userPattern); globBase != "" {
+		return pattern == globBase || strings.HasPrefix(pattern, globBase+"/")
+	}
 	if pattern == userPattern {
 		return true
 	}
@@ -195,10 +202,36 @@ func matchesPattern(rawURL, pattern string) bool {
 		return false
 	}
 	path := u.Path
+	if matchPathPattern(path, pattern) {
+		return true
+	}
 	if !strings.HasPrefix(path, pattern) {
 		return false
 	}
 	// Ensure it's a prefix match at segment boundary
 	rest := path[len(pattern):]
 	return rest == "" || rest[0] == '/'
+}
+
+func matchPathPattern(value, pattern string) bool {
+	if pattern == "" {
+		return false
+	}
+	matched, err := path.Match(pattern, value)
+	if err != nil {
+		return false
+	}
+	return matched
+}
+
+func globPatternBase(pattern string) string {
+	idx := strings.IndexAny(pattern, "*?[")
+	if idx < 0 {
+		return ""
+	}
+	base := strings.TrimRight(pattern[:idx], "/")
+	if base == "" {
+		return "/"
+	}
+	return base
 }

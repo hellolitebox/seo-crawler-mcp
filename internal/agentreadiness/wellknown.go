@@ -3,7 +3,6 @@ package agentreadiness
 import (
 	"encoding/json"
 	"net/http"
-	"strings"
 )
 
 type HTTPProbe struct {
@@ -118,9 +117,12 @@ func bodyHasFields(body string, fields []string) bool {
 	if err := json.Unmarshal([]byte(body), &parsed); err != nil {
 		return false
 	}
-	lower := strings.ToLower(body)
+	obj, ok := parsed.(map[string]any)
+	if !ok {
+		return false
+	}
 	for _, field := range fields {
-		if !strings.Contains(lower, strings.ToLower(field)) {
+		if _, ok := obj[field]; !ok {
 			return false
 		}
 	}

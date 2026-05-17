@@ -100,7 +100,8 @@ func RenderPageContentOnly(ctx context.Context, pageURL string) (*PlaywrightResu
 	defer cancel()
 
 	script := `
-import os, sys, json
+import ipaddress, os, socket, sys, json
+from urllib.parse import urlparse
 from playwright.sync_api import sync_playwright
 import time as _time
 
@@ -109,9 +110,35 @@ result = {"html": "", "links": [], "images": [], "finalUrl": ""}
 
 _chromium_path = os.environ.get("CHROMIUM_PATH") or None
 
+def is_public_url(raw_url):
+    if os.environ.get("SEO_CRAWLER_ALLOW_PRIVATE_RENDERER_URLS_FOR_TEST") == "1":
+        return True
+    parsed = urlparse(raw_url)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        return False
+    try:
+        infos = socket.getaddrinfo(parsed.hostname, None)
+    except Exception:
+        return False
+    for info in infos:
+        try:
+            ip = ipaddress.ip_address(info[4][0])
+        except Exception:
+            return False
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved or ip.is_unspecified:
+            return False
+    return True
+
+def guard_route(route):
+    if is_public_url(route.request.url):
+        route.continue_()
+    else:
+        route.abort()
+
 with sync_playwright() as p:
     browser = p.chromium.launch(headless=True, executable_path=_chromium_path)
     page = browser.new_page(viewport={"width": 1440, "height": 900})
+    page.route("**/*", guard_route)
     page.goto(url, wait_until="networkidle", timeout=30000)
     result["finalUrl"] = page.url
     page.wait_for_timeout(2000)
@@ -171,6 +198,9 @@ print(json.dumps(result))
 func runPythonJSON(ctx context.Context, script string, args ...string) ([]byte, error) {
 	cmdArgs := append([]string{"-c", script}, args...)
 	cmd := exec.CommandContext(ctx, "python3", cmdArgs...)
+	if allowPrivateRendererURLsForTest {
+		cmd.Env = append(cmd.Environ(), "SEO_CRAWLER_ALLOW_PRIVATE_RENDERER_URLS_FOR_TEST=1")
+	}
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -230,12 +260,38 @@ func clampPlaywrightResult(result *PlaywrightResult) {
 
 func playwrightScript() string {
 	return `
-import os, sys, json
+import ipaddress, os, socket, sys, json
+from urllib.parse import urlparse
 from playwright.sync_api import sync_playwright
 
 url = sys.argv[1]
 
 _chromium_path = os.environ.get("CHROMIUM_PATH") or None
+
+def is_public_url(raw_url):
+    if os.environ.get("SEO_CRAWLER_ALLOW_PRIVATE_RENDERER_URLS_FOR_TEST") == "1":
+        return True
+    parsed = urlparse(raw_url)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        return False
+    try:
+        infos = socket.getaddrinfo(parsed.hostname, None)
+    except Exception:
+        return False
+    for info in infos:
+        try:
+            ip = ipaddress.ip_address(info[4][0])
+        except Exception:
+            return False
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved or ip.is_unspecified:
+            return False
+    return True
+
+def guard_route(route):
+    if is_public_url(route.request.url):
+        route.continue_()
+    else:
+        route.abort()
 
 with sync_playwright() as p:
     browser = p.chromium.launch(headless=True, executable_path=_chromium_path)
@@ -244,6 +300,7 @@ with sync_playwright() as p:
 
     # Desktop viewport
     page = browser.new_page(viewport={"width": 1440, "height": 900})
+    page.route("**/*", guard_route)
     page.goto(url, wait_until="networkidle", timeout=30000)
     result["finalUrl"] = page.url
     page.wait_for_timeout(2000)
