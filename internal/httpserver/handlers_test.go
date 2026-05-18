@@ -147,6 +147,74 @@ func TestJobPageBundlePopulatesInSitemap(t *testing.T) {
 	}
 }
 
+func TestJobPageBundleImagesExcludeScriptChunks(t *testing.T) {
+	srv, h := newTestServer(t)
+	jobID := "job-page-images"
+	pageURL := "https://example.com/page"
+	imageURL := "https://example.com/hero.webp"
+	scriptURL := "https://example.com/_next/static/chunks/app.js"
+	seedJob(t, srv.db, jobID, "https://example.com", "completed")
+
+	insertURL := func(rawURL, host string) int64 {
+		t.Helper()
+		result, err := srv.db.Exec(
+			"INSERT INTO urls (job_id, normalized_url, host, status, discovered_via) VALUES (?, ?, ?, 'fetched', 'crawl')",
+			jobID, rawURL, host,
+		)
+		if err != nil {
+			t.Fatalf("seeding url %s: %v", rawURL, err)
+		}
+		id, _ := result.LastInsertId()
+		return id
+	}
+	pageURLID := insertURL(pageURL, "example.com")
+	imageURLID := insertURL(imageURL, "example.com")
+	scriptURLID := insertURL(scriptURL, "example.com")
+	fetchResult, err := srv.db.Exec("INSERT INTO fetches (job_id, fetch_seq, requested_url_id, status_code, content_type) VALUES (?, 1, ?, 200, 'text/html')", jobID, pageURLID)
+	if err != nil {
+		t.Fatalf("seeding fetch: %v", err)
+	}
+	fetchID, _ := fetchResult.LastInsertId()
+	if _, err := srv.db.Exec("INSERT INTO pages (job_id, url_id, fetch_id, depth, indexability_state) VALUES (?, ?, ?, 1, 'indexable')", jobID, pageURLID, fetchID); err != nil {
+		t.Fatalf("seeding page: %v", err)
+	}
+	if _, err := srv.db.Exec("INSERT INTO assets (job_id, url_id, content_type, status_code) VALUES (?, ?, 'image/webp', 200), (?, ?, 'application/javascript', 200)", jobID, imageURLID, jobID, scriptURLID); err != nil {
+		t.Fatalf("seeding assets: %v", err)
+	}
+	if _, err := srv.db.Exec("INSERT INTO asset_references (job_id, asset_url_id, source_page_url_id, reference_type) VALUES (?, ?, ?, 'img_src'), (?, ?, ?, 'script_src')", jobID, imageURLID, pageURLID, jobID, scriptURLID, pageURLID); err != nil {
+		t.Fatalf("seeding asset references: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/jobs/"+jobID+"/page?url="+url.QueryEscape(pageURL), nil)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rr.Code, rr.Body.String())
+	}
+	var payload struct {
+		AssetReferences []struct {
+			AssetURL      string `json:"asset_url"`
+			ReferenceType string `json:"reference_type"`
+		} `json:"asset_references"`
+		Assets []struct {
+			URL         string `json:"url"`
+			ContentType string `json:"content_type"`
+		} `json:"assets"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&payload); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if len(payload.AssetReferences) != 1 {
+		t.Fatalf("asset_references len = %d, want 1: %+v", len(payload.AssetReferences), payload.AssetReferences)
+	}
+	if payload.AssetReferences[0].AssetURL != imageURL || payload.AssetReferences[0].ReferenceType != "img_src" {
+		t.Fatalf("asset reference = %+v, want img_src hero", payload.AssetReferences[0])
+	}
+	if len(payload.Assets) != 1 || payload.Assets[0].URL != imageURL || payload.Assets[0].ContentType != "image/webp" {
+		t.Fatalf("assets = %+v, want only image asset", payload.Assets)
+	}
+}
+
 func TestHandleCrawlWithoutEngine(t *testing.T) {
 	_, handler := newTestServer(t)
 

@@ -261,7 +261,8 @@ func loadPageEdges(ctx context.Context, db *storage.DB, jobID string, urlID int6
 }
 
 // loadPageAssets returns (assetReferences, assets), filtered to assets
-// referenced from this page.
+// referenced from this page as content images. The page drawer's Images tab
+// should not include JS/CSS chunks that are tracked separately as assets.
 func loadPageAssets(ctx context.Context, db *storage.DB, jobID string, pageURLID int64) ([]map[string]any, []map[string]any) {
 	rows, err := db.QueryContext(ctx, `
 		SELECT ar.id, ar.job_id, ar.asset_url_id, ar.source_page_url_id, ar.reference_type,
@@ -270,7 +271,7 @@ func loadPageAssets(ctx context.Context, db *storage.DB, jobID string, pageURLID
 		FROM asset_references ar
 		JOIN urls au ON au.id = ar.asset_url_id
 		JOIN urls pu ON pu.id = ar.source_page_url_id
-		WHERE ar.job_id = ? AND ar.source_page_url_id = ?`,
+		WHERE ar.job_id = ? AND ar.source_page_url_id = ? AND ar.reference_type = 'img_src'`,
 		jobID, pageURLID)
 	if err != nil {
 		return []map[string]any{}, []map[string]any{}
