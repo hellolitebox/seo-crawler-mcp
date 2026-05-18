@@ -147,6 +147,56 @@ func TestJobPageBundlePopulatesInSitemap(t *testing.T) {
 	}
 }
 
+func TestJobPageBundleDeduplicatesSitemapEntries(t *testing.T) {
+	srv, h := newTestServer(t)
+	jobID := "job-page-sitemap-dedupe"
+	pageURL := "https://www.example.com/page"
+	seedJob(t, srv.db, jobID, "https://example.com", "completed")
+	result, err := srv.db.Exec("INSERT INTO urls (job_id, normalized_url, host, status, discovered_via) VALUES (?, ?, 'example.com', 'fetched', 'crawl')", jobID, pageURL)
+	if err != nil {
+		t.Fatalf("seeding url: %v", err)
+	}
+	urlID, _ := result.LastInsertId()
+	fetchResult, err := srv.db.Exec("INSERT INTO fetches (job_id, fetch_seq, requested_url_id, status_code, content_type) VALUES (?, 1, ?, 200, 'text/html')", jobID, urlID)
+	if err != nil {
+		t.Fatalf("seeding fetch: %v", err)
+	}
+	fetchID, _ := fetchResult.LastInsertId()
+	if _, err := srv.db.Exec("INSERT INTO pages (job_id, url_id, fetch_id, depth, indexability_state) VALUES (?, ?, ?, 1, 'indexable')", jobID, urlID, fetchID); err != nil {
+		t.Fatalf("seeding page: %v", err)
+	}
+	for _, row := range []struct {
+		url    string
+		source string
+	}{
+		{"https://example.com/page", "https://example.com/sitemap.xml"},
+		{"http://www.example.com/page/", "http://www.example.com/sitemap.xml"},
+		{"https://www.example.com/page", "https://www.example.com/sitemap.xml"},
+	} {
+		if _, err := srv.db.Exec("INSERT INTO sitemap_entries (job_id, url, source_sitemap_url, source_host) VALUES (?, ?, ?, 'example.com')", jobID, row.url, row.source); err != nil {
+			t.Fatalf("seeding sitemap entry %q: %v", row.url, err)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/jobs/"+jobID+"/page?url="+url.QueryEscape(pageURL), nil)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rr.Code, rr.Body.String())
+	}
+	var payload struct {
+		SitemapEntries []struct {
+			URL string `json:"url"`
+		} `json:"sitemap_entries"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&payload); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if len(payload.SitemapEntries) != 1 {
+		t.Fatalf("sitemap_entries len = %d, want 1: %+v", len(payload.SitemapEntries), payload.SitemapEntries)
+	}
+}
+
 func TestJobPageBundleImagesExcludeScriptChunks(t *testing.T) {
 	srv, h := newTestServer(t)
 	jobID := "job-page-images"

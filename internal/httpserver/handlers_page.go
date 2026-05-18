@@ -439,12 +439,15 @@ func loadPagePSIAxe(ctx context.Context, db *storage.DB, jobID, pageURL string) 
 }
 
 func loadPageSitemapEntries(ctx context.Context, db *storage.DB, jobID, pageURL string) []map[string]any {
-	sitemapMatchExpr := storage.SitemapComparableURLSQL("url") + " = " + storage.SitemapComparableURLSQL("?2")
+	sitemapKeyExpr := storage.SitemapComparableURLSQL("s.url")
+	sitemapMatchExpr := sitemapKeyExpr + " = " + storage.SitemapComparableURLSQL("?2")
 	rows, err := db.QueryContext(ctx, `
-		SELECT id, job_id, url, source_sitemap_url, source_host,
-		       lastmod, changefreq, priority, reconciliation_status
-		FROM sitemap_entries
-		WHERE job_id = ?1 AND `+sitemapMatchExpr+``,
+		SELECT MIN(s.id), s.job_id, MAX(s.url), MAX(s.source_sitemap_url), MAX(s.source_host),
+		       MAX(s.lastmod), MAX(s.changefreq), MAX(s.priority), MAX(s.reconciliation_status)
+		FROM sitemap_entries s
+		WHERE s.job_id = ?1 AND `+sitemapMatchExpr+`
+		GROUP BY s.job_id, `+sitemapKeyExpr+`
+		ORDER BY MIN(s.id) ASC`,
 		jobID, pageURL)
 	if err != nil {
 		return []map[string]any{}
