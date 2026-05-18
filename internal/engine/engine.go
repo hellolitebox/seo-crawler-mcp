@@ -1936,13 +1936,9 @@ func (e *Engine) sitemapGapEscalation(ctx context.Context, jobID string) int {
 		slog.Error("engine: sitemap gap: query key pages failed", "err", err, "job_id", jobID)
 		return 0
 	}
-	type keyPage struct {
-		urlID int64
-		url   string
-	}
-	var keyPages []keyPage
+	var keyPages []sitemapGapKeyPage
 	for rows.Next() {
-		var kp keyPage
+		var kp sitemapGapKeyPage
 		if scanErr := rows.Scan(&kp.urlID, &kp.url); scanErr == nil {
 			keyPages = append(keyPages, kp)
 		}
@@ -1964,49 +1960,15 @@ func (e *Engine) sitemapGapEscalation(ctx context.Context, jobID string) int {
 	newURLsDiscovered := 0
 	pagesReRendered := 0
 
-	e.emitPhase(jobID, "sitemap_gap_progress", fmt.Sprintf("found %d sitemap URLs missing from crawl, re-rendering %d key pages", len(gap), len(keyPages)))
-
-	for i, kp := range keyPages {
+	renderResults := e.renderSitemapGapKeyPages(ctx, jobID, keyPages, len(gap))
+	for _, renderResult := range renderResults {
 		if ctx.Err() != nil {
 			break
 		}
-
-		e.emitPhase(jobID, "sitemap_gap_progress", fmt.Sprintf("re-rendering page %d/%d (%d new URLs found so far)", i+1, len(keyPages), newURLsDiscovered))
-
-		if err := e.validateRenderTarget(kp.url); err != nil {
-			slog.Warn("engine: sitemap gap: ssrf rejected", "url", kp.url, "err", err)
-			continue
-		}
-
-		// Try the configured rich renderer first (Browserbase in production auto
-		// mode), then fall back to chromedp if local rendering is available.
-		var renderHTML string
-		var renderFinalURL string
-
-		var playwrightLinks []string
-		if pwResult, pwErr := e.renderMenuDiscovery(ctx, kp.url); pwErr != nil {
-			slog.Warn("engine: sitemap gap: rich render failed, falling back to chromedp", "url", kp.url, "err", pwErr)
-		} else {
-			renderHTML = pwResult.HTML
-			renderFinalURL = pwResult.FinalURL
-			playwrightLinks = pwResult.Links // Links collected incrementally during menu clicks
-		}
-
-		// Chromedp fallback
-		if renderHTML == "" {
-			if e.renderer == nil {
-				continue
-			}
-			renderResult, renderErr := e.renderer.RenderWithOptions(ctx, kp.url, renderer.RenderOptions{
-				DiscoverMenus: true,
-			})
-			if renderErr != nil {
-				slog.Warn("engine: sitemap gap: render failed", "url", kp.url, "err", renderErr)
-				continue
-			}
-			renderHTML = renderResult.HTML
-			renderFinalURL = renderResult.FinalURL
-		}
+		kp := renderResult.page
+		renderHTML := renderResult.html
+		renderFinalURL := renderResult.finalURL
+		playwrightLinks := renderResult.playwrightLinks
 		pagesReRendered++
 
 		// Parse the rendered HTML (includes lazy-loaded content after full scroll)
@@ -2184,6 +2146,97 @@ func (e *Engine) sitemapGapEscalation(ctx context.Context, jobID string) int {
 	e.db.InsertEvent(jobID, "sitemap_gap_escalation", &detailsJSON, nil)
 
 	return newURLsDiscovered
+}
+
+type sitemapGapRenderResult struct {
+	page            sitemapGapKeyPage
+	html            string
+	finalURL        string
+	playwrightLinks []string
+}
+
+func (e *Engine) renderSitemapGapKeyPages(ctx context.Context, jobID string, keyPages []sitemapGapKeyPage, gapCount int) []sitemapGapRenderResult {
+	workerCount := e.browserEnrichConcurrency()
+	if workerCount > len(keyPages) {
+		workerCount = len(keyPages)
+	}
+	e.emitPhase(jobID, "sitemap_gap_progress", fmt.Sprintf("found %d sitemap URLs missing from crawl, re-rendering %d key pages (%d workers)", gapCount, len(keyPages), workerCount))
+
+	jobs := make(chan sitemapGapKeyPage)
+	results := make(chan sitemapGapRenderResult, len(keyPages))
+	var processed atomic.Int64
+	var wg sync.WaitGroup
+	for worker := 0; worker < workerCount; worker++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for kp := range jobs {
+				if ctx.Err() != nil {
+					continue
+				}
+				done := processed.Add(1)
+				e.emitPhase(jobID, "sitemap_gap_progress", fmt.Sprintf("re-rendering page %d/%d", done, len(keyPages)))
+				if result, ok := e.renderSitemapGapKeyPage(ctx, kp); ok {
+					results <- result
+				}
+			}
+		}()
+	}
+	for _, kp := range keyPages {
+		if ctx.Err() != nil {
+			break
+		}
+		jobs <- kp
+	}
+	close(jobs)
+	wg.Wait()
+	close(results)
+
+	rendered := make([]sitemapGapRenderResult, 0, len(keyPages))
+	for result := range results {
+		rendered = append(rendered, result)
+	}
+	return rendered
+}
+
+func (e *Engine) renderSitemapGapKeyPage(ctx context.Context, kp sitemapGapKeyPage) (sitemapGapRenderResult, bool) {
+	if err := e.validateRenderTarget(kp.url); err != nil {
+		slog.Warn("engine: sitemap gap: ssrf rejected", "url", kp.url, "err", err)
+		return sitemapGapRenderResult{}, false
+	}
+
+	var renderHTML string
+	var renderFinalURL string
+	var playwrightLinks []string
+	if pwResult, pwErr := e.renderMenuDiscovery(ctx, kp.url); pwErr != nil {
+		slog.Warn("engine: sitemap gap: rich render failed, falling back to chromedp", "url", kp.url, "err", pwErr)
+	} else {
+		renderHTML = pwResult.HTML
+		renderFinalURL = pwResult.FinalURL
+		playwrightLinks = pwResult.Links
+	}
+
+	if renderHTML == "" {
+		if e.renderer == nil {
+			return sitemapGapRenderResult{}, false
+		}
+		renderResult, renderErr := e.renderer.RenderWithOptions(ctx, kp.url, renderer.RenderOptions{
+			DiscoverMenus: true,
+		})
+		if renderErr != nil {
+			slog.Warn("engine: sitemap gap: render failed", "url", kp.url, "err", renderErr)
+			return sitemapGapRenderResult{}, false
+		}
+		renderHTML = renderResult.HTML
+		renderFinalURL = renderResult.FinalURL
+	}
+
+	return sitemapGapRenderResult{
+		page:            kp,
+		html:            renderHTML,
+		finalURL:        renderFinalURL,
+		playwrightLinks: playwrightLinks,
+	}, true
 }
 
 func hasURLFragment(rawURL string) bool {
@@ -3403,6 +3456,11 @@ func (e *Engine) runTextQualityChecks(ctx context.Context, jobID string) {
 	}
 
 	slog.Info("engine: text quality checks complete", "findings", totalFindings, "pages", len(pages), "job_id", jobID)
+}
+
+type sitemapGapKeyPage struct {
+	urlID int64
+	url   string
 }
 
 // browserEnrichPages re-renders pages with Playwright (full scroll) to capture
