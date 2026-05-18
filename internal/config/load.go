@@ -33,9 +33,12 @@ type tomlConfig struct {
 	MaxCrawlDuration  string `toml:"max_crawl_duration"`
 
 	RenderMode           string   `toml:"render_mode"`
+	RenderProvider       string   `toml:"render_provider"`
 	RenderWaitMs         int      `toml:"render_wait_ms"`
 	MaxBrowserInstances  int      `toml:"max_browser_instances"`
 	BrowserRenderTimeout string   `toml:"browser_render_timeout"`
+	BrowserbaseAPIKey    string   `toml:"browserbase_api_key"`
+	BrowserbaseProjectID string   `toml:"browserbase_project_id"`
 	ForceRenderPatterns  []string `toml:"force_render_patterns"`
 
 	RespectRobots           *bool  `toml:"respect_robots"`
@@ -158,6 +161,9 @@ func LoadFromFile(path string) (*Config, error) {
 	if tc.RenderMode != "" {
 		cfg.RenderMode = RenderMode(tc.RenderMode)
 	}
+	if tc.RenderProvider != "" {
+		cfg.RenderProvider = RenderProvider(tc.RenderProvider)
+	}
 	if tc.RenderWaitMs != 0 {
 		cfg.RenderWaitMs = tc.RenderWaitMs
 	}
@@ -170,6 +176,12 @@ func LoadFromFile(path string) (*Config, error) {
 			return nil, fmt.Errorf("parsing browser_render_timeout %q: %w", tc.BrowserRenderTimeout, err)
 		}
 		cfg.BrowserRenderTimeout = d
+	}
+	if tc.BrowserbaseAPIKey != "" {
+		cfg.BrowserbaseAPIKey = tc.BrowserbaseAPIKey
+	}
+	if tc.BrowserbaseProjectID != "" {
+		cfg.BrowserbaseProjectID = tc.BrowserbaseProjectID
 	}
 	if tc.ForceRenderPatterns != nil {
 		cfg.ForceRenderPatterns = tc.ForceRenderPatterns
@@ -338,10 +350,19 @@ func applyEnvOverrides(cfg *Config) error {
 	if v := os.Getenv("SEO_CRAWLER_RENDER_MODE"); v != "" {
 		cfg.RenderMode = RenderMode(v)
 	}
+	if v := os.Getenv("SEO_CRAWLER_RENDER_PROVIDER"); v != "" {
+		cfg.RenderProvider = RenderProvider(v)
+	}
 	if v := os.Getenv("SEO_CRAWLER_RENDER_WAIT_MS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			cfg.RenderWaitMs = n
 		}
+	}
+	if v := os.Getenv("BROWSERBASE_API_KEY"); v != "" {
+		cfg.BrowserbaseAPIKey = v
+	}
+	if v := os.Getenv("BROWSERBASE_PROJECT_ID"); v != "" {
+		cfg.BrowserbaseProjectID = v
 	}
 	if v := os.Getenv("SEO_CRAWLER_MAX_BROWSER_INSTANCES"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
@@ -485,6 +506,11 @@ func parseBool(s string) (bool, error) {
 }
 
 func validateConfig(cfg *Config) error {
+	switch cfg.RenderProvider {
+	case RenderProviderLocal, RenderProviderBrowserbase, RenderProviderAuto:
+	default:
+		return fmt.Errorf("invalid render_provider %q", cfg.RenderProvider)
+	}
 	switch cfg.RobotsUnreachablePolicy {
 	case RobotsUnreachablePolicyAllow, RobotsUnreachablePolicyDisallow, RobotsUnreachablePolicyCacheThenAllow:
 	default:

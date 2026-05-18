@@ -25,6 +25,15 @@ const (
 	RenderModeBrowser RenderMode = "browser"
 )
 
+// RenderProvider controls where browser rendering runs.
+type RenderProvider string
+
+const (
+	RenderProviderLocal       RenderProvider = "local"
+	RenderProviderBrowserbase RenderProvider = "browserbase"
+	RenderProviderAuto        RenderProvider = "auto"
+)
+
 // RobotsUnreachablePolicy controls behavior when robots.txt cannot be fetched.
 type RobotsUnreachablePolicy string
 
@@ -67,11 +76,14 @@ type Config struct {
 	MaxCrawlDuration  time.Duration `json:"maxCrawlDuration"`
 
 	// Rendering
-	RenderMode           RenderMode    `json:"renderMode"`
-	RenderWaitMs         int           `json:"renderWaitMs"`
-	MaxBrowserInstances  int           `json:"maxBrowserInstances"`
-	BrowserRenderTimeout time.Duration `json:"browserRenderTimeout"`
-	ForceRenderPatterns  []string      `json:"forceRenderPatterns,omitempty"`
+	RenderMode           RenderMode     `json:"renderMode"`
+	RenderProvider       RenderProvider `json:"renderProvider"`
+	RenderWaitMs         int            `json:"renderWaitMs"`
+	MaxBrowserInstances  int            `json:"maxBrowserInstances"`
+	BrowserRenderTimeout time.Duration  `json:"browserRenderTimeout"`
+	BrowserbaseAPIKey    string         `json:"browserbaseApiKey,omitempty"`
+	BrowserbaseProjectID string         `json:"browserbaseProjectId,omitempty"`
+	ForceRenderPatterns  []string       `json:"forceRenderPatterns,omitempty"`
 
 	// Robots
 	RespectRobots           bool                    `json:"respectRobots"`
@@ -165,6 +177,7 @@ func DefaultConfig() Config {
 		MaxCrawlDuration:  30 * time.Minute,
 
 		RenderMode:           RenderModeHybrid,
+		RenderProvider:       RenderProviderAuto,
 		RenderWaitMs:         2000,
 		MaxBrowserInstances:  2,
 		BrowserRenderTimeout: 30 * time.Second,

@@ -579,6 +579,71 @@ func (e *Engine) effectiveRenderMode(job *storage.CrawlJob) config.RenderMode {
 	return renderMode
 }
 
+func (e *Engine) renderProvider() config.RenderProvider {
+	if e != nil && e.config != nil && e.config.RenderProvider != "" {
+		return e.config.RenderProvider
+	}
+	return config.RenderProviderAuto
+}
+
+func (e *Engine) browserbaseOptions() renderer.BrowserbaseOptions {
+	if e == nil || e.config == nil {
+		return renderer.BrowserbaseOptions{}
+	}
+	return renderer.BrowserbaseOptions{
+		APIKey:        e.config.BrowserbaseAPIKey,
+		ProjectID:     e.config.BrowserbaseProjectID,
+		RenderWaitMs:  e.config.RenderWaitMs,
+		RenderTimeout: e.config.BrowserRenderTimeout,
+	}
+}
+
+func (e *Engine) hasMenuRenderer() bool {
+	provider := e.renderProvider()
+	if provider != config.RenderProviderLocal && renderer.IsBrowserbaseConfigured(e.browserbaseOptions().APIKey) {
+		return true
+	}
+	return e.renderer != nil
+}
+
+func (e *Engine) hasContentRenderer() bool {
+	provider := e.renderProvider()
+	if provider != config.RenderProviderLocal && renderer.IsBrowserbaseConfigured(e.browserbaseOptions().APIKey) {
+		return true
+	}
+	return renderer.IsPlaywrightAvailable()
+}
+
+func (e *Engine) renderMenuDiscovery(ctx context.Context, pageURL string) (*renderer.PlaywrightResult, error) {
+	provider := e.renderProvider()
+	if provider != config.RenderProviderLocal && renderer.IsBrowserbaseConfigured(e.browserbaseOptions().APIKey) {
+		result, err := renderer.RenderWithBrowserbase(ctx, pageURL, e.browserbaseOptions())
+		if err == nil || provider == config.RenderProviderBrowserbase {
+			return result, err
+		}
+		slog.Warn("engine: browserbase menu render failed, falling back to local", "url", pageURL, "err", err)
+	}
+	if renderer.IsPlaywrightAvailable() {
+		return renderer.RenderWithPlaywright(ctx, pageURL)
+	}
+	return nil, fmt.Errorf("no local playwright renderer available")
+}
+
+func (e *Engine) renderPageContentOnly(ctx context.Context, pageURL string) (*renderer.PlaywrightResult, error) {
+	provider := e.renderProvider()
+	if provider != config.RenderProviderLocal && renderer.IsBrowserbaseConfigured(e.browserbaseOptions().APIKey) {
+		result, err := renderer.RenderPageContentOnlyWithBrowserbase(ctx, pageURL, e.browserbaseOptions())
+		if err == nil || provider == config.RenderProviderBrowserbase {
+			return result, err
+		}
+		slog.Warn("engine: browserbase content render failed, falling back to local", "url", pageURL, "err", err)
+	}
+	if renderer.IsPlaywrightAvailable() {
+		return renderer.RenderPageContentOnly(ctx, pageURL)
+	}
+	return nil, fmt.Errorf("no content renderer available")
+}
+
 // onboardSeedHosts performs robots.txt + sitemap discovery for each
 // distinct seed host, populates e.robotsRules and per-host crawl-delay
 // in the rate limiter, and pushes any sitemap-discovered URLs onto the
@@ -1071,7 +1136,7 @@ func (e *Engine) runPostCrawlPhases(ctx context.Context, jobID string, counters 
 	}
 
 	// Browser re-render to capture lazy-loaded content.
-	if renderMode != config.RenderModeStatic && renderer.IsPlaywrightAvailable() {
+	if renderMode != config.RenderModeStatic && e.hasContentRenderer() {
 		if discovered := e.browserEnrichPages(ctx, jobID); discovered > 0 {
 			slog.Info("engine: browser enrich discovered rendered links", "count", discovered, "job_id", jobID)
 		}
@@ -1851,7 +1916,7 @@ func (e *Engine) sitemapGapEscalation(ctx context.Context, jobID string) int {
 	slog.Info("engine: sitemap gap detected", "orphan_count", len(gap), "job_id", jobID)
 
 	// 4. Check renderer availability
-	if e.renderer == nil {
+	if !e.hasMenuRenderer() {
 		slog.Warn("engine: sitemap gap detected but no renderer available, skipping escalation", "job_id", jobID)
 		detailsJSON := fmt.Sprintf(`{"gapCount":%d,"pagesReRendered":0,"newLinksFound":0,"newURLsDiscovered":0,"reason":"no_renderer"}`, len(gap))
 		e.db.InsertEvent(jobID, "sitemap_gap_escalation", &detailsJSON, nil)
@@ -1913,25 +1978,25 @@ func (e *Engine) sitemapGapEscalation(ctx context.Context, jobID string) int {
 			continue
 		}
 
-		// Try Playwright first (better menu discovery via real click handlers),
-		// fall back to chromedp if Playwright is unavailable or fails.
+		// Try the configured rich renderer first (Browserbase in production auto
+		// mode), then fall back to chromedp if local rendering is available.
 		var renderHTML string
 		var renderFinalURL string
 
 		var playwrightLinks []string
-		if renderer.IsPlaywrightAvailable() {
-			pwResult, pwErr := renderer.RenderWithPlaywright(ctx, kp.url)
-			if pwErr != nil {
-				slog.Warn("engine: sitemap gap: playwright render failed, falling back to chromedp", "url", kp.url, "err", pwErr)
-			} else {
-				renderHTML = pwResult.HTML
-				renderFinalURL = pwResult.FinalURL
-				playwrightLinks = pwResult.Links // Links collected incrementally during menu clicks
-			}
+		if pwResult, pwErr := e.renderMenuDiscovery(ctx, kp.url); pwErr != nil {
+			slog.Warn("engine: sitemap gap: rich render failed, falling back to chromedp", "url", kp.url, "err", pwErr)
+		} else {
+			renderHTML = pwResult.HTML
+			renderFinalURL = pwResult.FinalURL
+			playwrightLinks = pwResult.Links // Links collected incrementally during menu clicks
 		}
 
 		// Chromedp fallback
 		if renderHTML == "" {
+			if e.renderer == nil {
+				continue
+			}
 			renderResult, renderErr := e.renderer.RenderWithOptions(ctx, kp.url, renderer.RenderOptions{
 				DiscoverMenus: true,
 			})
@@ -3398,7 +3463,7 @@ func (e *Engine) browserEnrichPages(ctx context.Context, jobID string) int {
 			continue
 		}
 		// Use content-only render (no menu clicks) to preserve page's own content
-		pwResult, pwErr := renderer.RenderPageContentOnly(ctx, pg.url)
+		pwResult, pwErr := e.renderPageContentOnly(ctx, pg.url)
 		if pwErr != nil {
 			continue
 		}

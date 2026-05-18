@@ -19,11 +19,14 @@
 # per_host_concurrency = 2
 # global_concurrency = 8
 
-# --- Rendering (requires Playwright: pip install playwright && playwright install chromium) ---
+# --- Rendering ---
 # render_mode = "hybrid"    # static | hybrid
+# render_provider = "auto"  # auto | local | browserbase
 # render_wait_ms = 2000
 # max_browser_instances = 2
 # browser_render_timeout = "30s"
+# browserbase_api_key = ""      # optional; prefer BROWSERBASE_API_KEY env var
+# browserbase_project_id = ""   # optional; prefer BROWSERBASE_PROJECT_ID env var
 
 # --- Content thresholds ---
 # title_max_length = 60

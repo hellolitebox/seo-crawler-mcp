@@ -26,6 +26,9 @@ func TestLoadConfig_Defaults(t *testing.T) {
 	if cfg.ScopeMode != defaults.ScopeMode {
 		t.Errorf("ScopeMode = %q, want %q", cfg.ScopeMode, defaults.ScopeMode)
 	}
+	if cfg.RenderProvider != defaults.RenderProvider {
+		t.Errorf("RenderProvider = %q, want %q", cfg.RenderProvider, defaults.RenderProvider)
+	}
 	if cfg.RequestTimeout != defaults.RequestTimeout {
 		t.Errorf("RequestTimeout = %v, want %v", cfg.RequestTimeout, defaults.RequestTimeout)
 	}
@@ -42,6 +45,9 @@ user_agent = "test-bot/1.0"
 scope_mode = "exact_host"
 request_timeout = "5s"
 render_mode = "static"
+render_provider = "browserbase"
+browserbase_api_key = "bb_test"
+browserbase_project_id = "project_test"
 respect_robots = false
 `
 	if err := os.WriteFile(cfgPath, []byte(content), 0644); err != nil {
@@ -70,6 +76,15 @@ respect_robots = false
 	}
 	if cfg.RenderMode != RenderModeStatic {
 		t.Errorf("RenderMode = %q, want %q", cfg.RenderMode, RenderModeStatic)
+	}
+	if cfg.RenderProvider != RenderProviderBrowserbase {
+		t.Errorf("RenderProvider = %q, want %q", cfg.RenderProvider, RenderProviderBrowserbase)
+	}
+	if cfg.BrowserbaseAPIKey != "bb_test" {
+		t.Errorf("BrowserbaseAPIKey = %q, want bb_test", cfg.BrowserbaseAPIKey)
+	}
+	if cfg.BrowserbaseProjectID != "project_test" {
+		t.Errorf("BrowserbaseProjectID = %q, want project_test", cfg.BrowserbaseProjectID)
 	}
 	if cfg.RespectRobots != false {
 		t.Errorf("RespectRobots = %v, want false", cfg.RespectRobots)
@@ -128,6 +143,9 @@ user_agent = "file-bot"
 	t.Setenv("SEO_CRAWLER_DB_PATH", "env.db")
 	t.Setenv("SEO_CRAWLER_MAX_PAGES", "999")
 	t.Setenv("SEO_CRAWLER_SCOPE_MODE", "allowlist")
+	t.Setenv("SEO_CRAWLER_RENDER_PROVIDER", "local")
+	t.Setenv("BROWSERBASE_API_KEY", "bb_env")
+	t.Setenv("BROWSERBASE_PROJECT_ID", "project_env")
 
 	cfg, err := LoadConfig(cfgPath)
 	if err != nil {
@@ -142,6 +160,15 @@ user_agent = "file-bot"
 	}
 	if cfg.ScopeMode != ScopeModeAllowlist {
 		t.Errorf("ScopeMode = %q, want %q (env override)", cfg.ScopeMode, ScopeModeAllowlist)
+	}
+	if cfg.RenderProvider != RenderProviderLocal {
+		t.Errorf("RenderProvider = %q, want %q (env override)", cfg.RenderProvider, RenderProviderLocal)
+	}
+	if cfg.BrowserbaseAPIKey != "bb_env" {
+		t.Errorf("BrowserbaseAPIKey = %q, want bb_env (env override)", cfg.BrowserbaseAPIKey)
+	}
+	if cfg.BrowserbaseProjectID != "project_env" {
+		t.Errorf("BrowserbaseProjectID = %q, want project_env (env override)", cfg.BrowserbaseProjectID)
 	}
 	// UserAgent should remain from file since no env var set.
 	if cfg.UserAgent != "file-bot" {
@@ -184,6 +211,14 @@ func TestLoadConfigRejectsInvalidRobotsPolicy(t *testing.T) {
 
 	if _, err := LoadConfig(""); err == nil {
 		t.Fatal("expected invalid robots policy to return an error")
+	}
+}
+
+func TestLoadConfigRejectsInvalidRenderProvider(t *testing.T) {
+	t.Setenv("SEO_CRAWLER_RENDER_PROVIDER", "cloud")
+
+	if _, err := LoadConfig(""); err == nil {
+		t.Fatal("expected invalid render provider to return an error")
 	}
 }
 
