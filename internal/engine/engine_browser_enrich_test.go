@@ -8,6 +8,7 @@ import (
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/config"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/parser"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/storage"
+	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/urlutil"
 )
 
 func TestUpdateBrowserEnrichedPagePersistsAllHeadingLevels(t *testing.T) {
@@ -126,5 +127,88 @@ func TestUpdateBrowserEnrichedPagePersistsAllHeadingLevels(t *testing.T) {
 	}
 	if remaining != 1 {
 		t.Fatalf("remaining issue count = %d, want 1", remaining)
+	}
+}
+
+func TestPersistBrowserDiscoveredEdgesQueuesRenderedLinks(t *testing.T) {
+	db, err := storage.Open(filepath.Join(t.TempDir(), "browser-links.db"))
+	if err != nil {
+		t.Fatalf("opening database: %v", err)
+	}
+	defer db.Close()
+
+	job, err := db.CreateJob("crawl", "{}", `["https://www.example.com/"]`)
+	if err != nil {
+		t.Fatalf("creating job: %v", err)
+	}
+	sourceURLID, err := db.UpsertURL(job.ID, "https://docs.example.com/", "docs.example.com", "fetched", true, "html")
+	if err != nil {
+		t.Fatalf("upserting source URL: %v", err)
+	}
+	fetchID, err := db.InsertFetch(storage.FetchInput{
+		JobID:          job.ID,
+		FetchSeq:       1,
+		RequestedURLID: sourceURLID,
+		StatusCode:     200,
+		ContentType:    "text/html",
+		HTTPMethod:     "GET",
+		FetchKind:      "full",
+		RenderMode:     "static",
+	})
+	if err != nil {
+		t.Fatalf("inserting source fetch: %v", err)
+	}
+	if _, err := db.InsertPage(storage.PageInput{
+		JobID:             job.ID,
+		URLID:             sourceURLID,
+		FetchID:           fetchID,
+		Depth:             1,
+		IndexabilityState: "indexable",
+		WordCount:         intPtr(0),
+		ContentHash:       strPtr("static-shell"),
+	}); err != nil {
+		t.Fatalf("inserting source page: %v", err)
+	}
+
+	page, err := parser.ParseHTML([]byte(`<!doctype html><html><body>
+		<a href="/guide/getting-started">Guide</a>
+		<a href="https://external.example.net/">External</a>
+	</body></html>`), "https://docs.example.com/", nil)
+	if err != nil {
+		t.Fatalf("parsing rendered HTML: %v", err)
+	}
+	scope, err := urlutil.NewScopeChecker("registrable_domain", "www.example.com", nil)
+	if err != nil {
+		t.Fatalf("creating scope checker: %v", err)
+	}
+	cfg := config.DefaultConfig()
+	eng := New(EngineConfig{DB: db, ScopeChecker: scope, Config: &cfg})
+
+	discovered := eng.persistBrowserDiscoveredEdges(job.ID, sourceURLID, "https://docs.example.com/", page)
+	if discovered != 1 {
+		t.Fatalf("discovered = %d, want 1", discovered)
+	}
+
+	queued := eng.queueBrowserDiscoveredLinkURLs(job.ID, 10)
+	if queued.Len() != 1 {
+		t.Fatalf("queued links = %d, want 1", queued.Len())
+	}
+	item, ok := queued.Pop()
+	if !ok {
+		t.Fatal("queued item is missing")
+	}
+	if item.NormalizedURL != "https://docs.example.com/guide/getting-started" {
+		t.Fatalf("queued URL = %q, want rendered docs link", item.NormalizedURL)
+	}
+	if item.Depth != 2 {
+		t.Fatalf("queued depth = %d, want 2", item.Depth)
+	}
+
+	var externalEdges int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM edges WHERE job_id = ? AND declared_target_url LIKE '%external.example.net%'`, job.ID).Scan(&externalEdges); err != nil {
+		t.Fatalf("counting external edges: %v", err)
+	}
+	if externalEdges != 0 {
+		t.Fatalf("external rendered edges = %d, want 0", externalEdges)
 	}
 }

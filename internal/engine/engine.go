@@ -1072,7 +1072,16 @@ func (e *Engine) runPostCrawlPhases(ctx context.Context, jobID string, counters 
 
 	// Browser re-render to capture lazy-loaded content.
 	if renderMode != config.RenderModeStatic && renderer.IsPlaywrightAvailable() {
-		e.browserEnrichPages(ctx, jobID)
+		if discovered := e.browserEnrichPages(ctx, jobID); discovered > 0 {
+			slog.Info("engine: browser enrich discovered rendered links", "count", discovered, "job_id", jobID)
+		}
+		if q := e.queueBrowserDiscoveredLinkURLs(jobID, maxDepth); q.Len() > 0 {
+			e.emitPhase(jobID, "browser_enrich_crawl", fmt.Sprintf("crawling %d browser-enriched internal URLs", q.Len()))
+			if err := e.runCrawlPipeline(ctx, cancel, jobID, q, counters, maxPages, maxDepth, maxDiscoveredURLs); err != nil {
+				cancel(err)
+				return
+			}
+		}
 	}
 
 	// HEAD-check discovered image/script/stylesheet assets.
@@ -3334,7 +3343,7 @@ func (e *Engine) runTextQualityChecks(ctx context.Context, jobID string) {
 // browserEnrichPages re-renders pages with Playwright (full scroll) to capture
 // lazy-loaded content. Only targets pages that look incomplete: JS-suspect,
 // thin content, or built with known JS frameworks.
-func (e *Engine) browserEnrichPages(ctx context.Context, jobID string) {
+func (e *Engine) browserEnrichPages(ctx context.Context, jobID string) int {
 	rows, err := e.db.Query(`
 		SELECT p.url_id, u.normalized_url, p.word_count, p.js_suspect
 		FROM pages p
@@ -3344,7 +3353,7 @@ func (e *Engine) browserEnrichPages(ctx context.Context, jobID string) {
 	`, jobID, e.config.ThinContentThreshold*3)
 	if err != nil {
 		slog.Error("engine: browser enrich: query failed", "err", err, "job_id", jobID)
-		return
+		return 0
 	}
 	defer rows.Close()
 
@@ -3365,7 +3374,7 @@ func (e *Engine) browserEnrichPages(ctx context.Context, jobID string) {
 		pages = append(pages, pi)
 	}
 	if len(pages) == 0 {
-		return
+		return 0
 	}
 
 	slog.Info("engine: browser enrich: re-rendering with full scroll", "pages", len(pages), "job_id", jobID)
@@ -3375,6 +3384,7 @@ func (e *Engine) browserEnrichPages(ctx context.Context, jobID string) {
 		progressEvery = 5
 	}
 	enriched := 0
+	discovered := 0
 
 	for i, pg := range pages {
 		if ctx.Err() != nil {
@@ -3396,6 +3406,7 @@ func (e *Engine) browserEnrichPages(ctx context.Context, jobID string) {
 		if parseErr != nil {
 			continue
 		}
+		discovered += e.persistBrowserDiscoveredEdges(jobID, pg.urlID, pwResult.FinalURL, page)
 		mergeImageMetrics(page.Images, pwResult.Images)
 		for _, img := range page.Images {
 			if img.Src == "" {
@@ -3425,6 +3436,73 @@ func (e *Engine) browserEnrichPages(ctx context.Context, jobID string) {
 	}
 
 	slog.Info("engine: browser enrich: updated pages with richer content", "enriched", enriched, "total", len(pages), "job_id", jobID)
+	return discovered
+}
+
+func (e *Engine) persistBrowserDiscoveredEdges(jobID string, sourceURLID int64, sourceURL string, page *parser.ParseResult) int {
+	renderedEdges := crawl.BuildEdges(sourceURLID, sourceURL, page, e.scopeChecker, "browser")
+	if len(renderedEdges) == 0 {
+		return 0
+	}
+
+	existingEdges := map[string]bool{}
+	rows, err := e.db.Query(
+		`SELECT declared_target_url FROM edges WHERE job_id = ? AND source_url_id = ?`,
+		jobID, sourceURLID,
+	)
+	if err == nil {
+		for rows.Next() {
+			var target string
+			if scanErr := rows.Scan(&target); scanErr == nil {
+				if norm, normErr := urlutil.Normalize(target); normErr == nil {
+					existingEdges[norm] = true
+				}
+			}
+		}
+		rows.Close()
+	}
+
+	discovered := 0
+	for _, edge := range renderedEdges {
+		if edge.RelationType != "link" || !edge.IsInternal {
+			continue
+		}
+		norm := edge.NormalizedTargetURL
+		if norm == "" || existingEdges[norm] {
+			continue
+		}
+		parsed, parseErr := url.Parse(norm)
+		if parseErr != nil {
+			continue
+		}
+		targetURLID, upsertErr := e.db.UpsertURL(jobID, norm, parsed.Hostname(), "discovered", true, "browser")
+		if upsertErr != nil {
+			continue
+		}
+
+		var anchorText *string
+		if edge.AnchorText != "" {
+			anchorText = &edge.AnchorText
+		}
+		var relFlags *string
+		if edge.RelFlagsJSON != "" {
+			relFlags = &edge.RelFlagsJSON
+		}
+		if _, err := e.db.Exec(
+			`INSERT INTO edges (job_id, source_url_id, normalized_target_url_id,
+				source_kind, relation_type, rel_flags_json, discovery_mode,
+				anchor_text, is_internal, declared_target_url)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			jobID, sourceURLID, targetURLID,
+			"rendered_dom", edge.RelationType, relFlags, "browser",
+			anchorText, 1, edge.DeclaredTargetURL,
+		); err != nil {
+			continue
+		}
+		existingEdges[norm] = true
+		discovered++
+	}
+	return discovered
 }
 
 func (e *Engine) updateBrowserEnrichedPage(jobID string, urlID int64, page *parser.ParseResult) error {
