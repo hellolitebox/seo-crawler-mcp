@@ -542,6 +542,9 @@ func generateAISummaryWithOpenAI(ctx context.Context, apiKey, model string, inpu
 	prompt := aiSummaryPrompt(string(inputBytes))
 	reqBody := map[string]any{
 		"model": model,
+		"reasoning": map[string]any{
+			"effort": "low",
+		},
 		"input": []map[string]any{
 			{
 				"role":    "system",
@@ -560,11 +563,11 @@ func generateAISummaryWithOpenAI(ctx context.Context, apiKey, model string, inpu
 				"schema": aiSummaryJSONSchema(),
 			},
 		},
-		"max_output_tokens": 2500,
+		"max_output_tokens": 1600,
 	}
 	bodyBytes, _ := json.Marshal(reqBody)
 
-	reqCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	reqCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, "https://api.openai.com/v1/responses", bytes.NewReader(bodyBytes))
 	if err != nil {
