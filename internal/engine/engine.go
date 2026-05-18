@@ -1412,6 +1412,9 @@ func (e *Engine) processParseResult(
 	if !isAnalyzablePageStatus(fr.result.StatusCode) {
 		return pr
 	}
+	if !e.isFinalURLInScope(fr.result.FinalURL) {
+		return pr
+	}
 
 	// Parse HTML
 	page, parseErr := parser.ParseHTML(fr.result.Body, fr.result.FinalURL, fr.result.ResponseHeaders)
@@ -1752,6 +1755,17 @@ func (e *Engine) processParseResult(
 	pr.edges = keptEdges
 
 	return pr
+}
+
+func (e *Engine) isFinalURLInScope(rawURL string) bool {
+	if rawURL == "" || e == nil || e.scopeChecker == nil {
+		return true
+	}
+	normalized, err := e.normalizeCrawlableURL(rawURL)
+	if err != nil {
+		return false
+	}
+	return e.scopeChecker.IsInScope(normalized)
 }
 
 func isAnalyzablePageStatus(statusCode int) bool {

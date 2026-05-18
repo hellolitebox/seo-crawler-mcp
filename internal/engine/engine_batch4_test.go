@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -103,6 +104,73 @@ func TestCrossScopeRedirect_OutOfScopeStatus(t *testing.T) {
 	}
 	if extURL.IsInternal {
 		t.Error("external URL should not be marked as internal")
+	}
+}
+
+func TestCrossScopeRedirectDoesNotCreateExternalPage(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test-cross-scope-page.db")
+	db, err := storage.Open(dbPath)
+	if err != nil {
+		t.Fatalf("opening database: %v", err)
+	}
+	defer db.Close()
+
+	cfg := config.DefaultConfig()
+	cfg.ThinContentThreshold = 10
+	sc, err := urlutil.NewScopeChecker("exact_host", "example.com", nil)
+	if err != nil {
+		t.Fatalf("creating scope checker: %v", err)
+	}
+	job, err := db.CreateJob("crawl", "{}", "[\"https://example.com/\"]")
+	if err != nil {
+		t.Fatalf("creating job: %v", err)
+	}
+	eng := New(EngineConfig{
+		DB:           db,
+		Fetcher:      fetcher.New(fetcher.Options{Timeout: time.Second}),
+		ScopeChecker: sc,
+		Config:       &cfg,
+	})
+	requestedID, err := db.UpsertURL(job.ID, "https://example.com/go", "example.com", "fetched", true, "seed")
+	if err != nil {
+		t.Fatalf("upserting requested URL: %v", err)
+	}
+
+	fr := fetchResult{
+		urlID: requestedID,
+		url:   "https://example.com/go",
+		host:  "example.com",
+		depth: 1,
+		result: &fetcher.FetchResult{
+			RequestedURL: "https://example.com/go",
+			FinalURL:     "https://github.com/example/project",
+			StatusCode:   http.StatusOK,
+			ContentType:  "text/html; charset=utf-8",
+			Body:         []byte("<!doctype html><html><head><title>External</title></head><body><h1>External</h1></body></html>"),
+			BodySize:     94,
+		},
+	}
+	pr := eng.processParseResult(context.Background(), job.ID, fr, nil, &atomic.Int64{}, &atomic.Int64{}, newQueryVariantsTracker(), 100, 10, 1000)
+	if pr.page != nil {
+		t.Fatal("out-of-scope final URL should not be parsed as a page")
+	}
+	if err := eng.persistItem(context.Background(), job.ID, persistItem{parseResult: pr, fetchSeq: 1}); err != nil {
+		t.Fatalf("persistItem: %v", err)
+	}
+
+	var pageCount int
+	if err := db.QueryRow("SELECT COUNT(*) FROM pages WHERE job_id = ?", job.ID).Scan(&pageCount); err != nil {
+		t.Fatalf("counting pages: %v", err)
+	}
+	if pageCount != 0 {
+		t.Fatalf("page count = %d, want 0", pageCount)
+	}
+	extURL, err := db.GetURLByNormalized(job.ID, "https://github.com/example/project")
+	if err != nil {
+		t.Fatalf("external final URL not recorded: %v", err)
+	}
+	if extURL.IsInternal || extURL.Status != "out_of_scope" {
+		t.Fatalf("external final URL internal=%v status=%q, want false/out_of_scope", extURL.IsInternal, extURL.Status)
 	}
 }
 

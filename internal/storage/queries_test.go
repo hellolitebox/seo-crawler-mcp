@@ -501,6 +501,59 @@ func TestQueryPagesIncludesFetchMetadata(t *testing.T) {
 	}
 }
 
+func TestQueryPagesExcludesExternalPageRows(t *testing.T) {
+	db := testDB(t)
+	jobID := seedJobWithPages(t, db, 2)
+
+	extURLID, err := db.UpsertURL(jobID, "https://github.com/example/project", "github.com", "out_of_scope", false, "redirect")
+	if err != nil {
+		t.Fatalf("UpsertURL external: %v", err)
+	}
+	fetchID, err := db.InsertFetch(FetchInput{
+		JobID:          jobID,
+		FetchSeq:       99,
+		RequestedURLID: extURLID,
+		StatusCode:     200,
+		ContentType:    "text/html",
+		RenderMode:     "static",
+	})
+	if err != nil {
+		t.Fatalf("InsertFetch external: %v", err)
+	}
+	title := "External"
+	if _, err := db.InsertPage(PageInput{
+		JobID:   jobID,
+		URLID:   extURLID,
+		FetchID: fetchID,
+		Depth:   1,
+		Title:   &title,
+	}); err != nil {
+		t.Fatalf("InsertPage external: %v", err)
+	}
+
+	offsetResult, err := db.QueryPagesOffset(jobID, QueryFilter{}, 20, 0)
+	if err != nil {
+		t.Fatalf("QueryPagesOffset: %v", err)
+	}
+	if offsetResult.TotalCount != 2 || len(offsetResult.Results) != 2 {
+		t.Fatalf("offset pages got total=%d len=%d, want 2/2", offsetResult.TotalCount, len(offsetResult.Results))
+	}
+	cursorResult, err := db.QueryPages(jobID, QueryFilter{}, "", 20)
+	if err != nil {
+		t.Fatalf("QueryPages: %v", err)
+	}
+	if cursorResult.TotalCount != 2 || len(cursorResult.Results) != 2 {
+		t.Fatalf("cursor pages got total=%d len=%d, want 2/2", cursorResult.TotalCount, len(cursorResult.Results))
+	}
+	githubResult, err := db.QueryPagesOffset(jobID, QueryFilter{URLPattern: "github.com"}, 20, 0)
+	if err != nil {
+		t.Fatalf("QueryPagesOffset github: %v", err)
+	}
+	if githubResult.TotalCount != 0 || len(githubResult.Results) != 0 {
+		t.Fatalf("github pages got total=%d len=%d, want 0/0", githubResult.TotalCount, len(githubResult.Results))
+	}
+}
+
 func TestGetCrawlSummary(t *testing.T) {
 	db := testDB(t)
 	jobID := seedJobWithPages(t, db, 5)

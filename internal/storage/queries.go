@@ -189,8 +189,9 @@ func (db *DB) QueryPages(
 	}
 	ignored := collectIgnoredFilters(filter, applicable)
 
-	// We may need joins for URL pattern, status code family, or content type.
-	needsURLJoin := filter.URLPattern != ""
+	// Pages are the in-scope content inventory, so the page URL join is always
+	// needed to exclude external redirect targets from historical crawls.
+	needsURLJoin := true
 	needsFetchJoin := filter.StatusCodeFamily != "" || filter.ContentType != ""
 
 	var qb strings.Builder
@@ -223,7 +224,7 @@ func (db *DB) QueryPages(
 		qb.WriteString(" JOIN fetches f ON f.id = p.fetch_id")
 	}
 
-	qb.WriteString(" WHERE p.job_id = ? AND p.id > ?")
+	qb.WriteString(" WHERE p.job_id = ? AND p.id > ? AND u.is_internal = 1")
 	args = append(args, jobID, cursorID)
 
 	if filter.URLPattern != "" {
@@ -298,7 +299,7 @@ func (db *DB) QueryPages(
 	if needsFetchJoin {
 		countQB.WriteString(" JOIN fetches f ON f.id = p.fetch_id")
 	}
-	countQB.WriteString(" WHERE p.job_id = ?")
+	countQB.WriteString(" WHERE p.job_id = ? AND u.is_internal = 1")
 	countArgs = append(countArgs, jobID)
 
 	if filter.URLPattern != "" {
@@ -646,7 +647,7 @@ func (db *DB) GetCrawlSummary(jobID string) (*CrawlSummary, error) {
 	}
 
 	// Total pages
-	err := db.QueryRow("SELECT COUNT(*) FROM pages WHERE job_id = ?", jobID).Scan(&s.TotalPages)
+	err := db.QueryRow("SELECT COUNT(*) FROM pages p JOIN urls u ON u.id = p.url_id WHERE p.job_id = ? AND u.is_internal = 1", jobID).Scan(&s.TotalPages)
 	if err != nil {
 		return nil, fmt.Errorf("counting pages for job %q: %w", jobID, err)
 	}
@@ -708,8 +709,9 @@ func (db *DB) GetCrawlSummary(jobID string) (*CrawlSummary, error) {
 	// Indexability distribution across the full page inventory.
 	rows, err = db.Query(`
 		SELECT COALESCE(NULLIF(indexability_state, ''), 'unknown'), COUNT(*)
-		FROM pages
-		WHERE job_id = ?
+		FROM pages p
+		JOIN urls u ON u.id = p.url_id
+		WHERE p.job_id = ? AND u.is_internal = 1
 		GROUP BY COALESCE(NULLIF(indexability_state, ''), 'unknown')`, jobID,
 	)
 	if err != nil {
@@ -752,7 +754,7 @@ func (db *DB) GetCrawlSummary(jobID string) (*CrawlSummary, error) {
 
 	// Depth distribution
 	rows, err = db.Query(
-		"SELECT depth, COUNT(*) FROM pages WHERE job_id = ? GROUP BY depth", jobID,
+		"SELECT p.depth, COUNT(*) FROM pages p JOIN urls u ON u.id = p.url_id WHERE p.job_id = ? AND u.is_internal = 1 GROUP BY p.depth", jobID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("querying depth distribution for job %q: %w", jobID, err)
@@ -817,7 +819,7 @@ func (db *DB) GetCrawlSummary(jobID string) (*CrawlSummary, error) {
 
 	// Avg word count
 	err = db.QueryRow(
-		"SELECT COALESCE(AVG(word_count), 0) FROM pages WHERE job_id = ? AND word_count IS NOT NULL",
+		"SELECT COALESCE(AVG(p.word_count), 0) FROM pages p JOIN urls u ON u.id = p.url_id WHERE p.job_id = ? AND u.is_internal = 1 AND p.word_count IS NOT NULL",
 		jobID,
 	).Scan(&s.AvgWordCount)
 	if err != nil {
@@ -826,7 +828,7 @@ func (db *DB) GetCrawlSummary(jobID string) (*CrawlSummary, error) {
 
 	// Structured data count
 	err = db.QueryRow(
-		"SELECT COUNT(*) FROM pages WHERE job_id = ? AND jsonld_raw IS NOT NULL AND jsonld_raw != '[]'",
+		"SELECT COUNT(*) FROM pages p JOIN urls u ON u.id = p.url_id WHERE p.job_id = ? AND u.is_internal = 1 AND p.jsonld_raw IS NOT NULL AND p.jsonld_raw != '[]'",
 		jobID,
 	).Scan(&s.PagesWithStructuredData)
 	if err != nil {
@@ -837,8 +839,9 @@ func (db *DB) GetCrawlSummary(jobID string) (*CrawlSummary, error) {
 	err = db.QueryRow(`
 		SELECT COUNT(DISTINCT p.id)
 		FROM pages p
+		JOIN urls u ON u.id = p.url_id
 		JOIN issues i ON i.job_id = p.job_id AND i.url_id = p.url_id
-		WHERE p.job_id = ? AND i.url_id IS NOT NULL`,
+		WHERE p.job_id = ? AND u.is_internal = 1 AND i.url_id IS NOT NULL`,
 		jobID,
 	).Scan(&s.PagesWithIssues)
 	if err != nil {
@@ -852,6 +855,7 @@ func (db *DB) GetCrawlSummary(jobID string) (*CrawlSummary, error) {
 		JOIN urls u ON u.id = p.url_id
 		JOIN sitemap_entries se ON se.job_id = p.job_id
 		WHERE p.job_id = ?
+		  AND u.is_internal = 1
 		  AND %s = %s`,
 		SitemapComparableURLSQL("se.url"),
 		SitemapComparableURLSQL("u.normalized_url"),
@@ -865,7 +869,7 @@ func (db *DB) GetCrawlSummary(jobID string) (*CrawlSummary, error) {
 
 	// Orphan pages (inbound_edge_count = 0)
 	err = db.QueryRow(
-		"SELECT COUNT(*) FROM pages WHERE job_id = ? AND inbound_edge_count = 0",
+		"SELECT COUNT(*) FROM pages p JOIN urls u ON u.id = p.url_id WHERE p.job_id = ? AND u.is_internal = 1 AND p.inbound_edge_count = 0",
 		jobID,
 	).Scan(&s.OrphanPageCount)
 	if err != nil {
@@ -883,7 +887,7 @@ func (db *DB) GetCrawlSummary(jobID string) (*CrawlSummary, error) {
 
 	// Thin content count
 	err = db.QueryRow(
-		"SELECT COUNT(*) FROM pages WHERE job_id = ? AND word_count IS NOT NULL AND word_count < ?",
+		"SELECT COUNT(*) FROM pages p JOIN urls u ON u.id = p.url_id WHERE p.job_id = ? AND u.is_internal = 1 AND p.word_count IS NOT NULL AND p.word_count < ?",
 		jobID, thinContentThreshold,
 	).Scan(&s.ThinContentCount)
 	if err != nil {

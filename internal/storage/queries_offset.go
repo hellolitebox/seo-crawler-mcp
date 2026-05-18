@@ -35,7 +35,7 @@ func (db *DB) QueryPagesOffset(
 	jobID string, filter QueryFilter, limit, offset int,
 ) (*PagedResult[Page], error) {
 	sortBy := strings.ToLower(strings.TrimSpace(filter.SortBy))
-	needsURLJoin := filter.URLPattern != "" || sortBy == "url" || sortBy == "sitemap"
+	needsURLJoin := true
 	needsFetchJoin := filter.StatusCodeFamily != "" || filter.ContentType != "" || sortBy == "status"
 
 	var filterClause strings.Builder
@@ -89,7 +89,7 @@ func (db *DB) QueryPagesOffset(
 	}
 
 	countArgs := append([]any{jobID}, filterArgs...)
-	countSQL := "SELECT COUNT(*) FROM pages p" + joins + " WHERE p.job_id = ?" + filterClause.String()
+	countSQL := "SELECT COUNT(*) FROM pages p" + joins + " WHERE p.job_id = ? AND u.is_internal = 1" + filterClause.String()
 	var totalCount int
 	if err := db.QueryRow(countSQL, countArgs...).Scan(&totalCount); err != nil {
 		return nil, fmt.Errorf("counting pages for job %q: %w", jobID, err)
@@ -125,7 +125,7 @@ func (db *DB) QueryPagesOffset(
 		"outbound": "p.outbound_edge_count",
 	}
 	selectSQL := "SELECT " + selectCols + " FROM pages p" + joins +
-		" WHERE p.job_id = ?" + filterClause.String() +
+		" WHERE p.job_id = ? AND u.is_internal = 1" + filterClause.String() +
 		orderClause(filter.SortBy, filter.SortDir, pageSorts, "p.id") + ", p.id ASC LIMIT ? OFFSET ?"
 
 	queryArgs := append(append([]any{jobID}, filterArgs...), limit, offset)
@@ -440,7 +440,7 @@ func (db *DB) QuerySitemapEntriesOffset(
 	filterArgs := []any{}
 	sitemapKeyExpr := SitemapComparableURLSQL("s.url")
 	sitemapMatchExpr := "EXISTS (SELECT 1 FROM pages p JOIN urls u ON u.id = p.url_id " +
-		"WHERE p.job_id = s.job_id AND " + sitemapKeyExpr + " = " + SitemapComparableURLSQL("u.normalized_url") + ")"
+		"WHERE p.job_id = s.job_id AND u.is_internal = 1 AND " + sitemapKeyExpr + " = " + SitemapComparableURLSQL("u.normalized_url") + ")"
 	if filter.URLPattern != "" {
 		filterClause.WriteString(" AND (s.url LIKE ? OR s.source_sitemap_url LIKE ?)")
 		like := "%" + filter.URLPattern + "%"
