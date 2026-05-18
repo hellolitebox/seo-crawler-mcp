@@ -212,3 +212,27 @@ func TestPersistBrowserDiscoveredEdgesQueuesRenderedLinks(t *testing.T) {
 		t.Fatalf("external rendered edges = %d, want 0", externalEdges)
 	}
 }
+
+func TestBrowserEnrichConcurrencyClampsToConservativeBounds(t *testing.T) {
+	tests := []struct {
+		name                string
+		maxBrowserInstances int
+		want                int
+	}{
+		{name: "default when unset", maxBrowserInstances: 0, want: 2},
+		{name: "respects one", maxBrowserInstances: 1, want: 1},
+		{name: "respects four", maxBrowserInstances: 4, want: 4},
+		{name: "caps high values", maxBrowserInstances: 12, want: 4},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.DefaultConfig()
+			cfg.MaxBrowserInstances = tt.maxBrowserInstances
+			eng := New(EngineConfig{Config: &cfg})
+			if got := eng.browserEnrichConcurrency(); got != tt.want {
+				t.Fatalf("browserEnrichConcurrency() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}

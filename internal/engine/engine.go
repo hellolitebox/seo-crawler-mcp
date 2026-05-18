@@ -3408,6 +3408,13 @@ func (e *Engine) runTextQualityChecks(ctx context.Context, jobID string) {
 // browserEnrichPages re-renders pages with Playwright (full scroll) to capture
 // lazy-loaded content. Only targets pages that look incomplete: JS-suspect,
 // thin content, or built with known JS frameworks.
+type browserEnrichPageInfo struct {
+	urlID     int64
+	url       string
+	wordCount int
+	jsSuspect bool
+}
+
 func (e *Engine) browserEnrichPages(ctx context.Context, jobID string) int {
 	rows, err := e.db.Query(`
 		SELECT p.url_id, u.normalized_url, p.word_count, p.js_suspect
@@ -3422,15 +3429,9 @@ func (e *Engine) browserEnrichPages(ctx context.Context, jobID string) int {
 	}
 	defer rows.Close()
 
-	type pageInfo struct {
-		urlID     int64
-		url       string
-		wordCount int
-		jsSuspect bool
-	}
-	var pages []pageInfo
+	var pages []browserEnrichPageInfo
 	for rows.Next() {
-		var pi pageInfo
+		var pi browserEnrichPageInfo
 		var jsSuspect int
 		if err := rows.Scan(&pi.urlID, &pi.url, &pi.wordCount, &jsSuspect); err != nil {
 			continue
@@ -3443,65 +3444,109 @@ func (e *Engine) browserEnrichPages(ctx context.Context, jobID string) int {
 	}
 
 	slog.Info("engine: browser enrich: re-rendering with full scroll", "pages", len(pages), "job_id", jobID)
-	e.emitPhase(jobID, "browser_enrich", fmt.Sprintf("re-rendering %d JS-suspect pages to capture lazy content", len(pages)))
+	workerCount := e.browserEnrichConcurrency()
+	if workerCount > len(pages) {
+		workerCount = len(pages)
+	}
+	slog.Info("engine: browser enrich: using concurrent workers", "workers", workerCount, "pages", len(pages), "job_id", jobID)
+	e.emitPhase(jobID, "browser_enrich", fmt.Sprintf("re-rendering %d JS-suspect pages to capture lazy content (%d workers)", len(pages), workerCount))
 	progressEvery := len(pages) / 10
 	if progressEvery < 5 {
 		progressEvery = 5
 	}
-	enriched := 0
-	discovered := 0
+	var enriched atomic.Int64
+	var discovered atomic.Int64
+	var processed atomic.Int64
 
-	for i, pg := range pages {
+	jobs := make(chan browserEnrichPageInfo)
+	var wg sync.WaitGroup
+	for worker := 0; worker < workerCount; worker++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for pg := range jobs {
+				if ctx.Err() != nil {
+					continue
+				}
+				deltaDiscovered, didEnrich := e.browserEnrichPage(ctx, jobID, pg)
+				discovered.Add(int64(deltaDiscovered))
+				if didEnrich {
+					enriched.Add(1)
+				}
+				done := processed.Add(1)
+				if int(done)%progressEvery == 0 || int(done) == len(pages) {
+					e.emitPhase(jobID, "browser_enrich_progress", fmt.Sprintf("rendered %d/%d pages (%d enriched)", done, len(pages), enriched.Load()))
+				}
+			}
+		}()
+	}
+	for _, pg := range pages {
 		if ctx.Err() != nil {
 			break
 		}
-		if (i+1)%progressEvery == 0 || i+1 == len(pages) {
-			e.emitPhase(jobID, "browser_enrich_progress", fmt.Sprintf("rendered %d/%d pages (%d enriched)", i+1, len(pages), enriched))
-		}
-		if err := e.validateRenderTarget(pg.url); err != nil {
-			slog.Warn("engine: browser enrich: ssrf rejected", "url", pg.url, "err", err)
+		jobs <- pg
+	}
+	close(jobs)
+	wg.Wait()
+
+	slog.Info("engine: browser enrich: updated pages with richer content", "enriched", enriched.Load(), "total", len(pages), "job_id", jobID)
+	return int(discovered.Load())
+}
+
+func (e *Engine) browserEnrichConcurrency() int {
+	workers := 2
+	if e != nil && e.config != nil && e.config.MaxBrowserInstances > 0 {
+		workers = e.config.MaxBrowserInstances
+	}
+	if workers < 1 {
+		return 1
+	}
+	if workers > 4 {
+		return 4
+	}
+	return workers
+}
+
+func (e *Engine) browserEnrichPage(ctx context.Context, jobID string, pg browserEnrichPageInfo) (int, bool) {
+	if err := e.validateRenderTarget(pg.url); err != nil {
+		slog.Warn("engine: browser enrich: ssrf rejected", "url", pg.url, "err", err)
+		return 0, false
+	}
+	// Use content-only render (no menu clicks) to preserve page's own content
+	pwResult, pwErr := e.renderPageContentOnly(ctx, pg.url)
+	if pwErr != nil {
+		return 0, false
+	}
+	page, parseErr := parser.ParseHTML([]byte(pwResult.HTML), pwResult.FinalURL, http.Header{})
+	if parseErr != nil {
+		return 0, false
+	}
+	discovered := e.persistBrowserDiscoveredEdges(jobID, pg.urlID, pwResult.FinalURL, page)
+	mergeImageMetrics(page.Images, pwResult.Images)
+	for _, img := range page.Images {
+		if img.Src == "" {
 			continue
 		}
-		// Use content-only render (no menu clicks) to preserve page's own content
-		pwResult, pwErr := e.renderPageContentOnly(ctx, pg.url)
-		if pwErr != nil {
-			continue
-		}
-		page, parseErr := parser.ParseHTML([]byte(pwResult.HTML), pwResult.FinalURL, http.Header{})
+		parsed, parseErr := url.Parse(img.Src)
 		if parseErr != nil {
 			continue
 		}
-		discovered += e.persistBrowserDiscoveredEdges(jobID, pg.urlID, pwResult.FinalURL, page)
-		mergeImageMetrics(page.Images, pwResult.Images)
-		for _, img := range page.Images {
-			if img.Src == "" {
-				continue
-			}
-			parsed, parseErr := url.Parse(img.Src)
-			if parseErr != nil {
-				continue
-			}
-			imgHost := parsed.Hostname()
-			imgURLID, upsertErr := e.db.UpsertURL(jobID, img.Src, imgHost, "discovered", false, "asset")
-			if upsertErr != nil {
-				continue
-			}
-			upsertImageAssetReferenceMetrics(e.db, jobID, imgURLID, pg.urlID, img)
-		}
-		if page.ExtractedWordCount <= pg.wordCount {
-			continue // static version already had equal or more content
-		}
-
-		enriched++
-		if err := e.updateBrowserEnrichedPage(jobID, pg.urlID, page); err != nil {
-			slog.Warn("engine: browser enrich: update page failed", "url", pg.url, "err", err)
+		imgHost := parsed.Hostname()
+		imgURLID, upsertErr := e.db.UpsertURL(jobID, img.Src, imgHost, "discovered", false, "asset")
+		if upsertErr != nil {
 			continue
 		}
-
+		upsertImageAssetReferenceMetrics(e.db, jobID, imgURLID, pg.urlID, img)
+	}
+	if page.ExtractedWordCount <= pg.wordCount {
+		return discovered, false // static version already had equal or more content
 	}
 
-	slog.Info("engine: browser enrich: updated pages with richer content", "enriched", enriched, "total", len(pages), "job_id", jobID)
-	return discovered
+	if err := e.updateBrowserEnrichedPage(jobID, pg.urlID, page); err != nil {
+		slog.Warn("engine: browser enrich: update page failed", "url", pg.url, "err", err)
+		return discovered, false
+	}
+	return discovered, true
 }
 
 func (e *Engine) persistBrowserDiscoveredEdges(jobID string, sourceURLID int64, sourceURL string, page *parser.ParseResult) int {
