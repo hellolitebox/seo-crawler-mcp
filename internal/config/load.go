@@ -72,6 +72,7 @@ type tomlConfig struct {
 	PSIMaxPages      *int             `toml:"psi_max_pages"`
 	PSIDesktop       bool             `toml:"psi_desktop"`
 	AxeMaxPages      *int             `toml:"axe_max_pages"`
+	GrammarMaxPages  *int             `toml:"grammar_max_pages"`
 	LanguageToolURL  string           `toml:"languagetool_url"`
 	URLGroups        []URLGroupConfig `toml:"url_groups"`
 }
@@ -270,6 +271,9 @@ func LoadFromFile(path string) (*Config, error) {
 	}
 	if tc.AxeMaxPages != nil {
 		cfg.AxeMaxPages = *tc.AxeMaxPages
+	}
+	if tc.GrammarMaxPages != nil {
+		cfg.GrammarMaxPages = *tc.GrammarMaxPages
 	}
 	if tc.LanguageToolURL != "" {
 		cfg.LanguageToolURL = tc.LanguageToolURL
@@ -497,6 +501,11 @@ func applyEnvOverrides(cfg *Config) error {
 	if v := os.Getenv("SEO_CRAWLER_LANGUAGETOOL_URL"); v != "" {
 		cfg.LanguageToolURL = v
 	}
+	if v := os.Getenv("SEO_CRAWLER_GRAMMAR_MAX_PAGES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.GrammarMaxPages = n
+		}
+	}
 	if v := os.Getenv("SEO_CRAWLER_PSI_DESKTOP"); v != "" {
 		parsed, err := parseBool(v)
 		if err != nil {
@@ -544,6 +553,9 @@ func validateConfig(cfg *Config) error {
 	}
 	if cfg.AxeMaxPages < 0 {
 		return fmt.Errorf("axe_max_pages must be >= 0")
+	}
+	if cfg.GrammarMaxPages < 0 {
+		return fmt.Errorf("grammar_max_pages must be >= 0")
 	}
 	return nil
 }

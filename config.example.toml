@@ -46,6 +46,7 @@
 
 # --- LanguageTool (optional, requires running server) ---
 # languagetool_url = "http://localhost:8010"
+# grammar_max_pages = 50  # 0 = check every eligible page
 
 # --- Database ---
 # db_path = "seo-crawler.db"

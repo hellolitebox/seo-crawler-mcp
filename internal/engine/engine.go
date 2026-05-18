@@ -621,6 +621,27 @@ func (e *Engine) effectiveAxeMaxPages(jobID string) int {
 	return limit
 }
 
+func (e *Engine) effectiveGrammarMaxPages(jobID string) int {
+	limit := 50
+	if e != nil && e.config != nil {
+		limit = e.config.GrammarMaxPages
+	}
+	if e != nil && e.db != nil {
+		if job, err := e.db.GetJob(jobID); err == nil {
+			var jobCfg struct {
+				GrammarMaxPages *int `json:"grammarMaxPages"`
+			}
+			if err := json.Unmarshal([]byte(job.ConfigJSON), &jobCfg); err == nil && jobCfg.GrammarMaxPages != nil {
+				limit = *jobCfg.GrammarMaxPages
+			}
+		}
+	}
+	if limit < 0 {
+		return 0
+	}
+	return limit
+}
+
 func (e *Engine) renderProvider() config.RenderProvider {
 	if e != nil && e.config != nil && e.config.RenderProvider != "" {
 		return e.config.RenderProvider
@@ -3328,6 +3349,7 @@ func (e *Engine) runTextQualityChecks(ctx context.Context, jobID string) {
 		JOIN urls u ON u.id = p.url_id AND u.job_id = p.job_id
 		JOIN fetches f ON f.id = p.fetch_id AND f.job_id = p.job_id
 		WHERE p.job_id = ? AND p.word_count > 0
+		ORDER BY p.depth ASC, u.normalized_url ASC
 	`, jobID)
 	if err != nil {
 		slog.Error("engine: text quality query failed", "err", err, "job_id", jobID)
@@ -3351,6 +3373,11 @@ func (e *Engine) runTextQualityChecks(ctx context.Context, jobID string) {
 
 	if len(pages) == 0 {
 		return
+	}
+	eligiblePages := len(pages)
+	maxPages := e.effectiveGrammarMaxPages(jobID)
+	if maxPages > 0 && len(pages) > maxPages {
+		pages = pages[:maxPages]
 	}
 
 	// Build custom dictionary from brand names found in titles and H1s
@@ -3411,8 +3438,12 @@ func (e *Engine) runTextQualityChecks(ctx context.Context, jobID string) {
 	}
 	slog.Info("engine: text quality custom dictionary loaded", "words", len(customDict))
 
-	slog.Info("engine: running text quality checks via LanguageTool", "pages", len(pages), "job_id", jobID)
-	e.emitPhase(jobID, "text_quality", fmt.Sprintf("checking spelling/grammar on %d pages via LanguageTool", len(pages)))
+	slog.Info("engine: running text quality checks via LanguageTool", "pages", len(pages), "eligible_pages", eligiblePages, "max_pages", maxPages, "job_id", jobID)
+	phaseMessage := fmt.Sprintf("checking spelling/grammar on %d pages via LanguageTool", len(pages))
+	if maxPages > 0 && eligiblePages > len(pages) {
+		phaseMessage = fmt.Sprintf("checking spelling/grammar on %d/%d eligible pages via LanguageTool", len(pages), eligiblePages)
+	}
+	e.emitPhase(jobID, "text_quality", phaseMessage)
 	tqProgressEvery := len(pages) / 10
 	if tqProgressEvery < 5 {
 		tqProgressEvery = 5

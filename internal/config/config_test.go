@@ -109,6 +109,9 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.AxeMaxPages != 50 {
 		t.Errorf("AxeMaxPages = %d, want 50", cfg.AxeMaxPages)
 	}
+	if cfg.GrammarMaxPages != 50 {
+		t.Errorf("GrammarMaxPages = %d, want 50", cfg.GrammarMaxPages)
+	}
 
 	// Security
 	if cfg.AllowInsecureTLS {

@@ -110,6 +110,7 @@ func (s *Server) handleCrawl(w http.ResponseWriter, r *http.Request) {
 		RenderMode        string   `json:"renderMode"`
 		PSIMaxPages       *int     `json:"psiMaxPages"`
 		AxeMaxPages       *int     `json:"axeMaxPages"`
+		GrammarMaxPages   *int     `json:"grammarMaxPages"`
 		RespectRobots     *bool    `json:"respectRobots"`
 		DryRun            bool     `json:"dryRun"`
 	}
@@ -259,6 +260,17 @@ func (s *Server) handleCrawl(w http.ResponseWriter, r *http.Request) {
 		}
 		axeMaxPages = *body.AxeMaxPages
 	}
+	grammarMaxPages := 50
+	if s.config != nil {
+		grammarMaxPages = s.config.GrammarMaxPages
+	}
+	if body.GrammarMaxPages != nil {
+		if *body.GrammarMaxPages < 0 {
+			writeError(w, http.StatusBadRequest, "grammarMaxPages must be >= 0")
+			return
+		}
+		grammarMaxPages = *body.GrammarMaxPages
+	}
 
 	renderMode := "static"
 	if s.config != nil && s.config.RenderMode != "" {
@@ -320,6 +332,7 @@ func (s *Server) handleCrawl(w http.ResponseWriter, r *http.Request) {
 		"renderMode":        renderMode,
 		"psiMaxPages":       psiMaxPages,
 		"axeMaxPages":       axeMaxPages,
+		"grammarMaxPages":   grammarMaxPages,
 		"respectRobots":     respectRobots,
 		"dryRun":            body.DryRun,
 	}

@@ -50,6 +50,7 @@ browserbase_api_key = "bb_test"
 browserbase_project_id = "project_test"
 psi_max_pages = 0
 axe_max_pages = 12
+grammar_max_pages = 8
 respect_robots = false
 `
 	if err := os.WriteFile(cfgPath, []byte(content), 0644); err != nil {
@@ -93,6 +94,9 @@ respect_robots = false
 	}
 	if cfg.AxeMaxPages != 12 {
 		t.Errorf("AxeMaxPages = %d, want 12", cfg.AxeMaxPages)
+	}
+	if cfg.GrammarMaxPages != 8 {
+		t.Errorf("GrammarMaxPages = %d, want 8", cfg.GrammarMaxPages)
 	}
 	if cfg.RespectRobots != false {
 		t.Errorf("RespectRobots = %v, want false", cfg.RespectRobots)
@@ -156,6 +160,7 @@ user_agent = "file-bot"
 	t.Setenv("BROWSERBASE_PROJECT_ID", "project_env")
 	t.Setenv("SEO_CRAWLER_PSI_MAX_PAGES", "7")
 	t.Setenv("SEO_CRAWLER_AXE_MAX_PAGES", "0")
+	t.Setenv("SEO_CRAWLER_GRAMMAR_MAX_PAGES", "11")
 
 	cfg, err := LoadConfig(cfgPath)
 	if err != nil {
@@ -185,6 +190,9 @@ user_agent = "file-bot"
 	}
 	if cfg.AxeMaxPages != 0 {
 		t.Errorf("AxeMaxPages = %d, want 0 (env override)", cfg.AxeMaxPages)
+	}
+	if cfg.GrammarMaxPages != 11 {
+		t.Errorf("GrammarMaxPages = %d, want 11 (env override)", cfg.GrammarMaxPages)
 	}
 	// UserAgent should remain from file since no env var set.
 	if cfg.UserAgent != "file-bot" {
@@ -249,6 +257,12 @@ func TestLoadConfigRejectsNegativeAuditLimits(t *testing.T) {
 	t.Setenv("SEO_CRAWLER_AXE_MAX_PAGES", "-1")
 	if _, err := LoadConfig(""); err == nil {
 		t.Fatal("expected negative Axe max pages to return an error")
+	}
+
+	t.Setenv("SEO_CRAWLER_AXE_MAX_PAGES", "50")
+	t.Setenv("SEO_CRAWLER_GRAMMAR_MAX_PAGES", "-1")
+	if _, err := LoadConfig(""); err == nil {
+		t.Fatal("expected negative Grammar max pages to return an error")
 	}
 }
 

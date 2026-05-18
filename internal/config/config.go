@@ -135,6 +135,10 @@ type Config struct {
 	// 0 means audit every page.
 	AxeMaxPages int `json:"axeMaxPages"`
 
+	// GrammarMaxPages limits LanguageTool grammar/spelling checks to the first N pages.
+	// 0 means check every eligible page.
+	GrammarMaxPages int `json:"grammarMaxPages"`
+
 	// LanguageToolURL is the base URL of a LanguageTool server for text quality checks.
 	// If empty, text quality checks are skipped.
 	LanguageToolURL string `json:"languageToolUrl"`
@@ -229,6 +233,7 @@ func DefaultConfig() Config {
 		MaxJobAge:        0,
 		PSIMaxPages:      50,
 		AxeMaxPages:      50,
+		GrammarMaxPages:  50,
 
 		URLGroups: []URLGroupConfig{},
 	}

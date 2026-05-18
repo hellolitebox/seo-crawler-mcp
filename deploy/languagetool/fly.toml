@@ -1,0 +1,10 @@
+app = "seo-crawler-languagetool"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[vm]
+  cpu_kind = "shared"
+  cpus = 1
+  memory = "1gb"
