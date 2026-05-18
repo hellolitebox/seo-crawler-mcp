@@ -182,27 +182,69 @@ func (s *Server) buildAISummaryInput(ctx context.Context, job *storage.CrawlJob)
 			"issuesFound":    job.IssuesFound,
 			"seedUrls":       decodeJSONField(sql.NullString{String: job.SeedURLs, Valid: job.SeedURLs != ""}),
 		},
-		"summary":              summary,
-		"sitemapSummary":       extras["sitemap_summary"],
-		"securitySummary":      extras["security_summary"],
-		"urlClusterSummary":    extras["url_cluster_summary"],
-		"responseCodes":        compactList(extras["response_codes"], 80),
-		"topIssueExamples":     summary.TopIssues,
+		"summary":              compactCrawlSummary(summary),
+		"sitemapSummary":       compactAIValue(extras["sitemap_summary"], 12),
+		"securitySummary":      compactAIValue(extras["security_summary"], 12),
+		"urlClusterSummary":    compactAIValue(extras["url_cluster_summary"], 12),
+		"coverage":             aiSummaryCoverage(extras),
+		"responseCodes":        compactAIValue(compactList(extras["response_codes"], 25), 8),
+		"topIssueExamples":     compactAIValue(summary.TopIssues, 10),
 		"issueExamples":        issueExamples,
 		"pageExamples":         pageExamples,
 		"agentReadiness":       summarizeStatusRows(extras["agent_readiness"]),
 		"securityFindings":     summarizeStatusRows(extras["security"]),
 		"psiAudits":            summarizePSIAudits(extras["psi_audits"]),
 		"axeAudits":            summarizeAxeAudits(extras["axe_audits"]),
-		"markdownNegotiation":  compactList(extras["markdown_negotiation"], 5),
-		"llmsFindings":         compactList(extras["llms_findings"], 20),
-		"assetSamples":         compactList(extras["assets"], 40),
-		"externalLinkSamples":  compactList(extras["external_links"], 40),
-		"redirectHopSamples":   compactList(extras["redirect_hops"], 40),
-		"urlVariantIssues":     compactList(extras["url_variant_issues"], 40),
+		"markdownNegotiation":  compactAIValue(compactList(extras["markdown_negotiation"], 5), 5),
+		"llmsFindings":         compactAIValue(compactList(extras["llms_findings"], 10), 5),
+		"assetSamples":         compactAIValue(compactList(extras["assets"], 10), 5),
+		"externalLinkSamples":  compactAIValue(compactList(extras["external_links"], 10), 5),
+		"redirectHopSamples":   compactAIValue(compactList(extras["redirect_hops"], 10), 5),
+		"urlVariantIssues":     compactAIValue(compactList(extras["url_variant_issues"], 10), 5),
 		"sourceFingerprint":    aiSummarySourceFingerprint(job),
 		"instructionsForModel": "Use only this data. Do not invent issue counts, URLs, or audits.",
 	}, nil
+}
+
+func compactCrawlSummary(summary *storage.CrawlSummary) map[string]any {
+	if summary == nil {
+		return map[string]any{}
+	}
+	return map[string]any{
+		"totalPages":               summary.TotalPages,
+		"totalUrls":                summary.TotalURLs,
+		"totalIssues":              summary.TotalIssues,
+		"issuesByType":             summary.IssuesByType,
+		"issuesBySeverity":         summary.IssuesBySeverity,
+		"indexabilityDistribution": summary.IndexabilityDistribution,
+		"statusCodeDistribution":   summary.StatusCodeDistribution,
+		"depthDistribution":        summary.DepthDistribution,
+		"avgTtfb":                  summary.AvgTTFB,
+		"medianTtfb":               summary.MedianTTFB,
+		"p95Ttfb":                  summary.P95TTFB,
+		"avgWordCount":             summary.AvgWordCount,
+		"pagesWithStructuredData":  summary.PagesWithStructuredData,
+		"pagesWithIssues":          summary.PagesWithIssues,
+		"pagesInSitemap":           summary.PagesInSitemap,
+		"orphanPageCount":          summary.OrphanPageCount,
+		"duplicateContentCount":    summary.DuplicateContentCount,
+		"thinContentCount":         summary.ThinContentCount,
+		"crawlDuration":            summary.CrawlDuration,
+		"pagesPerSecond":           summary.PagesPerSecond,
+		"topIssues":                summary.TopIssues,
+	}
+}
+
+func aiSummaryCoverage(extras map[string]any) map[string]any {
+	return map[string]any{
+		"urlsTotal":             extras["urls_total_count"],
+		"internalLinksTotal":    extras["internal_edges_total_count"],
+		"externalLinksTotal":    extras["external_links_total_count"],
+		"assetSamples":          len(compactList(extras["assets"], 1000000)),
+		"assetReferenceSamples": len(compactList(extras["asset_references"], 1000000)),
+		"redirectHopSamples":    len(compactList(extras["redirect_hops"], 1000000)),
+		"llmsFindingSamples":    len(compactList(extras["llms_findings"], 1000000)),
+	}
 }
 
 func aiSummarySourceFingerprint(job *storage.CrawlJob) string {
@@ -234,7 +276,7 @@ func (s *Server) issueExamples(jobID string, limit int) ([]map[string]any, error
 			"severity": severity,
 			"scope":    scope,
 			"url":      pageURL,
-			"details":  decodeJSONField(details),
+			"details":  compactAIValue(decodeJSONField(details), 4),
 		})
 	}
 	return out, rows.Err()
@@ -297,6 +339,94 @@ func compactList(value any, limit int) []any {
 	return out
 }
 
+func compactAIValue(value any, limit int) any {
+	if limit <= 0 {
+		limit = 5
+	}
+	switch v := value.(type) {
+	case nil, bool, int, int64, float64, json.Number:
+		return v
+	case string:
+		return limitString(v, 320)
+	case *string:
+		if v == nil {
+			return nil
+		}
+		return limitString(*v, 320)
+	case []map[string]any:
+		out := make([]any, 0, min(limit, len(v)))
+		for i, item := range v {
+			if i >= limit {
+				break
+			}
+			out = append(out, compactAIValue(item, limit))
+		}
+		return out
+	case []any:
+		out := make([]any, 0, min(limit, len(v)))
+		for i, item := range v {
+			if i >= limit {
+				break
+			}
+			out = append(out, compactAIValue(item, limit))
+		}
+		return out
+	case []storage.TopIssue:
+		out := make([]any, 0, min(limit, len(v)))
+		for i, item := range v {
+			if i >= limit {
+				break
+			}
+			out = append(out, map[string]any{
+				"type":       item.Type,
+				"count":      item.Count,
+				"exampleUrl": item.ExampleURL,
+			})
+		}
+		return out
+	case map[string]any:
+		out := map[string]any{}
+		keys := make([]string, 0, len(v))
+		for key := range v {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			if len(out) >= 24 {
+				break
+			}
+			if skipAIInputKey(key) {
+				continue
+			}
+			out[key] = compactAIValue(v[key], limit)
+		}
+		return out
+	default:
+		return limitString(fmt.Sprint(v), 320)
+	}
+}
+
+func skipAIInputKey(key string) bool {
+	normalized := strings.ToLower(key)
+	for _, token := range []string{
+		"html",
+		"body",
+		"content",
+		"headers",
+		"evidence_json",
+		"resources_json",
+		"raw",
+		"snapshot",
+		"screenshot",
+		"trace",
+	} {
+		if strings.Contains(normalized, token) {
+			return true
+		}
+	}
+	return false
+}
+
 func summarizeStatusRows(value any) map[string]any {
 	rows, ok := value.([]map[string]any)
 	if !ok {
@@ -311,7 +441,7 @@ func summarizeStatusRows(value any) map[string]any {
 		}
 		byStatus[status]++
 		if len(samples) < 20 && (status == "fail" || status == "warning" || status == "error") {
-			samples = append(samples, row)
+			samples = append(samples, compactAIValue(row, 4))
 		}
 	}
 	return map[string]any{"total": len(rows), "byStatus": byStatus, "samples": samples}
@@ -348,8 +478,8 @@ func summarizePSIAudits(value any) map[string]any {
 				}
 			}
 		}
-		if len(samples) < 10 {
-			samples = append(samples, row)
+		if len(samples) < 8 {
+			samples = append(samples, compactAIValue(row, 4))
 		}
 	}
 	avg := func(total, count float64) any {
@@ -381,8 +511,8 @@ func summarizeAxeAudits(value any) map[string]any {
 		} else if arr, ok := row["violations"].([]any); ok {
 			violations += len(arr)
 		}
-		if len(samples) < 10 {
-			samples = append(samples, row)
+		if len(samples) < 8 {
+			samples = append(samples, compactAIValue(row, 4))
 		}
 	}
 	return map[string]any{"total": len(rows), "violationCount": violations, "samples": samples}
