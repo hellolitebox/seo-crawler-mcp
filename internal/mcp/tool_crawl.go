@@ -29,6 +29,8 @@ type crawlSiteArgs struct {
 	MaxOnboardedHosts int      `json:"maxOnboardedHosts,omitempty"`
 	MaxCrawlDuration  string   `json:"maxCrawlDuration,omitempty"`
 	RenderMode        string   `json:"renderMode,omitempty"`
+	PSIMaxPages       *int     `json:"psiMaxPages,omitempty"`
+	AxeMaxPages       *int     `json:"axeMaxPages,omitempty"`
 	RespectRobots     *bool    `json:"respectRobots,omitempty"`
 	DryRun            bool     `json:"dryRun,omitempty"`
 }
@@ -132,6 +134,22 @@ func (s *Server) handleCrawlSite(ctx context.Context, req gomcp.CallToolRequest)
 		}
 		maxCrawlDuration = d
 	}
+	var psiMaxPages *int
+	if n, ok := args["psiMaxPages"].(float64); ok {
+		if n < 0 {
+			return gomcp.NewToolResultError("psiMaxPages must be >= 0"), nil
+		}
+		v := int(n)
+		psiMaxPages = &v
+	}
+	var axeMaxPages *int
+	if n, ok := args["axeMaxPages"].(float64); ok {
+		if n < 0 {
+			return gomcp.NewToolResultError("axeMaxPages must be >= 0"), nil
+		}
+		v := int(n)
+		axeMaxPages = &v
+	}
 
 	renderMode := "static"
 	if rm, ok := args["renderMode"].(string); ok && rm != "" {
@@ -189,6 +207,8 @@ func (s *Server) handleCrawlSite(ctx context.Context, req gomcp.CallToolRequest)
 			MaxOnboardedHosts: maxOnboardedHosts,
 			MaxCrawlDuration:  maxCrawlDuration,
 			RenderMode:        renderMode,
+			PSIMaxPages:       psiMaxPages,
+			AxeMaxPages:       axeMaxPages,
 			RespectRobots:     &respectRobots,
 			DryRun:            dryRun,
 		})
@@ -237,6 +257,12 @@ func (s *Server) handleCrawlSite(ctx context.Context, req gomcp.CallToolRequest)
 		"renderMode":        renderMode,
 		"respectRobots":     respectRobots,
 		"dryRun":            dryRun,
+	}
+	if psiMaxPages != nil {
+		crawlConfig["psiMaxPages"] = *psiMaxPages
+	}
+	if axeMaxPages != nil {
+		crawlConfig["axeMaxPages"] = *axeMaxPages
 	}
 	configJSON, err := json.Marshal(crawlConfig)
 	if err != nil {
@@ -564,6 +590,12 @@ func (s *Server) crawlSiteViaHTTP(
 		"renderMode":        args.RenderMode,
 		"respectRobots":     true,
 		"dryRun":            args.DryRun,
+	}
+	if args.PSIMaxPages != nil {
+		body["psiMaxPages"] = *args.PSIMaxPages
+	}
+	if args.AxeMaxPages != nil {
+		body["axeMaxPages"] = *args.AxeMaxPages
 	}
 	if args.RespectRobots != nil {
 		body["respectRobots"] = *args.RespectRobots

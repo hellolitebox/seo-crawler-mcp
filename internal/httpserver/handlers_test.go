@@ -465,7 +465,7 @@ func TestHandleCrawlHonorsConfigAndRequestSettings(t *testing.T) {
 	srv := New(db, &engine.Engine{}, &cfg)
 	handler := srv.Handler()
 
-	body := bytes.NewBufferString("{\"url\":\"example.com\",\"urls\":[\"example.com/docs\"],\"scopeMode\":\"allowlist\",\"allowedHosts\":[\"example.com\",\"docs.example.com\"],\"maxPages\":10,\"maxDepth\":3,\"renderMode\":\"static\",\"respectRobots\":true,\"dryRun\":true}")
+	body := bytes.NewBufferString("{\"url\":\"example.com\",\"urls\":[\"example.com/docs\"],\"scopeMode\":\"allowlist\",\"allowedHosts\":[\"example.com\",\"docs.example.com\"],\"maxPages\":10,\"maxDepth\":3,\"renderMode\":\"static\",\"psiMaxPages\":0,\"axeMaxPages\":9,\"respectRobots\":true,\"dryRun\":true}")
 	req := httptest.NewRequest(http.MethodPost, "/api/crawl", body)
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
@@ -491,6 +491,8 @@ func TestHandleCrawlHonorsConfigAndRequestSettings(t *testing.T) {
 		"maxPages":      float64(10),
 		"maxDepth":      float64(3),
 		"renderMode":    "static",
+		"psiMaxPages":   float64(0),
+		"axeMaxPages":   float64(9),
 		"respectRobots": true,
 		"dryRun":        true,
 	}

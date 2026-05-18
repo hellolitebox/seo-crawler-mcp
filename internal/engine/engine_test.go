@@ -1157,13 +1157,23 @@ func TestPSIAuditPageURLsOnlyIncludes2xxPages(t *testing.T) {
 	seedPage("https://example.com/login", 404, 2)
 	seedPage("https://example.com/redirect", 301, 3)
 	seedPage("https://example.com/server-error", 500, 4)
+	seedPage("https://example.com/docs", 200, 5)
 
 	eng := &Engine{db: db}
-	urls, err := eng.psiAuditPageURLs(job.ID, 50)
+	urls, err := eng.psiAuditPageURLs(job.ID, 1)
 	if err != nil {
 		t.Fatalf("psiAuditPageURLs: %v", err)
 	}
 	if len(urls) != 1 || urls[0] != "https://example.com/" {
-		t.Fatalf("psi audit URLs = %v, want only the 2xx page", urls)
+		t.Fatalf("psi audit URLs = %v, want first 2xx page", urls)
+	}
+
+	urls, err = eng.psiAuditPageURLs(job.ID, 0)
+	if err != nil {
+		t.Fatalf("psiAuditPageURLs unlimited: %v", err)
+	}
+	want := []string{"https://example.com/", "https://example.com/docs"}
+	if fmt.Sprint(urls) != fmt.Sprint(want) {
+		t.Fatalf("psi audit URLs = %v, want %v", urls, want)
 	}
 }

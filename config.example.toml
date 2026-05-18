@@ -38,7 +38,11 @@
 
 # --- PageSpeed Insights (optional, requires Google API key) ---
 # psi_api_key = "your_key_here"
+# psi_max_pages = 50       # 0 = audit every eligible page
 # psi_desktop = false         # Enable desktop audits alongside mobile
+
+# --- Axe accessibility audits ---
+# axe_max_pages = 50       # 0 = audit every crawled page
 
 # --- LanguageTool (optional, requires running server) ---
 # languagetool_url = "http://localhost:8010"

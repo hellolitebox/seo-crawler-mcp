@@ -48,6 +48,8 @@ render_mode = "static"
 render_provider = "browserbase"
 browserbase_api_key = "bb_test"
 browserbase_project_id = "project_test"
+psi_max_pages = 0
+axe_max_pages = 12
 respect_robots = false
 `
 	if err := os.WriteFile(cfgPath, []byte(content), 0644); err != nil {
@@ -85,6 +87,12 @@ respect_robots = false
 	}
 	if cfg.BrowserbaseProjectID != "project_test" {
 		t.Errorf("BrowserbaseProjectID = %q, want project_test", cfg.BrowserbaseProjectID)
+	}
+	if cfg.PSIMaxPages != 0 {
+		t.Errorf("PSIMaxPages = %d, want 0", cfg.PSIMaxPages)
+	}
+	if cfg.AxeMaxPages != 12 {
+		t.Errorf("AxeMaxPages = %d, want 12", cfg.AxeMaxPages)
 	}
 	if cfg.RespectRobots != false {
 		t.Errorf("RespectRobots = %v, want false", cfg.RespectRobots)
@@ -146,6 +154,8 @@ user_agent = "file-bot"
 	t.Setenv("SEO_CRAWLER_RENDER_PROVIDER", "local")
 	t.Setenv("BROWSERBASE_API_KEY", "bb_env")
 	t.Setenv("BROWSERBASE_PROJECT_ID", "project_env")
+	t.Setenv("SEO_CRAWLER_PSI_MAX_PAGES", "7")
+	t.Setenv("SEO_CRAWLER_AXE_MAX_PAGES", "0")
 
 	cfg, err := LoadConfig(cfgPath)
 	if err != nil {
@@ -169,6 +179,12 @@ user_agent = "file-bot"
 	}
 	if cfg.BrowserbaseProjectID != "project_env" {
 		t.Errorf("BrowserbaseProjectID = %q, want project_env (env override)", cfg.BrowserbaseProjectID)
+	}
+	if cfg.PSIMaxPages != 7 {
+		t.Errorf("PSIMaxPages = %d, want 7 (env override)", cfg.PSIMaxPages)
+	}
+	if cfg.AxeMaxPages != 0 {
+		t.Errorf("AxeMaxPages = %d, want 0 (env override)", cfg.AxeMaxPages)
 	}
 	// UserAgent should remain from file since no env var set.
 	if cfg.UserAgent != "file-bot" {
@@ -219,6 +235,20 @@ func TestLoadConfigRejectsInvalidRenderProvider(t *testing.T) {
 
 	if _, err := LoadConfig(""); err == nil {
 		t.Fatal("expected invalid render provider to return an error")
+	}
+}
+
+func TestLoadConfigRejectsNegativeAuditLimits(t *testing.T) {
+	t.Setenv("SEO_CRAWLER_PSI_MAX_PAGES", "-1")
+
+	if _, err := LoadConfig(""); err == nil {
+		t.Fatal("expected negative PSI max pages to return an error")
+	}
+
+	t.Setenv("SEO_CRAWLER_PSI_MAX_PAGES", "50")
+	t.Setenv("SEO_CRAWLER_AXE_MAX_PAGES", "-1")
+	if _, err := LoadConfig(""); err == nil {
+		t.Fatal("expected negative Axe max pages to return an error")
 	}
 }
 

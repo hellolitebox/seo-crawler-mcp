@@ -579,6 +579,48 @@ func (e *Engine) effectiveRenderMode(job *storage.CrawlJob) config.RenderMode {
 	return renderMode
 }
 
+func (e *Engine) effectivePSIMaxPages(jobID string) int {
+	limit := 50
+	if e != nil && e.config != nil {
+		limit = e.config.PSIMaxPages
+	}
+	if e != nil && e.db != nil {
+		if job, err := e.db.GetJob(jobID); err == nil {
+			var jobCfg struct {
+				PSIMaxPages *int `json:"psiMaxPages"`
+			}
+			if err := json.Unmarshal([]byte(job.ConfigJSON), &jobCfg); err == nil && jobCfg.PSIMaxPages != nil {
+				limit = *jobCfg.PSIMaxPages
+			}
+		}
+	}
+	if limit < 0 {
+		return 0
+	}
+	return limit
+}
+
+func (e *Engine) effectiveAxeMaxPages(jobID string) int {
+	limit := 50
+	if e != nil && e.config != nil {
+		limit = e.config.AxeMaxPages
+	}
+	if e != nil && e.db != nil {
+		if job, err := e.db.GetJob(jobID); err == nil {
+			var jobCfg struct {
+				AxeMaxPages *int `json:"axeMaxPages"`
+			}
+			if err := json.Unmarshal([]byte(job.ConfigJSON), &jobCfg); err == nil && jobCfg.AxeMaxPages != nil {
+				limit = *jobCfg.AxeMaxPages
+			}
+		}
+	}
+	if limit < 0 {
+		return 0
+	}
+	return limit
+}
+
 func (e *Engine) renderProvider() config.RenderProvider {
 	if e != nil && e.config != nil && e.config.RenderProvider != "" {
 		return e.config.RenderProvider
@@ -2784,11 +2826,13 @@ func txInsertPage(ctx context.Context, tx *sql.Tx, jobID string, urlID, fetchID 
 	return rows > 0, nil
 }
 
-// runLighthouseAudits runs PageSpeed Insights API for all crawled pages
+// runLighthouseAudits runs PageSpeed Insights API for eligible crawled pages,
+// subject to the configured PSI page limit.
 // using a worker pool of 4 goroutines for parallel execution.
 // Results are stored as crawl events with type "psi_audit".
 func (e *Engine) runLighthouseAudits(ctx context.Context, jobID string) {
-	urls, err := e.psiAuditPageURLs(jobID, 50)
+	maxPages := e.effectivePSIMaxPages(jobID)
+	urls, err := e.psiAuditPageURLs(jobID, maxPages)
 	if err != nil {
 		slog.Error("engine: PSI audit query failed", "err", err, "job_id", jobID)
 		return
@@ -2806,12 +2850,13 @@ func (e *Engine) runLighthouseAudits(ctx context.Context, jobID string) {
 
 	slog.Info("engine: running PSI audits",
 		"pages", len(urls),
+		"page_limit", maxPages,
 		"strategies", len(strategies),
 		"total_calls", len(urls)*len(strategies),
 		"job_id", jobID)
 
 	totalCalls := len(urls) * len(strategies)
-	e.emitPhase(jobID, "psi_audits", fmt.Sprintf("running %d PageSpeed audits (%d pages × %d strategies)", totalCalls, len(urls), len(strategies)))
+	e.emitPhase(jobID, "psi_audits", fmt.Sprintf("running %d PageSpeed audits (%s × %d strategies)", totalCalls, auditPageScopeLabel(maxPages, len(urls)), len(strategies)))
 	psiProgressEvery := totalCalls / 10
 	if psiProgressEvery < 5 {
 		psiProgressEvery = 5
@@ -2886,15 +2931,20 @@ func (e *Engine) runLighthouseAudits(ctx context.Context, jobID string) {
 }
 
 func (e *Engine) psiAuditPageURLs(jobID string, limit int) ([]string, error) {
-	rows, err := e.db.Query(
-		`SELECT u.normalized_url
+	query := `SELECT u.normalized_url
 		 FROM pages p
 		 JOIN urls u ON u.id = p.url_id
 		 JOIN fetches f ON f.id = p.fetch_id
 		 WHERE p.job_id = ? AND f.status_code >= 200 AND f.status_code < 300
-		 ORDER BY p.id
-		 LIMIT ?`,
-		jobID, limit,
+		 ORDER BY p.id`
+	args := []any{jobID}
+	if limit > 0 {
+		query += " LIMIT ?"
+		args = append(args, limit)
+	}
+	rows, err := e.db.Query(
+		query,
+		args...,
 	)
 	if err != nil {
 		return nil, err
@@ -2914,33 +2964,24 @@ func (e *Engine) psiAuditPageURLs(jobID string, limit int) ([]string, error) {
 	return urls, nil
 }
 
-// runAxeAudits runs axe-core accessibility audits on all crawled pages
+// runAxeAudits runs axe-core accessibility audits on crawled pages, subject to
+// the configured Axe page limit.
 // using a single Playwright browser instance (batch mode).
 // Results are stored as crawl events with type "axe_audit".
 func (e *Engine) runAxeAudits(ctx context.Context, jobID string) {
-	rows, err := e.db.Query(
-		`SELECT u.normalized_url FROM pages p JOIN urls u ON u.id = p.url_id WHERE p.job_id = ? LIMIT 50`,
-		jobID,
-	)
+	maxPages := e.effectiveAxeMaxPages(jobID)
+	urls, err := e.axeAuditPageURLs(jobID, maxPages)
 	if err != nil {
 		slog.Error("engine: Axe audit query failed", "err", err, "job_id", jobID)
 		return
 	}
-	var urls []string
-	for rows.Next() {
-		var u string
-		if scanErr := rows.Scan(&u); scanErr == nil {
-			urls = append(urls, u)
-		}
-	}
-	rows.Close()
 
 	if len(urls) == 0 {
 		return
 	}
 
-	slog.Info("engine: running Axe accessibility audits (batch mode)", "pages", len(urls), "job_id", jobID)
-	e.emitPhase(jobID, "axe_audits", fmt.Sprintf("running Axe accessibility audits on %d pages (single Playwright batch)", len(urls)))
+	slog.Info("engine: running Axe accessibility audits (batch mode)", "pages", len(urls), "page_limit", maxPages, "job_id", jobID)
+	e.emitPhase(jobID, "axe_audits", fmt.Sprintf("running Axe accessibility audits on %s (single Playwright batch)", auditPageScopeLabel(maxPages, len(urls))))
 
 	// Run all URLs in a single batch — one browser launch for all pages
 	results, batchErr := renderer.RunAxeAuditBatch(ctx, urls)
@@ -2959,6 +3000,43 @@ func (e *Engine) runAxeAudits(ctx context.Context, jobID string) {
 	}
 
 	slog.Info("engine: Axe accessibility audits complete", "audited", audited, "job_id", jobID)
+}
+
+func (e *Engine) axeAuditPageURLs(jobID string, limit int) ([]string, error) {
+	query := `SELECT u.normalized_url
+		FROM pages p
+		JOIN urls u ON u.id = p.url_id
+		WHERE p.job_id = ?
+		ORDER BY p.id`
+	args := []any{jobID}
+	if limit > 0 {
+		query += " LIMIT ?"
+		args = append(args, limit)
+	}
+	rows, err := e.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var urls []string
+	for rows.Next() {
+		var u string
+		if scanErr := rows.Scan(&u); scanErr == nil {
+			urls = append(urls, u)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return urls, nil
+}
+
+func auditPageScopeLabel(limit, pages int) string {
+	if limit == 0 {
+		return fmt.Sprintf("%d pages", pages)
+	}
+	return fmt.Sprintf("%d sampled pages (limit %d)", pages, limit)
 }
 
 // failJob marks a job as failed with the given error.

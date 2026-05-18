@@ -48,7 +48,7 @@ unsupported schemes such as `ftp:`, `mailto:`, and `javascript:` are rejected.
 
 | Tool | Purpose |
 |------|---------|
-| `crawl_site` | Start a crawl. Supports `url`, additional `urls`, `scopeMode`, `allowedHosts`, `maxPages`, `maxDepth`, `renderMode`, `respectRobots`, and `dryRun`. When `SEO_CRAWLER_HTTP_API` is set, delegates to the live HTTP API. |
+| `crawl_site` | Start a crawl. Supports `url`, additional `urls`, `scopeMode`, `allowedHosts`, `maxPages`, `maxDepth`, `renderMode`, `psiMaxPages`, `axeMaxPages`, `respectRobots`, and `dryRun`. When `SEO_CRAWLER_HTTP_API` is set, delegates to the live HTTP API. |
 | `crawl_status` | Return status/counters for a crawl job. |
 | `cancel_crawl` | Cancel a running crawl job. |
 | `get_crawl_summary` | Return high-level summary/counters for a completed crawl. |

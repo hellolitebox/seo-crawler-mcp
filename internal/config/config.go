@@ -124,8 +124,16 @@ type Config struct {
 	// PageSpeed Insights API key (empty = skip PSI audits)
 	PSIAPIKey string `json:"psiApiKey"`
 
+	// PSIMaxPages limits PageSpeed Insights audits to the first N eligible pages.
+	// 0 means audit every eligible page.
+	PSIMaxPages int `json:"psiMaxPages"`
+
 	// PSIDesktop enables desktop strategy in addition to mobile (default: mobile only).
 	PSIDesktop bool `json:"psiDesktop"`
+
+	// AxeMaxPages limits axe accessibility audits to the first N pages.
+	// 0 means audit every page.
+	AxeMaxPages int `json:"axeMaxPages"`
 
 	// LanguageToolURL is the base URL of a LanguageTool server for text quality checks.
 	// If empty, text quality checks are skipped.
@@ -219,6 +227,8 @@ func DefaultConfig() Config {
 		MaxQueueMemoryMB: 100,
 		DBPath:           "seo-crawler.db",
 		MaxJobAge:        0,
+		PSIMaxPages:      50,
+		AxeMaxPages:      50,
 
 		URLGroups: []URLGroupConfig{},
 	}

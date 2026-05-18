@@ -16,6 +16,8 @@ var (
 		gomcp.WithArray("allowedHosts", gomcp.Description("Hosts to allow when scopeMode is allowlist"), gomcp.WithStringItems()),
 		gomcp.WithNumber("maxPages", gomcp.Description("Maximum pages to crawl (default 10000)")),
 		gomcp.WithNumber("maxDepth", gomcp.Description("Maximum link depth (default 50)")),
+		gomcp.WithNumber("psiMaxPages", gomcp.Description("Maximum eligible pages to run PageSpeed Insights on; 0 audits every eligible page (default 50)")),
+		gomcp.WithNumber("axeMaxPages", gomcp.Description("Maximum pages to run Axe accessibility audits on; 0 audits every page (default 50)")),
 		gomcp.WithString("renderMode", gomcp.Description("Page rendering strategy"), gomcp.Enum("static", "browser", "hybrid")),
 		gomcp.WithBoolean("respectRobots", gomcp.Description("Honor robots.txt directives (default true)")),
 		gomcp.WithBoolean("dryRun", gomcp.Description("Fetch seeds only without full crawl (default false)")),

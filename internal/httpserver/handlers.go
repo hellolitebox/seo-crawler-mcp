@@ -108,6 +108,8 @@ func (s *Server) handleCrawl(w http.ResponseWriter, r *http.Request) {
 		MaxOnboardedHosts int      `json:"maxOnboardedHosts"`
 		MaxCrawlDuration  string   `json:"maxCrawlDuration"`
 		RenderMode        string   `json:"renderMode"`
+		PSIMaxPages       *int     `json:"psiMaxPages"`
+		AxeMaxPages       *int     `json:"axeMaxPages"`
 		RespectRobots     *bool    `json:"respectRobots"`
 		DryRun            bool     `json:"dryRun"`
 	}
@@ -235,6 +237,28 @@ func (s *Server) handleCrawl(w http.ResponseWriter, r *http.Request) {
 	if body.RespectRobots != nil {
 		respectRobots = *body.RespectRobots
 	}
+	psiMaxPages := 50
+	if s.config != nil {
+		psiMaxPages = s.config.PSIMaxPages
+	}
+	if body.PSIMaxPages != nil {
+		if *body.PSIMaxPages < 0 {
+			writeError(w, http.StatusBadRequest, "psiMaxPages must be >= 0")
+			return
+		}
+		psiMaxPages = *body.PSIMaxPages
+	}
+	axeMaxPages := 50
+	if s.config != nil {
+		axeMaxPages = s.config.AxeMaxPages
+	}
+	if body.AxeMaxPages != nil {
+		if *body.AxeMaxPages < 0 {
+			writeError(w, http.StatusBadRequest, "axeMaxPages must be >= 0")
+			return
+		}
+		axeMaxPages = *body.AxeMaxPages
+	}
 
 	renderMode := "static"
 	if s.config != nil && s.config.RenderMode != "" {
@@ -294,6 +318,8 @@ func (s *Server) handleCrawl(w http.ResponseWriter, r *http.Request) {
 		"maxOnboardedHosts": maxOnboardedHosts,
 		"maxCrawlDuration":  maxCrawlDuration,
 		"renderMode":        renderMode,
+		"psiMaxPages":       psiMaxPages,
+		"axeMaxPages":       axeMaxPages,
 		"respectRobots":     respectRobots,
 		"dryRun":            body.DryRun,
 	}

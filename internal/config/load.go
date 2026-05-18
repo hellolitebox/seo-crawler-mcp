@@ -69,7 +69,9 @@ type tomlConfig struct {
 	DBPath           string           `toml:"db_path"`
 	MaxJobAge        string           `toml:"max_job_age"`
 	PSIAPIKey        string           `toml:"psi_api_key"`
+	PSIMaxPages      *int             `toml:"psi_max_pages"`
 	PSIDesktop       bool             `toml:"psi_desktop"`
+	AxeMaxPages      *int             `toml:"axe_max_pages"`
 	LanguageToolURL  string           `toml:"languagetool_url"`
 	URLGroups        []URLGroupConfig `toml:"url_groups"`
 }
@@ -260,8 +262,14 @@ func LoadFromFile(path string) (*Config, error) {
 	if tc.PSIAPIKey != "" {
 		cfg.PSIAPIKey = tc.PSIAPIKey
 	}
+	if tc.PSIMaxPages != nil {
+		cfg.PSIMaxPages = *tc.PSIMaxPages
+	}
 	if tc.PSIDesktop {
 		cfg.PSIDesktop = true
+	}
+	if tc.AxeMaxPages != nil {
+		cfg.AxeMaxPages = *tc.AxeMaxPages
 	}
 	if tc.LanguageToolURL != "" {
 		cfg.LanguageToolURL = tc.LanguageToolURL
@@ -481,6 +489,11 @@ func applyEnvOverrides(cfg *Config) error {
 	if v := os.Getenv("SEO_CRAWLER_PSI_API_KEY"); v != "" {
 		cfg.PSIAPIKey = v
 	}
+	if v := os.Getenv("SEO_CRAWLER_PSI_MAX_PAGES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.PSIMaxPages = n
+		}
+	}
 	if v := os.Getenv("SEO_CRAWLER_LANGUAGETOOL_URL"); v != "" {
 		cfg.LanguageToolURL = v
 	}
@@ -490,6 +503,11 @@ func applyEnvOverrides(cfg *Config) error {
 			return fmt.Errorf("parsing SEO_CRAWLER_PSI_DESKTOP: %w", err)
 		}
 		cfg.PSIDesktop = parsed
+	}
+	if v := os.Getenv("SEO_CRAWLER_AXE_MAX_PAGES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.AxeMaxPages = n
+		}
 	}
 	return nil
 }
@@ -520,6 +538,12 @@ func validateConfig(cfg *Config) error {
 		if _, err := path.Match(pattern, ""); err != nil {
 			return fmt.Errorf("invalid force_render_patterns entry %q: %w", pattern, err)
 		}
+	}
+	if cfg.PSIMaxPages < 0 {
+		return fmt.Errorf("psi_max_pages must be >= 0")
+	}
+	if cfg.AxeMaxPages < 0 {
+		return fmt.Errorf("axe_max_pages must be >= 0")
 	}
 	return nil
 }

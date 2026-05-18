@@ -103,6 +103,12 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.MaxQueryVariantsPerPath != 50 {
 		t.Errorf("MaxQueryVariantsPerPath = %d, want 50", cfg.MaxQueryVariantsPerPath)
 	}
+	if cfg.PSIMaxPages != 50 {
+		t.Errorf("PSIMaxPages = %d, want 50", cfg.PSIMaxPages)
+	}
+	if cfg.AxeMaxPages != 50 {
+		t.Errorf("AxeMaxPages = %d, want 50", cfg.AxeMaxPages)
+	}
 
 	// Security
 	if cfg.AllowInsecureTLS {
