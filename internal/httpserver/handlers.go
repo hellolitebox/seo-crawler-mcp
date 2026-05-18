@@ -843,6 +843,7 @@ func (s *Server) handleJobAssets(w http.ResponseWriter, r *http.Request, jobID s
 	lookup := s.urlLookup()
 	assetRows := make([]map[string]any, 0, len(result.Results))
 	for _, asset := range result.Results {
+		references := loadAssetReferencesForAsset(r.Context(), s.db, jobID, asset.URLID)
 		assetRows = append(assetRows, map[string]any{
 			"id":              asset.ID,
 			"jobId":           asset.JobID,
@@ -855,9 +856,61 @@ func (s *Server) handleJobAssets(w http.ResponseWriter, r *http.Request, jobID s
 			"decodedSize":     nullInt64(asset.DecodedSize),
 			"statusCode":      nullInt64(asset.StatusCode),
 			"contentLength":   nullInt64(asset.ContentLength),
+			"referenceCount":  len(references),
+			"references":      references,
 		})
 	}
 	writePagedOffsetJSON(w, assetRows, result.TotalCount, limit, offset)
+}
+
+func loadAssetReferencesForAsset(ctx context.Context, db *storage.DB, jobID string, assetURLID int64) []map[string]any {
+	rows, err := db.QueryContext(ctx, `
+		SELECT ar.id, ar.job_id, ar.asset_url_id, ar.source_page_url_id, ar.reference_type,
+		       COALESCE(pu.normalized_url, '') AS page_url,
+		       ar.natural_width, ar.natural_height, ar.rendered_width, ar.rendered_height
+		FROM asset_references ar
+		LEFT JOIN urls pu ON pu.id = ar.source_page_url_id
+		WHERE ar.job_id = ? AND ar.asset_url_id = ?
+		ORDER BY ar.id ASC
+		LIMIT 50`, jobID, assetURLID)
+	if err != nil {
+		return []map[string]any{}
+	}
+	defer rows.Close()
+
+	out := []map[string]any{}
+	for rows.Next() {
+		var (
+			id, assetID, sourcePageID                  int64
+			jid, referenceType, pageURL                string
+			naturalWidth, naturalHeight, renderedWidth sql.NullInt64
+			renderedHeight                             sql.NullInt64
+		)
+		if err := rows.Scan(&id, &jid, &assetID, &sourcePageID, &referenceType, &pageURL, &naturalWidth, &naturalHeight, &renderedWidth, &renderedHeight); err != nil {
+			return []map[string]any{}
+		}
+		out = append(out, map[string]any{
+			"id":                 id,
+			"jobId":              jid,
+			"assetUrlId":         assetID,
+			"asset_url_id":       assetID,
+			"sourcePageUrlId":    sourcePageID,
+			"source_page_url_id": sourcePageID,
+			"referenceType":      referenceType,
+			"reference_type":     referenceType,
+			"pageUrl":            pageURL,
+			"page_url":           pageURL,
+			"naturalWidth":       nullInt64(naturalWidth),
+			"natural_width":      nullInt64(naturalWidth),
+			"naturalHeight":      nullInt64(naturalHeight),
+			"natural_height":     nullInt64(naturalHeight),
+			"renderedWidth":      nullInt64(renderedWidth),
+			"rendered_width":     nullInt64(renderedWidth),
+			"renderedHeight":     nullInt64(renderedHeight),
+			"rendered_height":    nullInt64(renderedHeight),
+		})
+	}
+	return out
 }
 
 // handleJobSitemapEntries handles GET /api/jobs/:jobId/sitemap-entries.

@@ -215,6 +215,71 @@ func TestJobPageBundleImagesExcludeScriptChunks(t *testing.T) {
 	}
 }
 
+func TestJobAssetsIncludesSourcePageReferences(t *testing.T) {
+	srv, h := newTestServer(t)
+	jobID := "job-assets-references"
+	pageURL := "https://example.com/page"
+	imageURL := "https://example.com/hero.webp"
+	seedJob(t, srv.db, jobID, "https://example.com", "completed")
+
+	insertURL := func(rawURL string) int64 {
+		t.Helper()
+		result, err := srv.db.Exec(
+			"INSERT INTO urls (job_id, normalized_url, host, status, discovered_via) VALUES (?, ?, 'example.com', 'fetched', 'crawl')",
+			jobID, rawURL,
+		)
+		if err != nil {
+			t.Fatalf("seeding url %s: %v", rawURL, err)
+		}
+		id, _ := result.LastInsertId()
+		return id
+	}
+	pageURLID := insertURL(pageURL)
+	imageURLID := insertURL(imageURL)
+	if _, err := srv.db.Exec("INSERT INTO assets (job_id, url_id, content_type, status_code) VALUES (?, ?, 'image/webp', 200)", jobID, imageURLID); err != nil {
+		t.Fatalf("seeding asset: %v", err)
+	}
+	if _, err := srv.db.Exec("INSERT INTO asset_references (job_id, asset_url_id, source_page_url_id, reference_type, natural_width, natural_height, rendered_width, rendered_height) VALUES (?, ?, ?, 'img_src', 1600, 900, 390, 219)", jobID, imageURLID, pageURLID); err != nil {
+		t.Fatalf("seeding asset reference: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/jobs/"+jobID+"/assets?content_type=image/", nil)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rr.Code, rr.Body.String())
+	}
+	var payload struct {
+		Results []struct {
+			URL            string `json:"url"`
+			ReferenceCount int    `json:"referenceCount"`
+			References     []struct {
+				PageURL       string `json:"pageUrl"`
+				ReferenceType string `json:"referenceType"`
+				NaturalWidth  *int64 `json:"naturalWidth"`
+				RenderedWidth *int64 `json:"renderedWidth"`
+			} `json:"references"`
+		} `json:"results"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&payload); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if len(payload.Results) != 1 {
+		t.Fatalf("results len = %d, want 1: %+v", len(payload.Results), payload.Results)
+	}
+	asset := payload.Results[0]
+	if asset.URL != imageURL || asset.ReferenceCount != 1 || len(asset.References) != 1 {
+		t.Fatalf("asset references = %+v, want one reference for image", asset)
+	}
+	ref := asset.References[0]
+	if ref.PageURL != pageURL || ref.ReferenceType != "img_src" {
+		t.Fatalf("reference = %+v, want source page img_src", ref)
+	}
+	if ref.NaturalWidth == nil || *ref.NaturalWidth != 1600 || ref.RenderedWidth == nil || *ref.RenderedWidth != 390 {
+		t.Fatalf("reference dimensions = %+v, want natural/rendered widths", ref)
+	}
+}
+
 func TestHandleCrawlWithoutEngine(t *testing.T) {
 	_, handler := newTestServer(t)
 
