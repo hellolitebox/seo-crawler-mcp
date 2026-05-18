@@ -563,7 +563,7 @@ func generateAISummaryWithOpenAI(ctx context.Context, apiKey, model string, inpu
 				"schema": aiSummaryJSONSchema(),
 			},
 		},
-		"max_output_tokens": 1600,
+		"max_output_tokens": 4000,
 	}
 	bodyBytes, _ := json.Marshal(reqBody)
 
